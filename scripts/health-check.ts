@@ -1,96 +1,94 @@
-﻿import { PrismaClient } from "@prisma/client";
+import {
+  getStudentsServer,
+  getTeachersServer,
+  getClassesServer,
+  getSubjectsServer,
+  getAttendanceServer,
+  getFeeChallansServer,
+  getPaymentsServer,
+  getExamsServer,
+  getExamResultsServer,
+  getStudentObservationsServer,
+  getAuditLogsServer,
+  getLockedRecordsServer,
+  getSchoolSettingsServer,
+} from "../src/lib/firebase/server-db";
 
-const prisma = new PrismaClient();
+const DEFAULT_SCHOOL = "allied-school-main";
 
 async function main() {
   console.log("==================================================");
-  console.log("  ALLIED SCHOOL SYSTEM DIAGNOSTIC & HEALTH CHECK  ");
+  console.log("  ALLIED SCHOOL SYSTEM FIREBASE HEALTH CHECK     ");
   console.log("==================================================");
 
-  const [
-    usersCount,
-    teachersCount,
-    studentsCount,
-    classesCount,
-    subjectsCount,
-    attendanceCount,
-    challansCount,
-    paymentsCount,
-    examsCount,
-    schedulesCount,
-    resultsCount,
-    observationsCount,
-    auditLogsCount,
-    lockedRecordsCount,
-    settingsCount
-  ] = await Promise.all([
-    prisma.user.count(),
-    prisma.teacher.count(),
-    prisma.student.count(),
-    prisma.class.count(),
-    prisma.subject.count(),
-    prisma.attendance.count(),
-    prisma.feeChallan.count(),
-    prisma.payment.count(),
-    prisma.exam.count(),
-    prisma.examSchedule.count(),
-    prisma.examResult.count(),
-    prisma.studentObservation.count(),
-    prisma.auditLog.count(),
-    prisma.lockedRecord.count(),
-    prisma.schoolSetting.count()
-  ]);
+  try {
+    const [
+      students,
+      teachers,
+      classes,
+      subjects,
+      attendance,
+      challans,
+      payments,
+      exams,
+      results,
+      observations,
+      auditLogs,
+      lockedRecords,
+      settings
+    ] = await Promise.all([
+      getStudentsServer(DEFAULT_SCHOOL),
+      getTeachersServer(DEFAULT_SCHOOL),
+      getClassesServer(DEFAULT_SCHOOL),
+      getSubjectsServer(DEFAULT_SCHOOL),
+      getAttendanceServer(DEFAULT_SCHOOL),
+      getFeeChallansServer(DEFAULT_SCHOOL),
+      getPaymentsServer(DEFAULT_SCHOOL),
+      getExamsServer(DEFAULT_SCHOOL),
+      getExamResultsServer(DEFAULT_SCHOOL),
+      getStudentObservationsServer(DEFAULT_SCHOOL, "std-1"),
+      getAuditLogsServer(DEFAULT_SCHOOL),
+      getLockedRecordsServer(DEFAULT_SCHOOL),
+      getSchoolSettingsServer(DEFAULT_SCHOOL)
+    ]);
 
-  console.log(`[+] Total User Accounts:      ${usersCount}`);
-  console.log(`[+] Faculty Teachers:         ${teachersCount}`);
-  console.log(`[+] Enrolled Students:        ${studentsCount}`);
-  console.log(`[+] Academic Classes:         ${classesCount}`);
-  console.log(`[+] Curriculum Subjects:      ${subjectsCount}`);
-  console.log(`[+] Attendance Records:       ${attendanceCount}`);
-  console.log(`[+] Fee Challans Issued:      ${challansCount}`);
-  console.log(`[+] Fee Payments Recorded:    ${paymentsCount}`);
-  console.log(`[+] Examination Terms:        ${examsCount}`);
-  console.log(`[+] Exam Schedules / Papers:  ${schedulesCount}`);
-  console.log(`[+] Exam Results / Marks:     ${resultsCount}`);
-  console.log(`[+] Behavioral Observations:  ${observationsCount}`);
-  console.log(`[+] System Audit Logs:        ${auditLogsCount}`);
-  console.log(`[+] Locked/Sealed Records:    ${lockedRecordsCount}`);
-  console.log(`[+] System Settings Config:   ${settingsCount}`);
+    console.log(`[+] Enrolled Students:        ${students.length}`);
+    console.log(`[+] Faculty Teachers:         ${teachers.length}`);
+    console.log(`[+] Academic Classes:         ${classes.length}`);
+    console.log(`[+] Curriculum Subjects:      ${subjects.length}`);
+    console.log(`[+] Attendance Records:       ${attendance.length}`);
+    console.log(`[+] Fee Challans Issued:      ${challans.length}`);
+    console.log(`[+] Fee Payments Recorded:    ${payments.length}`);
+    console.log(`[+] Examination Cycles:       ${exams.length}`);
+    console.log(`[+] Exam Results / Marks:     ${results.length}`);
+    console.log(`[+] Behavioral Observations:  ${observations.length}`);
+    console.log(`[+] System Audit Logs:        ${auditLogs.length}`);
+    console.log(`[+] Locked Records:           ${lockedRecords.length}`);
+    console.log(`[+] School Settings Config:   ${settings ? "Active" : "Default"}`);
 
-  // Test Fee Calculation Aggregate
-  const totalExpected = await prisma.feeChallan.aggregate({ _sum: { totalExpected: true } });
-  const totalPaid = await prisma.feeChallan.aggregate({ _sum: { paidAmount: true } });
-  const allChallans = await prisma.feeChallan.findMany();
-  const totalOutstanding = allChallans.reduce((sum, c) => sum + Math.max(0, c.totalExpected - c.paidAmount), 0);
+    // Fee calculations
+    let totalExpected = 0;
+    let totalPaid = 0;
+    challans.forEach((c) => {
+      totalExpected += c.totalExpected || 0;
+      totalPaid += c.paidAmount || 0;
+    });
+    const totalOutstanding = Math.max(0, totalExpected - totalPaid);
+    const recoveryRate = totalExpected > 0 ? ((totalPaid / totalExpected) * 100).toFixed(1) : "0";
 
-  console.log("--------------------------------------------------");
-  console.log(`[+] Total Fees Invoiced:      Rs. ${(totalExpected._sum.totalExpected || 0).toLocaleString()}`);
-  console.log(`[+] Total Fees Collected:     Rs. ${(totalPaid._sum.paidAmount || 0).toLocaleString()}`);
-  console.log(`[+] Total Outstanding Dues:   Rs. ${totalOutstanding.toLocaleString()}`);
-  
-  const recoveryRate = totalExpected._sum.totalExpected 
-    ? (((totalPaid._sum.paidAmount || 0) / totalExpected._sum.totalExpected) * 100).toFixed(1)
-    : "0";
-  console.log(`[+] Fee Recovery Rate:        ${recoveryRate}%`);
+    console.log("--------------------------------------------------");
+    console.log(`[+] Total Fees Invoiced:      Rs. ${totalExpected.toLocaleString()}`);
+    console.log(`[+] Total Fees Collected:     Rs. ${totalPaid.toLocaleString()}`);
+    console.log(`[+] Total Outstanding Dues:   Rs. ${totalOutstanding.toLocaleString()}`);
+    console.log(`[+] Fee Recovery Rate:        ${recoveryRate}%`);
 
-  // Test Overall Attendance Rate
-  const presentCount = await prisma.attendance.count({ where: { status: "PRESENT" } });
-  const lateCount = await prisma.attendance.count({ where: { status: "LATE" } });
-  const attendanceRate = attendanceCount 
-    ? (((presentCount + lateCount) / attendanceCount) * 100).toFixed(1)
-    : "0";
-  console.log(`[+] School Attendance Rate:   ${attendanceRate}%`);
-
-  console.log("==================================================");
-  console.log("  ALL SYSTEM COMPONENTS FULLY OPERATIONAL & READY ");
-  console.log("==================================================");
+    console.log("==================================================");
+    console.log("  ALL FIREBASE COMPONENTS FULLY OPERATIONAL       ");
+    console.log("==================================================");
+  } catch (error) {
+    console.error("Health check error:", error);
+    process.exit(1);
+  }
 }
 
-main()
-  .catch((e) => {
-    console.error("Health check error:", e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+main();
