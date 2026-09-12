@@ -7,22 +7,8 @@ export default function StudentResultsReportCardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/auth/me")
+    fetch("/api/student/me")
       .then((res) => res.json())
-      .then((me) => {
-        let studentId = me.session?.studentId;
-        if (!studentId) {
-          return fetch("/api/students")
-            .then((r) => r.json())
-            .then((stList) => {
-              if (stList.students?.length > 0) {
-                return fetch(`/api/students/${stList.students[0].id}`).then((r) => r.json());
-              }
-            });
-        } else {
-          return fetch(`/api/students/${studentId}`).then((r) => r.json());
-        }
-      })
       .then((d) => {
         if (d?.success) setData(d);
       })
@@ -41,10 +27,10 @@ export default function StudentResultsReportCardPage() {
 
   const student = data?.student;
   const stats = data?.stats?.academics || {
-    totalMarks: 600,
-    obtainedMarks: 563,
-    percentage: 93.8,
-    gpa: 3.95,
+    totalMarks: 0,
+    obtainedMarks: 0,
+    percentage: 0,
+    gpa: 0,
   };
 
   return (
@@ -78,11 +64,11 @@ export default function StudentResultsReportCardPage() {
               <span className="material-symbols-outlined text-[24px]">school</span>
             </div>
             <h2 className="font-headline-xl text-2xl sm:text-3xl font-bold text-on-surface tracking-tight">
-              ALLIED SCHOOL
+              {data?.school?.name || "ALLIED SCHOOL"}
             </h2>
           </div>
           <p className="text-xs font-semibold text-secondary uppercase tracking-wider">
-            Model Town Campus — Lahore, Pakistan
+            {data?.school?.campusName || data?.school?.address || "Official Academic Report"}
           </p>
           <p className="text-xs text-on-surface-variant italic font-medium">
             “Better Education, Brighter Future”
@@ -130,6 +116,13 @@ export default function StudentResultsReportCardPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-container-low">
+              {(!student?.examResults || student.examResults.length === 0) && (
+                <tr>
+                  <td colSpan={8} className="py-6 text-center text-on-surface-variant italic">
+                    No examination records available for this student.
+                  </td>
+                </tr>
+              )}
               {student?.examResults?.map((r: any) => {
                 const pct = Math.round((r.marksObtained / r.maxMarks) * 100);
                 return (
@@ -156,9 +149,13 @@ export default function StudentResultsReportCardPage() {
                 <td className="py-3 px-3 text-center">{stats.totalMarks}</td>
                 <td className="py-3 px-3 text-center text-secondary font-bold">{stats.obtainedMarks}</td>
                 <td className="py-3 px-3 text-center">{stats.percentage}%</td>
-                <td className="py-3 px-3 text-center text-secondary font-bold">A+</td>
-                <td className="py-3 px-3 text-center">{stats.gpa.toFixed(2)}</td>
-                <td className="py-3 px-3 text-on-tertiary-container">High Distinction (1st Rank)</td>
+                <td className="py-3 px-3 text-center text-secondary font-bold">
+                  {stats.gpa >= 3.5 ? "A+" : stats.gpa >= 3.0 ? "A" : stats.gpa >= 2.0 ? "B" : stats.gpa > 0 ? "C" : "—"}
+                </td>
+                <td className="py-3 px-3 text-center">{typeof stats.gpa === "number" ? stats.gpa.toFixed(2) : "0.00"}</td>
+                <td className="py-3 px-3 text-on-tertiary-container">
+                  {stats.gpa > 0 ? "Academic Standing Certified" : "No Records"}
+                </td>
               </tr>
             </tfoot>
           </table>
@@ -182,8 +179,8 @@ export default function StudentResultsReportCardPage() {
             </div>
 
             <div className="text-center">
-              <div className="w-28 border-b border-outline-variant pb-1 font-semibold text-on-surface">
-                Dr. Asim Qureshi
+              <div className="w-40 border-b border-outline-variant pb-1 font-semibold text-on-surface text-center">
+                {data?.school?.principalName || "Authorized School Representative"}
               </div>
               <span className="text-[10px] text-on-surface-variant uppercase mt-1 block">Principal / Head</span>
             </div>

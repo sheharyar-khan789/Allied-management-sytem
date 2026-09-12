@@ -21,11 +21,13 @@ export async function GET(
     const { id } = await params;
 
     // Student privacy guard
-    if (authUser.role === "STUDENT" && authUser.studentId && authUser.studentId !== id) {
-      return NextResponse.json(
-        { error: "Forbidden: You cannot view another student's dossier." },
-        { status: 403 }
-      );
+    if (authUser.role === "STUDENT") {
+      if (!authUser.studentId || authUser.studentId !== id) {
+        return NextResponse.json(
+          { error: "Forbidden: You cannot view another student's dossier." },
+          { status: 403 }
+        );
+      }
     }
 
     const student = await getStudentByIdServer(authUser.schoolId, id);
@@ -50,7 +52,7 @@ export async function GET(
     const lateAtt = attendances.filter((a) => a.status === "LATE").length;
     const leaveAtt = attendances.filter((a) => a.status === "LEAVE").length;
     const absentAtt = attendances.filter((a) => a.status === "ABSENT").length;
-    const attPct = totalAtt > 0 ? ((presentAtt / totalAtt) * 100).toFixed(1) : "100.0";
+    const attPct = totalAtt > 0 ? ((presentAtt / totalAtt) * 100).toFixed(1) : "0.0";
 
     // Fee stats
     const totalExpectedFee = challans.reduce((s, c) => s + (c.totalExpected || 0), 0);
@@ -63,7 +65,7 @@ export async function GET(
     const examPct = totalMaxMarks > 0 ? ((totalObtainedMarks / totalMaxMarks) * 100).toFixed(1) : "0";
     const avgGpa = examResults.length > 0
       ? (examResults.reduce((s, r) => s + (r.gpa || 0), 0) / examResults.length).toFixed(2)
-      : "4.00";
+      : "0.00";
 
     const formattedStudent = {
       id: student.id,
@@ -74,23 +76,23 @@ export async function GET(
       fullName: student.fullName,
       gender: student.gender === "MALE" ? "Male" : "Female",
       dob: student.dob,
-      bloodGroup: student.bloodGroup || "B+",
-      cnicBForm: "-",
+      bloodGroup: student.bloodGroup || "Not Specified",
+      cnicBForm: student.cnic || student.bForm || "-",
       contactNumber: student.phone,
       email: `${student.id}@alliedschool.edu`,
-      address: student.address || "Islamabad, Pakistan",
+      address: student.address || "Not Provided",
       guardianName: student.guardianName,
       guardianRelation: student.guardianRelation,
       guardianPhone: student.guardianPhone,
       guardianEmail: "",
-      guardianOccupation: "Guardian",
+      guardianOccupation: "Not Specified",
       classId: student.classId,
       status: student.status,
       admissionDate: student.createdAt,
       class: {
         id: student.classId,
-        name: targetClass?.name || "Class 10",
-        section: targetClass?.section || "A",
+        name: targetClass?.name || "",
+        section: targetClass?.section || "",
         classTeacher: targetClass?.classTeacherName ? { firstName: targetClass.classTeacherName, lastName: "" } : null,
         subjects: subjects.map((sub) => ({
           id: sub.id,

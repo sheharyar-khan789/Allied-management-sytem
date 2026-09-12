@@ -14,19 +14,19 @@ export default function AddNewStudentPage() {
     firstName: "",
     lastName: "",
     gender: "Female",
-    dob: "2014-05-15",
-    bloodGroup: "B+",
+    dob: "",
+    bloodGroup: "",
     cnicBForm: "",
     contactNumber: "",
     email: "",
-    address: "Model Town Sector B, Lahore",
+    address: "",
     classId: "",
     rollNumber: "",
     guardianName: "",
     guardianRelation: "Father",
     guardianPhone: "",
     guardianEmail: "",
-    guardianOccupation: "Businessman",
+    guardianOccupation: "",
   });
 
   useEffect(() => {
@@ -169,6 +169,7 @@ export default function AddNewStudentPage() {
                 onChange={handleChange}
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
               >
+                <option value="">Select Blood Group</option>
                 <option value="A+">A+</option>
                 <option value="A-">A-</option>
                 <option value="B+">B+</option>
@@ -306,7 +307,7 @@ export default function AddNewStudentPage() {
                 name="address"
                 value={formData.address}
                 onChange={handleChange}
-                placeholder="e.g. Sector B, Model Town, Lahore"
+                placeholder="Residential address (Street, Sector, City)"
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
               />
             </div>

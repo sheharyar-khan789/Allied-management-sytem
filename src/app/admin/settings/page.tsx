@@ -4,12 +4,12 @@ import React, { useEffect, useState } from "react";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>({
-    schoolName: "Allied School",
-    campusName: "Model Town Campus — Lahore",
-    tagline: "Better Education, Brighter Future",
-    contactEmail: "info@alliedschool.edu",
-    contactPhone: "+92 42 3588 9011",
-    address: "Plot 42, Block C, Model Town, Lahore, Pakistan",
+    schoolName: "",
+    campusName: "",
+    tagline: "",
+    contactEmail: "",
+    contactPhone: "",
+    address: "",
     currencySymbol: "Rs.",
     gradingSystem: "Standard 4.0 / Percentage",
   });

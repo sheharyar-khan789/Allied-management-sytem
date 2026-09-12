@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getFeeChallansServer,
@@ -12,12 +12,14 @@ import { FeeChallanDoc, PaymentDoc } from "@/lib/firebase/types";
 
 export async function GET(req: NextRequest) {
   try {
-    const authUser = await requireAuth(req);
+    const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     const { searchParams } = new URL(req.url);
     const classId = searchParams.get("classId") || undefined;
     const status = searchParams.get("status") || undefined;
     const month = searchParams.get("month") || undefined;
     const search = searchParams.get("search")?.toLowerCase() || "";
+    const limitParam = searchParams.get("limit");
+    const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
 
     const [challans, classes] = await Promise.all([
       getFeeChallansServer(authUser.schoolId, classId, month),
@@ -81,7 +83,7 @@ export async function GET(req: NextRequest) {
         partialCount,
         totalChallans: filtered.length,
       },
-      challans: formattedChallans,
+      challans: parsedLimit && parsedLimit > 0 ? formattedChallans.slice(0, parsedLimit) : formattedChallans,
       classes,
     });
   } catch (error: any) {

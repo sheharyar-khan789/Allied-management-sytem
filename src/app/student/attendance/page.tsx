@@ -8,22 +8,8 @@ export default function StudentAttendancePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/auth/me")
+    fetch("/api/student/me")
       .then((res) => res.json())
-      .then((me) => {
-        let studentId = me.session?.studentId;
-        if (!studentId) {
-          return fetch("/api/students")
-            .then((r) => r.json())
-            .then((stList) => {
-              if (stList.students?.length > 0) {
-                return fetch(`/api/students/${stList.students[0].id}`).then((r) => r.json());
-              }
-            });
-        } else {
-          return fetch(`/api/students/${studentId}`).then((r) => r.json());
-        }
-      })
       .then((d) => {
         if (d?.success) setData(d);
       })
@@ -41,7 +27,7 @@ export default function StudentAttendancePage() {
   }
 
   const student = data?.student;
-  const stats = data?.stats?.attendance || { percentage: 95.0, present: 19, absent: 1, late: 0, leave: 0, total: 20 };
+  const stats = data?.stats?.attendance || { percentage: 0, present: 0, absent: 0, late: 0, leave: 0, total: 0 };
 
   return (
     <div className="flex flex-col w-full gap-space-lg">
@@ -110,6 +96,13 @@ export default function StudentAttendancePage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-container-low">
+              {(!student?.attendances || student.attendances.length === 0) && (
+                <tr>
+                  <td colSpan={3} className="py-6 text-center text-on-surface-variant italic">
+                    No attendance records found for this academic period.
+                  </td>
+                </tr>
+              )}
               {student?.attendances?.map((att: any) => (
                 <tr key={att.id} className="hover:bg-surface-container-low/40">
                   <td className="py-2.5 px-4 font-semibold text-on-surface">{formatDate(att.date)}</td>

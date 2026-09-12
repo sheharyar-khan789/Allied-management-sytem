@@ -1,4 +1,4 @@
-﻿import React from "react";
+import React from "react";
 import StudentNav from "@/components/StudentNav";
 import { getAuthenticatedUser } from "@/lib/firebase/server-auth";
 import { getStudentByIdServer } from "@/lib/firebase/server-db";
@@ -11,15 +11,15 @@ export default async function StudentLayout({
   const session = await getAuthenticatedUser();
 
   let studentName = session?.name || "Student";
-  let admissionNo = "STD-2024";
-  let className = "Class 10-A";
+  let admissionNo = "";
+  let className = "";
 
   if (session?.studentId && session?.schoolId) {
     const st = await getStudentByIdServer(session.schoolId, session.studentId);
     if (st) {
       studentName = st.fullName;
       admissionNo = st.admissionNo;
-      className = st.className || "Class 10-A";
+      className = st.className || "";
     }
   }
 

@@ -18,7 +18,7 @@ export default function TeachersManagementPage() {
     designation: "Senior Science & Math Educator",
     qualification: "M.Sc Mathematics / B.Ed",
     specialization: "Mathematics & Physical Sciences",
-    phone: "+92 300 ",
+    phone: "",
     email: "",
   });
 
@@ -65,7 +65,7 @@ export default function TeachersManagementPage() {
         designation: "Senior Educator",
         qualification: "M.Sc / B.Ed",
         specialization: "General Education",
-        phone: "+92 300 ",
+        phone: "",
         email: "",
       });
       fetchTeachers();
@@ -274,7 +274,7 @@ export default function TeachersManagementPage() {
                     required
                     value={formData.phone}
                     onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                    placeholder="+92 300 1234567"
+                    placeholder="+92 300 0000000"
                     className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                   />
                 </div>

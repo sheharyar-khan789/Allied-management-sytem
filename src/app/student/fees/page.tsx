@@ -8,22 +8,8 @@ export default function StudentFeesPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/auth/me")
+    fetch("/api/student/me")
       .then((res) => res.json())
-      .then((me) => {
-        let studentId = me.session?.studentId;
-        if (!studentId) {
-          return fetch("/api/students")
-            .then((r) => r.json())
-            .then((stList) => {
-              if (stList.students?.length > 0) {
-                return fetch(`/api/students/${stList.students[0].id}`).then((r) => r.json());
-              }
-            });
-        } else {
-          return fetch(`/api/students/${studentId}`).then((r) => r.json());
-        }
-      })
       .then((d) => {
         if (d?.success) setData(d);
       })
@@ -41,7 +27,7 @@ export default function StudentFeesPage() {
   }
 
   const student = data?.student;
-  const stats = data?.stats?.fees || { expected: 15000, paid: 15000, outstanding: 0 };
+  const stats = data?.stats?.fees || { expected: 0, paid: 0, outstanding: 0 };
 
   return (
     <div className="flex flex-col w-full gap-space-lg">
@@ -124,6 +110,13 @@ export default function StudentFeesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-container-low">
+              {(!student?.feeChallans || student.feeChallans.length === 0) && (
+                <tr>
+                  <td colSpan={7} className="py-6 text-center text-on-surface-variant italic">
+                    No fee challans or payment receipts found.
+                  </td>
+                </tr>
+              )}
               {student?.feeChallans?.map((ch: any) => (
                 <tr key={ch.id} className="hover:bg-surface-container-low/40">
                   <td className="py-3 px-4 font-mono font-bold text-on-surface">{ch.challanNumber}</td>

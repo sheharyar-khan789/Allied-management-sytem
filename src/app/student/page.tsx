@@ -9,24 +9,8 @@ export default function StudentDashboardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Fetch student info using session or default demo student (Zainab Khan)
-    fetch("/api/auth/me")
+    fetch("/api/student/me")
       .then((res) => res.json())
-      .then((me) => {
-        let studentId = me.session?.studentId;
-        if (!studentId) {
-          // Fetch first student (Zainab) as demo fallback
-          return fetch("/api/students")
-            .then((r) => r.json())
-            .then((stList) => {
-              if (stList.students?.length > 0) {
-                return fetch(`/api/students/${stList.students[0].id}`).then((r) => r.json());
-              }
-            });
-        } else {
-          return fetch(`/api/students/${studentId}`).then((r) => r.json());
-        }
-      })
       .then((d) => {
         if (d?.success) setData(d);
       })
@@ -45,9 +29,9 @@ export default function StudentDashboardPage() {
 
   const student = data?.student;
   const stats = data?.stats || {
-    attendance: { percentage: 95.0, present: 19, absent: 1 },
-    fees: { expected: 15000, paid: 15000, outstanding: 0 },
-    academics: { percentage: 93.8, gpa: 3.95, totalMarks: 600, obtainedMarks: 563 },
+    attendance: { percentage: 0, present: 0, absent: 0 },
+    fees: { expected: 0, paid: 0, outstanding: 0 },
+    academics: { percentage: 0, gpa: 0, totalMarks: 0, obtainedMarks: 0 },
   };
 
   return (
@@ -62,11 +46,11 @@ export default function StudentDashboardPage() {
                 Student Portal
               </span>
               <span className="text-xs text-surface-dim font-medium">
-                {student?.class?.name}-{student?.class?.section} • Roll #{student?.rollNumber || "01"}
+                {student?.class?.name ? `${student.class.name}${student.class.section ? `-${student.class.section}` : ""}` : "Student"} • Roll #{student?.rollNumber || "N/A"}
               </span>
             </div>
             <h1 className="font-headline-lg text-2xl sm:text-3xl font-bold tracking-tight text-on-primary">
-              Welcome back, {student?.firstName || "Zainab"} {student?.lastName || "Khan"}
+              Welcome back, {student?.firstName || "Student"} {student?.lastName || ""}
             </h1>
             <p className="font-body-md text-xs sm:text-sm text-on-primary-container italic font-medium">
               “Knowledge is light” — Allied School Academic Journey
@@ -110,9 +94,11 @@ export default function StudentDashboardPage() {
               Term GPA
             </span>
             <div className="text-2xl font-bold text-secondary mt-1">
-              {stats.academics.gpa.toFixed(2)}
+              {typeof stats.academics.gpa === "number" ? stats.academics.gpa.toFixed(2) : "0.00"}
             </div>
-            <span className="text-[10px] text-secondary font-semibold">Grade A+ (Distinction)</span>
+            <span className="text-[10px] text-secondary font-semibold">
+              {stats.academics.gpa > 0 ? "Cumulative Average" : "No Grades Posted"}
+            </span>
           </div>
           <div className="w-10 h-10 rounded-lg bg-secondary/10 text-secondary flex items-center justify-center">
             <span className="material-symbols-outlined text-[22px]">grade</span>
@@ -137,14 +123,16 @@ export default function StudentDashboardPage() {
           </div>
         </div>
 
-        {/* Class Rank */}
+        {/* Class Rank / Enrolled Class */}
         <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex items-center justify-between">
           <div>
             <span className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">
               Cohort Standing
             </span>
-            <div className="text-2xl font-bold text-primary mt-1">1st Rank</div>
-            <span className="text-[10px] text-on-surface-variant">Class 5-A Cohort</span>
+            <div className="text-2xl font-bold text-primary mt-1">
+              {student?.class?.name ? `${student.class.name} ${student.class.section || ""}`.trim() : "Enrolled"}
+            </div>
+            <span className="text-[10px] text-on-surface-variant">Class Standing</span>
           </div>
           <div className="w-10 h-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
             <span className="material-symbols-outlined text-[22px]">military_tech</span>

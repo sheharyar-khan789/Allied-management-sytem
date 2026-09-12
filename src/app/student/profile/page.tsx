@@ -8,22 +8,8 @@ export default function StudentProfilePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/auth/me")
+    fetch("/api/student/me")
       .then((res) => res.json())
-      .then((me) => {
-        let studentId = me.session?.studentId;
-        if (!studentId) {
-          return fetch("/api/students")
-            .then((r) => r.json())
-            .then((stList) => {
-              if (stList.students?.length > 0) {
-                return fetch(`/api/students/${stList.students[0].id}`).then((r) => r.json());
-              }
-            });
-        } else {
-          return fetch(`/api/students/${studentId}`).then((r) => r.json());
-        }
-      })
       .then((d) => {
         if (d?.success) setStudent(d.student);
       })
@@ -86,11 +72,11 @@ export default function StudentProfilePage() {
             </div>
             <div>
               <span className="text-on-surface-variant">Blood Group</span>
-              <p className="font-semibold text-on-surface">{student?.bloodGroup || "B+"}</p>
+              <p className="font-semibold text-on-surface">{student?.bloodGroup || "Not Specified"}</p>
             </div>
             <div>
               <span className="text-on-surface-variant">B-Form / CNIC</span>
-              <p className="font-semibold text-on-surface font-mono">{student?.cnicBForm || "35201-8765432-2"}</p>
+              <p className="font-semibold text-on-surface font-mono">{student?.cnicBForm || "Not Provided"}</p>
             </div>
             <div>
               <span className="text-on-surface-variant">Admission Date</span>
@@ -108,23 +94,23 @@ export default function StudentProfilePage() {
           <div className="grid grid-cols-2 gap-3 text-xs">
             <div>
               <span className="text-on-surface-variant">Guardian Name</span>
-              <p className="font-semibold text-on-surface">{student?.guardianName}</p>
+              <p className="font-semibold text-on-surface">{student?.guardianName || "Not Specified"}</p>
             </div>
             <div>
               <span className="text-on-surface-variant">Relationship</span>
-              <p className="font-semibold text-on-surface">{student?.guardianRelation}</p>
+              <p className="font-semibold text-on-surface">{student?.guardianRelation || "Not Specified"}</p>
             </div>
             <div>
               <span className="text-on-surface-variant">Contact Phone</span>
-              <p className="font-semibold text-on-surface font-mono">{student?.guardianPhone}</p>
+              <p className="font-semibold text-on-surface font-mono">{student?.guardianPhone || "Not Provided"}</p>
             </div>
             <div>
               <span className="text-on-surface-variant">Guardian Email</span>
-              <p className="font-semibold text-on-surface truncate">{student?.guardianEmail || "N/A"}</p>
+              <p className="font-semibold text-on-surface truncate">{student?.guardianEmail || "Not Provided"}</p>
             </div>
             <div className="col-span-2">
               <span className="text-on-surface-variant">Residential Address</span>
-              <p className="font-semibold text-on-surface">{student?.address || "Model Town, Lahore"}</p>
+              <p className="font-semibold text-on-surface">{student?.address || "Not Provided"}</p>
             </div>
           </div>
         </div>

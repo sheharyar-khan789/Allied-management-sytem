@@ -73,7 +73,7 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
         (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
-        (isStudent() && resource.data.userId == request.auth.uid)
+        (isStudent() && (resource.data.userId == request.auth.uid || resource.data.id == getUserData().studentId))
       );
       allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
     }

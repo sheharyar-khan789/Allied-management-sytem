@@ -43,14 +43,14 @@ export default function AdminDashboardPage() {
   }
 
   const stats = data?.stats || {
-    totalStudents: 50,
-    totalTeachers: 8,
-    totalClasses: 20,
-    attendancePercentage: 94.2,
-    totalExpectedFee: 200000,
-    totalCollectedFee: 175000,
-    totalOutstandingFee: 25000,
-    collectionRate: 87.5,
+    totalStudents: 0,
+    totalTeachers: 0,
+    totalClasses: 0,
+    attendancePercentage: 0.0,
+    totalExpectedFee: 0,
+    totalCollectedFee: 0,
+    totalOutstandingFee: 0,
+    collectionRate: 0.0,
   };
 
   const snapshots = data?.classWiseSnapshots || [];

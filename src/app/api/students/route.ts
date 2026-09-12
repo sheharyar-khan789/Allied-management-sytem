@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getStudentsServer,
@@ -17,7 +17,11 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get("search") || "";
     const classId = searchParams.get("classId") || undefined;
 
-    const students = await getStudentsServer(authUser.schoolId, classId, search);
+    const limitParam = searchParams.get("limit");
+    const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
+
+    const rawStudents = await getStudentsServer(authUser.schoolId, classId, search);
+    const students = parsedLimit && parsedLimit > 0 ? rawStudents.slice(0, parsedLimit) : rawStudents;
 
     const mapped = students.map((st) => ({
       id: st.id,
@@ -29,20 +33,20 @@ export async function GET(req: NextRequest) {
       fullName: st.fullName,
       gender: st.gender,
       dob: st.dob,
-      bloodGroup: st.bloodGroup || "B+",
-      cnicBForm: "-",
+      bloodGroup: st.bloodGroup || "Not Specified",
+      cnicBForm: st.cnic || st.bForm || "-",
       contactNumber: st.phone,
       email: `${st.id}@alliedschool.edu`,
       guardianName: st.guardianName,
       guardianRelation: st.guardianRelation,
       guardianPhone: st.guardianPhone,
       guardianEmail: "",
-      guardianOccupation: "Guardian",
+      guardianOccupation: "Not Specified",
       status: st.status,
       classId: st.classId,
-      className: st.className || "Class 10-A",
-      attendanceRate: 94,
-      feeStatus: "PAID",
+      className: st.className || "",
+      attendanceRate: 0,
+      feeStatus: "CLEAR",
       admissionDate: st.createdAt,
     }));
 

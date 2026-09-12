@@ -276,11 +276,11 @@ export default function StudentDossierPage({
               </div>
               <div>
                 <span className="text-on-surface-variant">Blood Group</span>
-                <p className="font-semibold text-on-surface">{student.bloodGroup || "B+"}</p>
+                <p className="font-semibold text-on-surface">{student.bloodGroup || "Not Specified"}</p>
               </div>
               <div>
                 <span className="text-on-surface-variant">B-Form / CNIC</span>
-                <p className="font-semibold text-on-surface font-mono">{student.cnicBForm || "35201-8765432-2"}</p>
+                <p className="font-semibold text-on-surface font-mono">{student.cnicBForm || "Not Provided"}</p>
               </div>
               <div>
                 <span className="text-on-surface-variant">Admission Date</span>
@@ -288,7 +288,7 @@ export default function StudentDossierPage({
               </div>
               <div className="col-span-2">
                 <span className="text-on-surface-variant">Residential Address</span>
-                <p className="font-semibold text-on-surface">{student.address || "Sector B, Model Town, Lahore"}</p>
+                <p className="font-semibold text-on-surface">{student.address || "Not Provided"}</p>
               </div>
             </div>
           </div>

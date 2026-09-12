@@ -11,9 +11,9 @@ interface StudentNavProps {
 }
 
 export default function StudentNav({
-  studentName = "Zainab Khan",
-  admissionNo = "STD-2024-001",
-  className = "Class 5-A",
+  studentName = "Student",
+  admissionNo = "",
+  className = "",
 }: StudentNavProps) {
   const pathname = usePathname();
   const router = useRouter();

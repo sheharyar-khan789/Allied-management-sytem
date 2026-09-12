@@ -1,4 +1,4 @@
-﻿export type UserRole = "ADMIN" | "TEACHER" | "STUDENT";
+export type UserRole = "ADMIN" | "TEACHER" | "STUDENT";
 export type UserStatus = "ACTIVE" | "INACTIVE" | "SUSPENDED";
 
 export interface School {
@@ -49,6 +49,8 @@ export interface StudentDoc {
   guardianPhone: string;
   guardianRelation: string;
   bloodGroup?: string;
+  cnic?: string;
+  bForm?: string;
   monthlyFee: number;
   discount: number;
   createdAt: string;

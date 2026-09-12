@@ -57,9 +57,19 @@ const localStore: {
   auditLogs: new Map(),
 };
 
-// Populate seed in fallback memory
+export function assertProductionDbReady() {
+  if (process.env.NODE_ENV === "production" && !hasAdminCredentials) {
+    throw new Error(
+      "Critical: Cloud Firestore database connection not initialized. Server-side Firebase credentials (FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY) must be properly configured in production environment."
+    );
+  }
+}
+
+// Populate seed in fallback memory ONLY during non-production development
 const DEFAULT_SCHOOL = "allied-school-main";
 const now = new Date().toISOString();
+
+if (process.env.NODE_ENV !== "production") {
 
 localStore.schools.set(DEFAULT_SCHOOL, {
   id: DEFAULT_SCHOOL,
@@ -238,6 +248,7 @@ localStore.exams.set("ex-mid-2025", {
   createdAt: now,
   updatedAt: now,
 });
+}
 
 // ---------------------------------------------------------------------------
 // AUDIT LOG
@@ -331,6 +342,7 @@ export async function updateSchoolSettingsServer(settings: SchoolSettingsDoc): P
 // USERS
 // ---------------------------------------------------------------------------
 export async function getUserByEmailServer(email: string): Promise<UserProfile | null> {
+  assertProductionDbReady();
   const norm = email.toLowerCase().trim();
   if (hasAdminCredentials) {
     try {
@@ -339,7 +351,10 @@ export async function getUserByEmailServer(email: string): Promise<UserProfile |
         const d = snap.docs[0];
         return { uid: d.id, ...d.data() } as UserProfile;
       }
-    } catch {}
+      if (process.env.NODE_ENV === "production") return null;
+    } catch (e) {
+      if (process.env.NODE_ENV === "production") throw e;
+    }
   }
 
   for (const u of localStore.users.values()) {
@@ -349,11 +364,15 @@ export async function getUserByEmailServer(email: string): Promise<UserProfile |
 }
 
 export async function getUserByIdServer(uid: string): Promise<UserProfile | null> {
+  assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
       const doc = await adminDb.collection("users").doc(uid).get();
       if (doc.exists) return { uid: doc.id, ...doc.data() } as UserProfile;
-    } catch {}
+      if (process.env.NODE_ENV === "production") return null;
+    } catch (e) {
+      if (process.env.NODE_ENV === "production") throw e;
+    }
   }
 
   for (const u of localStore.users.values()) {
@@ -379,6 +398,7 @@ export async function getStudentsServer(
   classId?: string,
   search?: string
 ): Promise<StudentDoc[]> {
+  assertProductionDbReady();
   let students: StudentDoc[] = [];
   if (hasAdminCredentials) {
     try {
@@ -386,10 +406,12 @@ export async function getStudentsServer(
       if (classId && classId !== "ALL") ref = ref.where("classId", "==", classId);
       const snap = await ref.get();
       students = snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentDoc));
-    } catch {}
+    } catch (e) {
+      if (process.env.NODE_ENV === "production") throw e;
+    }
   }
 
-  if (students.length === 0) {
+  if (students.length === 0 && process.env.NODE_ENV !== "production") {
     students = Array.from(localStore.students.values()).filter((s) => s.schoolId === schoolId);
     if (classId && classId !== "ALL") {
       students = students.filter((s) => s.classId === classId);
@@ -409,6 +431,7 @@ export async function getStudentsServer(
 }
 
 export async function getStudentByIdServer(schoolId: string, studentId: string): Promise<StudentDoc | null> {
+  assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
       const doc = await adminDb.collection("students").doc(studentId).get();
@@ -416,11 +439,35 @@ export async function getStudentByIdServer(schoolId: string, studentId: string):
         const data = { id: doc.id, ...doc.data() } as StudentDoc;
         if (data.schoolId === schoolId) return data;
       }
-    } catch {}
+      if (process.env.NODE_ENV === "production") return null;
+    } catch (e) {
+      if (process.env.NODE_ENV === "production") throw e;
+    }
   }
 
   const local = localStore.students.get(studentId);
   if (local && local.schoolId === schoolId) return local;
+  return null;
+}
+
+export async function getStudentByUserIdServer(schoolId: string, userId: string): Promise<StudentDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb.collection("students")
+        .where("schoolId", "==", schoolId)
+        .where("userId", "==", userId)
+        .limit(1)
+        .get();
+      if (!snap.empty) {
+        const d = snap.docs[0];
+        return { id: d.id, ...d.data() } as StudentDoc;
+      }
+    } catch {}
+  }
+
+  for (const st of localStore.students.values()) {
+    if (st.schoolId === schoolId && st.userId === userId) return st;
+  }
   return null;
 }
 

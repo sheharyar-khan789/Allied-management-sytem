@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getLockedRecordsServer,
@@ -8,7 +8,7 @@ import {
 
 export async function GET(req: NextRequest) {
   try {
-    const authUser = await requireAuth(req);
+    const authUser = await requireAuth(req, ["ADMIN"]);
     const records = await getLockedRecordsServer(authUser.schoolId);
 
     const formatted = records.map((r) => ({
@@ -16,8 +16,8 @@ export async function GET(req: NextRequest) {
       recordType: r.type,
       studentId: r.studentId,
       studentName: r.studentName || "Student",
-      admissionNo: r.admissionNo || "STD-2024",
-      className: "Class 10-A",
+      admissionNo: r.admissionNo || "",
+      className: (r as any).className || "Academic Record",
       sessionName: r.academicYear || "2024-2025",
       referenceNo: `ALS-TRN-${r.id.toUpperCase()}`,
       certifiedDate: r.sealedAt,
