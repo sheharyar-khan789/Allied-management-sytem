@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
@@ -53,24 +53,47 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      // First try via client/server auth API bridge
+      let idToken: string | undefined;
+
+      // 1. Attempt client Firebase Auth if live credentials exist
+      try {
+        const prof = await login(identifier, password);
+        if (prof) {
+          const { auth } = await import("@/lib/firebase/config");
+          if (auth.currentUser) {
+            idToken = await auth.currentUser.getIdToken();
+          }
+        }
+      } catch (clientErr: any) {
+        // Fallback to server auth bridge (handles server-side REST auth or dev fallback)
+      }
+
+      // 2. Establish server session via API bridge
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier, password, role }),
+        body: JSON.stringify({ identifier, password, idToken, role }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || "Login failed. Please verify credentials.");
+      let data: any = {};
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        try {
+          data = await res.json();
+        } catch {
+          data = {};
+        }
+      } else {
+        await res.text().catch(() => "");
+        throw new Error(
+          res.status >= 500
+            ? "Authentication service is currently unavailable. Please try again later."
+            : `Authentication server returned unexpected response (${res.status}).`
+        );
       }
 
-      // Sync with client auth context
-      try {
-        await login(identifier, password);
-      } catch (fbErr) {
-        // Fallback for demo users
+      if (!res.ok) {
+        throw new Error(data?.error || "Login failed. Please verify credentials.");
       }
 
       router.push(data.redirectUrl || (role === "admin" ? "/admin" : role === "teacher" ? "/teacher" : "/student"));

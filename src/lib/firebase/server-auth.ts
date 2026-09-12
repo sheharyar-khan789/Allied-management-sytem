@@ -1,11 +1,30 @@
-﻿import { cookies } from "next/headers";
+import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify, SignJWT } from "jose";
 import { UserRole } from "./types";
 
-const SECRET_KEY = new TextEncoder().encode(
-  process.env.JWT_SECRET || "allied-school-firebase-jwt-secure-key-2025"
-);
+function getJwtSecret(): Uint8Array {
+  const secret = process.env.JWT_SECRET;
+  const isProd = process.env.NODE_ENV === "production";
+
+  if (isProd) {
+    if (!secret || secret.trim().length < 32) {
+      throw new Error(
+        "Critical Security Configuration Error: JWT_SECRET environment variable is missing or insecurely short in production (minimum 32 characters required). Refusing to sign or verify tokens."
+      );
+    }
+    return new TextEncoder().encode(secret.trim());
+  }
+
+  // Non-production local development fallback only
+  if (!secret || secret.trim().length === 0) {
+    return new TextEncoder().encode("allied-school-dev-only-local-secret-key-32-chars-min");
+  }
+
+  return new TextEncoder().encode(secret.trim());
+}
+
+const SECRET_KEY = getJwtSecret();
 
 export interface AuthenticatedUser {
   uid: string;

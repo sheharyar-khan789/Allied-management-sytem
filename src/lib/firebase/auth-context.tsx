@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { createContext, useContext, useEffect, useState } from "react";
 import {
@@ -47,16 +47,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (snap.exists()) {
             const prof = snap.data() as UserProfile;
             setProfile(prof);
-            // Set cookie for Next.js server components / middleware
-            document.cookie = `session_user=${encodeURIComponent(
-              JSON.stringify({
-                uid: prof.uid,
-                email: prof.email,
-                role: prof.role,
-                schoolId: prof.schoolId,
-                name: prof.name,
-              })
-            )}; path=/; max-age=604800; SameSite=Lax`;
+            // Client state managed in AuthContext; server session managed via allied_session HttpOnly cookie
+            document.cookie = "session_user=; path=/; max-age=0";
           } else {
             setProfile(null);
           }
@@ -84,15 +76,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     const prof = snap.data() as UserProfile;
     setProfile(prof);
-    document.cookie = `session_user=${encodeURIComponent(
-      JSON.stringify({
-        uid: prof.uid,
-        email: prof.email,
-        role: prof.role,
-        schoolId: prof.schoolId,
-        name: prof.name,
-      })
-    )}; path=/; max-age=604800; SameSite=Lax`;
+    document.cookie = "session_user=; path=/; max-age=0";
     return prof;
   };
 
@@ -166,19 +150,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     await setDoc(doc(db, "users", uid), profileData);
     setProfile(profileData);
-
-    document.cookie = `session_user=${encodeURIComponent(
-      JSON.stringify({
-        uid: profileData.uid,
-        email: profileData.email,
-        role: profileData.role,
-        schoolId: profileData.schoolId,
-        name: profileData.name,
-      })
-    )}; path=/; max-age=604800; SameSite=Lax`;
+    document.cookie = "session_user=; path=/; max-age=0";
   };
 
   const logout = async (): Promise<void> => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {}
     await fbSignOut(auth);
     setUser(null);
     setProfile(null);
