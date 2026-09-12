@@ -1,0 +1,220 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -------------------------------------------------------------
+    // Helper Functions
+    // -------------------------------------------------------------
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getUserRole() {
+      return isAuthenticated() ? getUserData().role : null;
+    }
+
+    function getUserSchoolId() {
+      return isAuthenticated() ? getUserData().schoolId : null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'ADMIN';
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && getUserRole() == 'TEACHER';
+    }
+
+    function isStudent() {
+      return isAuthenticated() && getUserRole() == 'STUDENT';
+    }
+
+    function isSameSchool(schoolId) {
+      return isAuthenticated() && (getUserSchoolId() == schoolId || isAdmin());
+    }
+
+    // -------------------------------------------------------------
+    // Schools Collection
+    // -------------------------------------------------------------
+    match /schools/{schoolId} {
+      allow read: if isAuthenticated() && (getUserSchoolId() == schoolId || resource == null);
+      allow create: if isAuthenticated() && request.resource.data.id == schoolId && (getUserSchoolId() == null || getUserSchoolId() == schoolId);
+      allow update, delete: if isAdmin() && getUserSchoolId() == schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Users Collection
+    // -------------------------------------------------------------
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId)
+      );
+      allow create: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        isAdmin()
+      );
+      allow update: if isAuthenticated() && (
+        (request.auth.uid == userId && request.resource.data.role == resource.data.role && request.resource.data.schoolId == resource.data.schoolId) ||
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId)
+      );
+      allow delete: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Students Collection
+    // -------------------------------------------------------------
+    match /students/{studentId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.userId == request.auth.uid)
+      );
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Teachers Collection
+    // -------------------------------------------------------------
+    match /teachers/{teacherId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Classes Collection
+    // -------------------------------------------------------------
+    match /classes/{classId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Subjects Collection
+    // -------------------------------------------------------------
+    match /subjects/{subjectId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Attendance Collection
+    // -------------------------------------------------------------
+    match /attendance/{attendanceId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId)
+      );
+      allow create, update: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == request.resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == request.resource.data.schoolId)
+      );
+      allow delete: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Fee Challans Collection
+    // -------------------------------------------------------------
+    match /feeChallans/{challanId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId)
+      );
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Payments Collection
+    // -------------------------------------------------------------
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId)
+      );
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Exams Collection
+    // -------------------------------------------------------------
+    match /exams/{examId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Exam Schedules Collection
+    // -------------------------------------------------------------
+    match /examSchedules/{scheduleId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Exam Results Collection
+    // -------------------------------------------------------------
+    match /examResults/{resultId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId)
+      );
+      allow create, update: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == request.resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == request.resource.data.schoolId)
+      );
+      allow delete: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Student Observations Collection
+    // -------------------------------------------------------------
+    match /studentObservations/{obsId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId)
+      );
+      allow create, update: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == request.resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == request.resource.data.schoolId)
+      );
+      allow delete: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Locked Records Collection
+    // -------------------------------------------------------------
+    match /lockedRecords/{recordId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId)
+      );
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Audit Logs Collection (Immutable Trail)
+    // -------------------------------------------------------------
+    match /auditLogs/{logId} {
+      allow read: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+      allow create: if isAuthenticated() && request.resource.data.schoolId == getUserSchoolId();
+      allow update, delete: if false; // Immutable
+    }
+
+    // -------------------------------------------------------------
+    // School Settings Collection
+    // -------------------------------------------------------------
+    match /schoolSettings/{settingsId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow create, update: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+      allow delete: if false;
+    }
+  }
+}

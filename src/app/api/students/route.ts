@@ -1,0 +1,187 @@
+﻿import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/lib/firebase/server-auth";
+import {
+  getStudentsServer,
+  saveStudentServer,
+  createUserServer,
+  saveFeeChallanServer,
+  createAuditLogServer,
+  getClassesServer
+} from "@/lib/firebase/server-db";
+import { StudentDoc, FeeChallanDoc } from "@/lib/firebase/types";
+
+export async function GET(req: NextRequest) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
+    const { searchParams } = new URL(req.url);
+    const search = searchParams.get("search") || "";
+    const classId = searchParams.get("classId") || undefined;
+
+    const students = await getStudentsServer(authUser.schoolId, classId, search);
+
+    const mapped = students.map((st) => ({
+      id: st.id,
+      userId: st.userId,
+      admissionNumber: st.admissionNo,
+      rollNumber: st.rollNo,
+      firstName: st.fullName.split(" ")[0] || st.fullName,
+      lastName: st.fullName.split(" ").slice(1).join(" ") || "",
+      fullName: st.fullName,
+      gender: st.gender,
+      dob: st.dob,
+      bloodGroup: st.bloodGroup || "B+",
+      cnicBForm: "-",
+      contactNumber: st.phone,
+      email: `${st.id}@alliedschool.edu`,
+      guardianName: st.guardianName,
+      guardianRelation: st.guardianRelation,
+      guardianPhone: st.guardianPhone,
+      guardianEmail: "",
+      guardianOccupation: "Guardian",
+      status: st.status,
+      classId: st.classId,
+      className: st.className || "Class 10-A",
+      attendanceRate: 94,
+      feeStatus: "PAID",
+      admissionDate: st.createdAt,
+    }));
+
+    return NextResponse.json({ success: true, students: mapped });
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    console.error("Students GET error:", error);
+    return NextResponse.json(
+      { error: "Failed to retrieve students list." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN"]);
+    const body = await req.json();
+
+    const {
+      firstName,
+      lastName,
+      rollNumber,
+      gender,
+      dob,
+      bloodGroup,
+      contactNumber,
+      guardianName,
+      guardianRelation,
+      guardianPhone,
+      classId,
+    } = body;
+
+    if (!firstName || !lastName || !classId || !guardianName || !guardianPhone) {
+      return NextResponse.json(
+        { error: "First Name, Last Name, Class, and Guardian details are required." },
+        { status: 400 }
+      );
+    }
+
+    const existingStudents = await getStudentsServer(authUser.schoolId);
+    const count = existingStudents.length + 1;
+    const admissionNo = `STD-2024-${count.toString().padStart(3, "0")}`;
+    const fullName = `${firstName.trim()} ${lastName.trim()}`;
+    const studentId = `std-${count}`;
+    const userUid = `user_std_${count}`;
+
+    // Look up class name
+    const classes = await getClassesServer(authUser.schoolId);
+    const targetClass = classes.find((c) => c.id === classId);
+    const className = targetClass ? `${targetClass.name}-${targetClass.section}` : "Class Cohort";
+
+    const studentDoc: StudentDoc = {
+      id: studentId,
+      schoolId: authUser.schoolId,
+      userId: userUid,
+      admissionNo,
+      fullName,
+      fatherName: guardianName,
+      gender: gender === "Male" ? "MALE" : "FEMALE",
+      dob: dob || "2010-01-01",
+      phone: contactNumber || guardianPhone,
+      address: "Campus District",
+      classId,
+      className,
+      section: targetClass?.section || "A",
+      rollNo: rollNumber || count.toString(),
+      status: "ACTIVE",
+      guardianName,
+      guardianPhone,
+      guardianRelation: guardianRelation || "Father",
+      bloodGroup: bloodGroup || "B+",
+      monthlyFee: 6000,
+      discount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await saveStudentServer(studentDoc);
+
+    // Create User record in Firestore
+    await createUserServer({
+      uid: userUid,
+      name: fullName,
+      email: `student.${count}@alliedschool.edu`,
+      role: "STUDENT",
+      schoolId: authUser.schoolId,
+      studentId: studentId,
+      status: "ACTIVE",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Create Initial Fee Challan
+    const challanDoc: FeeChallanDoc = {
+      id: `ch-adm-${count}`,
+      schoolId: authUser.schoolId,
+      studentId: studentId,
+      studentName: fullName,
+      admissionNo,
+      classId,
+      className,
+      challanNo: `CHL-2024-ADM-${count.toString().padStart(4, "0")}`,
+      month: "September",
+      year: 2024,
+      issueDate: new Date().toISOString().split("T")[0],
+      dueDate: "2024-09-30",
+      tuitionFee: 5000,
+      admissionFee: 2000,
+      examFee: 0,
+      otherFee: 500,
+      discount: 0,
+      totalExpected: 7500,
+      paidAmount: 0,
+      balanceAmount: 7500,
+      status: "PENDING",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    await saveFeeChallanServer(challanDoc);
+
+    await createAuditLogServer(
+      authUser.schoolId,
+      authUser.uid,
+      authUser.email,
+      authUser.role,
+      "ENROLL_STUDENT",
+      "STUDENT",
+      studentId,
+      `Enrolled student ${fullName} (${admissionNo}) into ${className}.`
+    );
+
+    return NextResponse.json({ success: true, student: studentDoc }, { status: 201 });
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    console.error("Student enrollment error:", error);
+    return NextResponse.json(
+      { error: "Failed to enroll student." },
+      { status: 500 }
+    );
+  }
+}
