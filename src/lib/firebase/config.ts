@@ -1,4 +1,4 @@
-﻿import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
+import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
 import { getAuth, Auth, connectAuthEmulator } from "firebase/auth";
 import { getFirestore, Firestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getStorage, FirebaseStorage, connectStorageEmulator } from "firebase/storage";
@@ -15,17 +15,20 @@ import { initializeAppCheck, ReCaptchaV3Provider, AppCheck } from "firebase/app-
 // already used server-side for the Admin SDK (see assertProductionDbReady in server-db.ts).
 // Local development keeps the placeholder fallback so a fresh clone still runs before Firebase
 // is configured.
-const REQUIRED_CLIENT_ENV_VARS = [
-  "NEXT_PUBLIC_FIREBASE_API_KEY",
-  "NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN",
-  "NEXT_PUBLIC_FIREBASE_PROJECT_ID",
-  "NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET",
-  "NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
-  "NEXT_PUBLIC_FIREBASE_APP_ID",
-] as const;
+const clientEnv = {
+  NEXT_PUBLIC_FIREBASE_API_KEY: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  NEXT_PUBLIC_FIREBASE_PROJECT_ID: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  NEXT_PUBLIC_FIREBASE_APP_ID: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+};
 
 if (process.env.NODE_ENV === "production") {
-  const missing = REQUIRED_CLIENT_ENV_VARS.filter((key) => !process.env[key]);
+  const missing = Object.entries(clientEnv)
+    .filter(([, val]) => !val)
+    .map(([key]) => key);
+
   if (missing.length > 0) {
     throw new Error(
       `Critical: Firebase client is not configured for production. Missing environment ` +
@@ -36,12 +39,12 @@ if (process.env.NODE_ENV === "production") {
 }
 
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "AIzaSyDummyApiKeyForLocalDevAndTest123456",
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "allied-school-system.firebaseapp.com",
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "allied-school-system",
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "allied-school-system.appspot.com",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "102938475612",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "1:102938475612:web:a1b2c3d4e5f6g7h8",
+  apiKey: clientEnv.NEXT_PUBLIC_FIREBASE_API_KEY || "AIzaSyDummyApiKeyForLocalDevAndTest123456",
+  authDomain: clientEnv.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "allied-school-system.firebaseapp.com",
+  projectId: clientEnv.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "allied-school-system",
+  storageBucket: clientEnv.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "allied-school-system.appspot.com",
+  messagingSenderId: clientEnv.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "102938475612",
+  appId: clientEnv.NEXT_PUBLIC_FIREBASE_APP_ID || "1:102938475612:web:a1b2c3d4e5f6g7h8",
   measurementId: process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID || "G-ALLIEDSCH01"
 };
 
