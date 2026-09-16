@@ -1,0 +1,54 @@
+diff --git a/node_modules/jwks-rsa/src/integrations/passport.js b/node_modules/jwks-rsa/src/integrations/passport.js
+index 79d75da..a4096c0 100644
+--- a/node_modules/jwks-rsa/src/integrations/passport.js
++++ b/node_modules/jwks-rsa/src/integrations/passport.js
+@@ -1,4 +1,7 @@
+-const jose = require('jose');
++// lazy require
++let jose;
++function getJose() { if (!jose) jose = require('jose'); return jose; }
++
+ const { ArgumentError } = require('../errors');
+ const { JwksClient } = require('../JwksClient');
+ const supportedAlg = require('./config');
+@@ -31,8 +34,8 @@ module.exports.passportJwtSecret = function (options) {
+     let decoded;
+     try {
+       decoded = {
+-        payload: jose.decodeJwt(rawJwtToken),
+-        header: jose.decodeProtectedHeader(rawJwtToken)
++        payload: getJose().decodeJwt(rawJwtToken),
++        header: getJose().decodeProtectedHeader(rawJwtToken)
+       };
+     } catch (err) {
+       decoded = null;
+diff --git a/node_modules/jwks-rsa/src/utils.js b/node_modules/jwks-rsa/src/utils.js
+index ef3ffb5..60aa412 100644
+--- a/node_modules/jwks-rsa/src/utils.js
++++ b/node_modules/jwks-rsa/src/utils.js
+@@ -1,4 +1,7 @@
+-const jose = require('jose');
++// lazy require
++let jose;
++function getJose() { if (!jose) jose = require('jose'); return jose; }
++
+ const JwksError = require('./errors/JwksError');
+ 
+ function resolveAlg(jwk) {
+@@ -41,14 +44,14 @@ async function retrieveSigningKeys(jwks) {
+ 
+   for (const jwk of jwks) {
+     try {
+-      const key = await jose.importJWK({ ...jwk, ext: true }, resolveAlg(jwk));
++      const key = await getJose().importJWK({ ...jwk, ext: true }, resolveAlg(jwk));
+       if (key.type !== 'public') {
+         continue;
+       }
+       let getSpki;
+       switch (key[Symbol.toStringTag]) {
+         case 'CryptoKey': {
+-          const spki = await jose.exportSPKI(key);
++          const spki = await getJose().exportSPKI(key);
+           getSpki = () => spki;
+           break;
+         }

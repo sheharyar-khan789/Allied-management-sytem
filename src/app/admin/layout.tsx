@@ -2,7 +2,7 @@
 import AdminShell from "@/components/AdminShell";
 import { getAuthenticatedUser } from "@/lib/firebase/server-auth";
 import { getStudentsServer, getTeachersServer, getSchoolSettingsServer } from "@/lib/firebase/server-db";
-
+export const dynamic = 'force-dynamic';
 export default async function AdminLayout({
   children,
 }: {

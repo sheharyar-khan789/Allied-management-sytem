@@ -6,6 +6,7 @@ const isProd = process.env.NODE_ENV === "production";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   outputFileTracingRoot: path.resolve(__dirname),
+  serverExternalPackages: ["jose", "jwks-rsa"],
   images: {
     remotePatterns: [
       {
