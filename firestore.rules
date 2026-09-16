@@ -1,0 +1,272 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -------------------------------------------------------------
+    // Helper Functions
+    // -------------------------------------------------------------
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getUserRole() {
+      return isAuthenticated() ? getUserData().role : null;
+    }
+
+    function getUserSchoolId() {
+      return isAuthenticated() ? getUserData().schoolId : null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == 'ADMIN';
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && getUserRole() == 'TEACHER';
+    }
+
+    function isStudent() {
+      return isAuthenticated() && getUserRole() == 'STUDENT';
+    }
+
+    function isParent() {
+      return isAuthenticated() && getUserRole() == 'PARENT';
+    }
+
+    function studentData(studentId) {
+      return get(/databases/$(database)/documents/students/$(studentId)).data;
+    }
+
+    function isParentOfStudentResource() {
+      return isParent()
+        && getUserSchoolId() == resource.data.schoolId
+        && (
+          (resource.data.parentUserIds is list && request.auth.uid in resource.data.parentUserIds)
+          || (
+            resource.data.guardianEmail is string
+            && resource.data.guardianEmail.lower() == getUserData().email.lower()
+          )
+        );
+    }
+
+    function isParentOfStudentId(studentId) {
+      return isParent()
+        && exists(/databases/$(database)/documents/students/$(studentId))
+        && getUserSchoolId() == studentData(studentId).schoolId
+        && (
+          (studentData(studentId).parentUserIds is list && request.auth.uid in studentData(studentId).parentUserIds)
+          || (
+            studentData(studentId).guardianEmail is string
+            && studentData(studentId).guardianEmail.lower() == getUserData().email.lower()
+          )
+        );
+    }
+
+    function isSameSchool(schoolId) {
+      return isAuthenticated() && (getUserSchoolId() == schoolId || isAdmin());
+    }
+
+    // -------------------------------------------------------------
+    // Defense-in-depth: All mutations (create, update, delete) are
+    // executed exclusively server-side through Next.js API routes using
+    // Firebase Admin SDK (which bypasses security rules). Direct
+    // client-side writes are strictly disallowed across all collections
+    // to prevent bypassing API validation, rate limiting, and RBAC.
+    // -------------------------------------------------------------
+
+    // -------------------------------------------------------------
+    // Schools Collection
+    // -------------------------------------------------------------
+    match /schools/{schoolId} {
+      allow read: if isAuthenticated() && (getUserSchoolId() == schoolId || resource == null);
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Users Collection
+    // -------------------------------------------------------------
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId)
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Students Collection
+    // -------------------------------------------------------------
+    match /students/{studentId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && (resource.data.userId == request.auth.uid || resource.data.id == getUserData().studentId)) ||
+        isParentOfStudentResource()
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Teachers Collection
+    // -------------------------------------------------------------
+    match /teachers/{teacherId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Classes Collection
+    // -------------------------------------------------------------
+    match /classes/{classId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Subjects Collection
+    // -------------------------------------------------------------
+    match /subjects/{subjectId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Timetables Collection
+    // -------------------------------------------------------------
+    match /timetables/{entryId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Attendance Collection
+    // -------------------------------------------------------------
+    match /attendance/{attendanceId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Fee Challans Collection
+    // -------------------------------------------------------------
+    match /feeChallans/{challanId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Payments Collection
+    // -------------------------------------------------------------
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Exams Collection
+    // -------------------------------------------------------------
+    match /exams/{examId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Exam Schedules Collection
+    // -------------------------------------------------------------
+    match /examSchedules/{scheduleId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Exam Results Collection
+    // -------------------------------------------------------------
+    match /examResults/{resultId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Student Observations Collection
+    // -------------------------------------------------------------
+    match /studentObservations/{obsId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId)
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Locked Records Collection
+    // -------------------------------------------------------------
+    match /lockedRecords/{recordId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId)
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Audit Logs Collection (Immutable Trail)
+    // -------------------------------------------------------------
+    match /auditLogs/{logId} {
+      allow read: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+      allow write: if false; // Immutable
+    }
+
+    // -------------------------------------------------------------
+    // School Settings Collection
+    // -------------------------------------------------------------
+    match /schoolSettings/{settingsId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Announcements Collection
+    // -------------------------------------------------------------
+    match /announcements/{announcementId} {
+      allow read: if isAuthenticated()
+        && getUserSchoolId() == resource.data.schoolId
+        && (
+          isAdmin()
+          || (
+            resource.data.status == 'PUBLISHED'
+            && (
+              resource.data.audience == 'EVERYONE'
+              || (resource.data.audience == 'TEACHERS' && isTeacher())
+              || (resource.data.audience == 'STUDENTS' && isStudent())
+              || (resource.data.audience == 'PARENTS' && isParent())
+            )
+          )
+        );
+      allow write: if false;
+    }
+  }
+}

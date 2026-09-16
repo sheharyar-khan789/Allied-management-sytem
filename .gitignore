@@ -1,0 +1,13 @@
+node_modules/
+.next/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+
+stitch_school_management_saas_system/
+stitch_school_management_saas_system (3).zip
+
+.env
+.env.local
+.env.*.local
