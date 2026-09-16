@@ -60,13 +60,9 @@ function generateNonce(): string {
  *    Also allows fonts.googleapis.com for the Google Fonts stylesheet actually loaded in
  *    src/app/layout.tsx.
  *  - font-src: fonts.gstatic.com — the actual font files Google Fonts serves.
- *  - connect-src: identitytoolkit.googleapis.com + securetoken.googleapis.com only — the
- *    Firebase Auth REST endpoints genuinely used by signInWithEmailAndPassword
- *    (src/lib/firebase/auth-context.tsx). Client-side Firestore/Storage are initialized but
- *    never actually queried anywhere reachable in production (verified by grep — the only
- *    other importer of the client SDK config was the already-removed dead
- *    firestore-service.ts), so those broader Google Cloud domains are deliberately not
- *    included.
+ *  - connect-src: identitytoolkit.googleapis.com + securetoken.googleapis.com +
+ *    firestore.googleapis.com — Firebase Auth REST endpoints and Firestore WebChannel
+ *    endpoint genuinely used by client SDK.
  *  - img-src: 'self' + data: + https: — matches the app's own next.config.ts
  *    images.remotePatterns, which already allows any https host for next/image.
  *  - frame-ancestors 'none' reinforces the existing X-Frame-Options: DENY.
@@ -86,7 +82,7 @@ function buildCsp(nonce: string): string {
     `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`,
     `font-src 'self' https://fonts.gstatic.com`,
     `img-src 'self' data: https:`,
-    `connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com`,
+    `connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com`,
     `frame-ancestors 'none'`,
     `base-uri 'self'`,
     `form-action 'self'`,
