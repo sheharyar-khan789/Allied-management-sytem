@@ -11,3 +11,7 @@ stitch_school_management_saas_system (3).zip
 .env
 .env.local
 .env.*.local
+
+.env
+.env.local
+.env.*.local
