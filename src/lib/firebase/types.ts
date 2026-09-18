@@ -57,6 +57,15 @@ export interface StudentDoc {
   bForm?: string;
   monthlyFee: number;
   discount: number;
+  photoUrl?: string;
+  documents?: {
+    id: string;
+    name: string;
+    type: "ID_CARD" | "CERTIFICATE" | "ADMISSION_FORM" | "OTHER";
+    url: string;
+    uploadedAt: string;
+    size?: number;
+  }[];
   createdAt: string;
   updatedAt: string;
 }
@@ -72,12 +81,14 @@ export interface TeacherDoc {
   designation: string;
   department: string;
   qualification: string;
+  photoUrl?: string;
   joiningDate?: string;
   status: "ACTIVE" | "INACTIVE";
   assignedClassIds: string[];
   assignedSubjectIds: string[];
   weeklyLoad: number;
   salary?: number;
+  baseSalary?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -171,6 +182,7 @@ export interface FeeChallanDoc {
   paidAmount: number;
   balanceAmount: number;
   status: FeeStatus;
+  receiptUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -186,6 +198,7 @@ export interface PaymentDoc {
   paymentDate: string;
   paymentMode: "CASH" | "BANK_TRANSFER" | "ONLINE" | "CHEQUE";
   transactionRef?: string;
+  receiptUrl?: string;
   notes?: string;
   collectedBy: string;
   createdAt: string;
@@ -200,6 +213,7 @@ export interface ExamDoc {
   startDate: string;
   endDate: string;
   status: "UPCOMING" | "ONGOING" | "COMPLETED" | "PUBLISHED";
+  resultSheetUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -237,6 +251,7 @@ export interface ExamResultDoc {
   grade: string;
   gpa: number;
   status: "PASS" | "FAIL";
+  cardUrl?: string;
   remarks?: string;
   evaluatedBy: string;
   createdAt: string;
@@ -294,6 +309,7 @@ export interface SchoolSettingsDoc {
   phone: string;
   email: string;
   website?: string;
+  logoUrl?: string;
   principalName: string;
   academicYear: string;
   taxRegistration?: string;
@@ -320,6 +336,24 @@ export interface AnnouncementDoc {
   publishedAt?: string;
   createdBy: string;
   createdByName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PayrollStatus = "PAID" | "UNPAID";
+
+export interface PayrollRecordDoc {
+  id: string; // schoolId_teacherId_year_month or payrec-uuid
+  schoolId: string;
+  teacherId: string;
+  teacherName?: string;
+  employeeId?: string;
+  month: string; // e.g., "September" or "09"
+  year: number; // e.g., 2026
+  amount: number;
+  status: PayrollStatus;
+  paidDate?: string; // YYYY-MM-DD
+  notes?: string;
   createdAt: string;
   updatedAt: string;
 }

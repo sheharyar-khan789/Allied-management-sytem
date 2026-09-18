@@ -53,6 +53,16 @@ export async function POST(req: NextRequest) {
     const password = (body.password || "").toString();
     const schoolName = (body.schoolName || "").toString().trim();
     const idToken = (body.idToken || "").toString();
+    const registrationSecret = (body.registrationSecret || req.headers.get("x-registration-secret") || "").toString().trim();
+
+    // Institutional registration gate: require the shared registration secret code
+    const expectedSecret = (process.env.SCHOOL_REGISTRATION_SECRET || "").trim();
+    if (!expectedSecret || registrationSecret !== expectedSecret) {
+      return NextResponse.json(
+        { error: "Invalid or missing registration authorization secret code." },
+        { status: 403, headers: { "Content-Type": "application/json" } }
+      );
+    }
 
     if (!fullName || !email || (!password && !idToken) || !schoolName) {
       return NextResponse.json(

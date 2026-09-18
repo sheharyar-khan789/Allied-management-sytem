@@ -4,6 +4,8 @@ import { getAuth } from "firebase-admin/auth";
 import type { Auth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import type { Firestore } from "firebase-admin/firestore";
+import { getStorage } from "firebase-admin/storage";
+import type { Storage } from "firebase-admin/storage";
 
 let adminApp: App;
 
@@ -52,4 +54,18 @@ export const hasAdminCredentials =
 
 export const adminAuth: Auth = getAuth(adminApp);
 export const adminDb: Firestore = getFirestore(adminApp);
+export const adminStorage: Storage = getStorage(adminApp);
+
+const resolvedBucketName =
+  process.env.FIREBASE_STORAGE_BUCKET ||
+  process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ||
+  `${process.env.FIREBASE_PROJECT_ID || process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "allied-school-system"}.firebasestorage.app`;
+
+export const adminBucket = adminStorage.bucket(resolvedBucketName);
+
+try {
+  adminDb.settings({ ignoreUndefinedProperties: true });
+} catch {
+  // settings already frozen or applied
+}
 export { adminApp };

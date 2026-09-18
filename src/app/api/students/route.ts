@@ -73,6 +73,8 @@ export async function GET(req: NextRequest) {
       attendanceRate: 0,
       feeStatus: "CLEAR",
       admissionDate: st.createdAt,
+      photoUrl: st.photoUrl || "",
+      documents: st.documents || [],
     }));
 
     return NextResponse.json({ success: true, students: mapped });
@@ -216,6 +218,8 @@ export async function POST(req: NextRequest) {
       bloodGroup: bloodGroup || "Not Specified",
       monthlyFee: Number(body.monthlyFee) > 0 ? Number(body.monthlyFee) : 0,
       discount: Number(body.discount) || 0,
+      photoUrl: body.photoUrl || undefined,
+      documents: Array.isArray(body.documents) ? body.documents : [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

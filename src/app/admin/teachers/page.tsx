@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import FileUpload from "@/components/FileUpload";
 
 // Every field starts empty. These are real personnel records: the form previously opened
 // pre-filled with an invented designation ("Senior Science & Math Educator"), qualification
@@ -17,6 +18,8 @@ const EMPTY_TEACHER_FORM = {
   specialization: "",
   phone: "",
   email: "",
+  photoUrl: "",
+  baseSalary: "",
 };
 
 export default function TeachersManagementPage() {
@@ -205,6 +208,7 @@ export default function TeachersManagementPage() {
                   <th className="py-3 px-4 font-bold">Specialization</th>
                   <th className="py-3 px-4 font-bold">Contact & Email</th>
                   <th className="py-3 px-4 font-bold">Workload</th>
+                  <th className="py-3 px-4 font-bold">Base Salary</th>
                   <th className="py-3 px-4 font-bold">Status</th>
                   <th className="py-3 px-4 font-bold text-right">Actions</th>
                 </tr>
@@ -214,10 +218,21 @@ export default function TeachersManagementPage() {
                   <tr key={t.id} className="hover:bg-surface-container-low/40 transition-colors">
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-xs shrink-0">
-                          {t.firstName.charAt(0)}
-                          {t.lastName.charAt(0)}
-                        </div>
+                        {t.photoUrl ? (
+                          <img
+                            src={t.photoUrl}
+                            alt={t.fullName}
+                            className="w-8 h-8 rounded-full object-cover border border-surface-container-high shrink-0"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLElement).style.display = "none";
+                            }}
+                          />
+                        ) : (
+                          <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-xs shrink-0">
+                            {t.firstName.charAt(0)}
+                            {t.lastName.charAt(0)}
+                          </div>
+                        )}
                         <div className="flex flex-col min-w-0">
                           <Link
                             href={`/admin/teachers/${t.id}`}
@@ -248,6 +263,10 @@ export default function TeachersManagementPage() {
                       <span className="px-2 py-0.5 rounded bg-surface-container font-semibold text-secondary">
                         {t.taughtSubjectsCount} Courses
                       </span>
+                    </td>
+
+                    <td className="py-3 px-4 font-semibold text-on-surface">
+                      {t.baseSalary ? `Rs. ${Number(t.baseSalary).toLocaleString()}` : "—"}
                     </td>
 
                     <td className="py-3 px-4">
@@ -301,6 +320,18 @@ export default function TeachersManagementPage() {
             )}
 
             <form onSubmit={handleAddTeacher} className="space-y-3 text-xs">
+              <div className="pb-2 border-b border-surface-container-low">
+                <FileUpload
+                  folder="profile-photos"
+                  label="Faculty Photograph"
+                  helperText="Upload official portrait (JPG, PNG, WebP up to 5MB)"
+                  currentUrl={formData.photoUrl}
+                  onUploadComplete={(url) => setFormData({ ...formData, photoUrl: url })}
+                  onRemove={() => setFormData({ ...formData, photoUrl: "" })}
+                  previewType="image"
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label htmlFor="teachers-first-name-1" className="block font-semibold text-on-surface mb-1">First Name *</label>
@@ -373,6 +404,18 @@ export default function TeachersManagementPage() {
                     value={formData.specialization}
                     onChange={(e) => setFormData({ ...formData, specialization: e.target.value })}
                     placeholder="e.g. Mathematics, Physical Sciences"
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <label htmlFor="teachers-base-salary" className="block font-semibold text-on-surface mb-1">Base Monthly Salary (PKR)</label>
+                  <input id="teachers-base-salary"
+                    type="number"
+                    min="0"
+                    step="500"
+                    value={formData.baseSalary}
+                    onChange={(e) => setFormData({ ...formData, baseSalary: e.target.value })}
+                    placeholder="e.g. 50000"
                     className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                   />
                 </div>

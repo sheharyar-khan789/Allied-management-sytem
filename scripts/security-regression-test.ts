@@ -3,6 +3,7 @@ import path from "path";
 import { NextRequest } from "next/server";
 import { POST as loginHandler } from "../src/app/api/auth/login/route";
 import { POST as logoutHandler } from "../src/app/api/auth/logout/route";
+import { POST as registerHandler } from "../src/app/api/auth/register/route";
 import { GET as lockedRecordsHandler } from "../src/app/api/locked-records/route";
 import { GET as studentMeHandler } from "../src/app/api/student/me/route";
 import { GET as studentsHandler } from "../src/app/api/students/route";
@@ -313,12 +314,13 @@ async function runSecurityTests() {
       ? fs.readFileSync(storageRulesPath, "utf-8")
       : "";
 
-    const hasDenyAll = storageRulesContent.includes("allow read, write: if false;");
+    const hasSchoolIsolation = storageRulesContent.includes("request.auth.token.schoolId == schoolId");
+    const hasClientWriteBlocked = storageRulesContent.includes("allow write: if false;");
     const configuredInJson = firebaseJsonContent.includes('"storage"') && firebaseJsonContent.includes('"rules": "storage.rules"');
 
     assert(
-      storageRulesExist && hasDenyAll && configuredInJson,
-      "14. Firebase Storage Security: Deny-all storage.rules exists and is registered in firebase.json"
+      storageRulesExist && hasSchoolIsolation && hasClientWriteBlocked && configuredInJson,
+      "14. Firebase Storage Security: Tenant-isolated storage.rules exists, enforces schoolId, blocks client writes, and is registered in firebase.json"
     );
   }
 
@@ -370,12 +372,59 @@ async function runSecurityTests() {
     const getData = await getRes.json();
     const studentRecord = (getData.roster || []).find((r: any) => r.studentId === "std-1");
 
-    assert(
-      getRes.status === 200 &&
-        getData.isSaved === true &&
-        studentRecord?.status === "LATE",
-      "16b. Attendance GET: Correctly queries by date and classId and returns saved status"
-    );
+      assert(
+        getRes.status === 200 &&
+          getData.isSaved === true &&
+          studentRecord?.status === "LATE",
+        "16b. Attendance GET: Correctly queries by date and classId and returns saved status"
+      );
+    }
+
+  // 17. School Registration Secret Authorization Enforcement
+  {
+    const prevSecret = process.env.SCHOOL_REGISTRATION_SECRET;
+    process.env.SCHOOL_REGISTRATION_SECRET = "super-secret-registration-key-2026";
+
+    try {
+      // 17a: Missing or invalid secret rejected (403)
+      const badReq = new NextRequest("http://localhost:3000/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fullName: "Principal Test",
+          email: "newadmin@alliedschool.edu",
+          password: "SecureMasterPassword123!",
+          schoolName: "Test School Campus",
+          registrationSecret: "wrong-secret",
+        }),
+      });
+      const badRes = await registerHandler(badReq);
+      const badData = await badRes.json();
+      assert(
+        badRes.status === 403 && badData.error?.includes("secret"),
+        "17a. Registration Security: Invalid or missing registrationSecret returns 403"
+      );
+
+      // 17b: Valid secret allows registration request past the secret check
+      const goodReq = new NextRequest("http://localhost:3000/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fullName: "Principal Test",
+          email: "newuniqueadmin@alliedschool.edu",
+          password: "SecureMasterPassword123!",
+          schoolName: "Test School Campus",
+          registrationSecret: "super-secret-registration-key-2026",
+        }),
+      });
+      const goodRes = await registerHandler(goodReq);
+      assert(
+        goodRes.status === 201,
+        "17b. Registration Security: Matching registrationSecret authorizes school registration (201)"
+      );
+    } finally {
+      process.env.SCHOOL_REGISTRATION_SECRET = prevSecret;
+    }
   }
 
   console.log("\n=================================================");

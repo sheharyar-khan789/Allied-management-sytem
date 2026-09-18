@@ -20,6 +20,12 @@ export default function TeacherProfilePage({
   const [accessError, setAccessError] = useState("");
   const [accessSaved, setAccessSaved] = useState(false);
 
+  // Base monthly salary state
+  const [salaryInput, setSalaryInput] = useState<string>("");
+  const [savingSalary, setSavingSalary] = useState(false);
+  const [salarySaved, setSalarySaved] = useState(false);
+  const [salaryError, setSalaryError] = useState("");
+
   useEffect(() => {
     fetch(`/api/teachers/${id}`)
       .then(async (res) => {
@@ -33,6 +39,7 @@ export default function TeacherProfilePage({
         setTeacher(json.teacher);
         setAvailableClasses(json.availableClasses || []);
         setSelectedClassIds(json.teacher?.assignedClassIds || []);
+        setSalaryInput(String(json.teacher?.baseSalary ?? ""));
       })
       .catch((err: Error) => setLoadError(err.message))
       .finally(() => setLoading(false));
@@ -68,6 +75,34 @@ export default function TeacherProfilePage({
     }
   };
 
+  const saveSalary = async () => {
+    setSalaryError("");
+    setSalarySaved(false);
+    setSavingSalary(true);
+    try {
+      const parsed = Number(salaryInput);
+      if (isNaN(parsed) || parsed < 0) {
+        throw new Error("Please enter a valid non-negative salary amount.");
+      }
+      const res = await fetch(`/api/teachers/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseSalary: parsed }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to update salary.");
+      }
+      setTeacher((prev: any) => ({ ...prev, baseSalary: parsed }));
+      setSalarySaved(true);
+      setTimeout(() => setSalarySaved(false), 3000);
+    } catch (err: any) {
+      setSalaryError(err.message);
+    } finally {
+      setSavingSalary(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4">
@@ -95,10 +130,21 @@ export default function TeacherProfilePage({
       {/* Teacher Profile Banner */}
       <div className="p-6 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-xl bg-primary text-white flex items-center justify-center font-headline-lg text-2xl font-bold shadow-md">
-            {teacher.firstName.charAt(0)}
-            {teacher.lastName.charAt(0)}
-          </div>
+          {teacher.photoUrl ? (
+            <img
+              src={teacher.photoUrl}
+              alt={`${teacher.firstName} ${teacher.lastName}`}
+              className="w-16 h-16 rounded-xl object-cover border border-surface-container-high shadow-md shrink-0"
+              onError={(e) => {
+                (e.currentTarget as HTMLElement).style.display = "none";
+              }}
+            />
+          ) : (
+            <div className="w-16 h-16 rounded-xl bg-primary text-white flex items-center justify-center font-headline-lg text-2xl font-bold shadow-md shrink-0">
+              {teacher.firstName.charAt(0)}
+              {teacher.lastName.charAt(0)}
+            </div>
+          )}
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="font-headline-lg text-2xl font-bold text-on-surface">
@@ -109,6 +155,9 @@ export default function TeacherProfilePage({
               </span>
               <span className="px-2.5 py-0.5 rounded-full bg-tertiary-container/10 text-on-tertiary-container font-label-sm text-xs font-bold">
                 {teacher.status}
+              </span>
+              <span className="px-2.5 py-0.5 rounded-full bg-surface-container font-label-sm text-xs font-bold text-on-surface font-mono">
+                Salary: {teacher.baseSalary ? `Rs. ${Number(teacher.baseSalary).toLocaleString()}` : "Unset"}
               </span>
             </div>
             <p className="font-body-md text-xs text-on-surface-variant font-medium">
@@ -244,6 +293,65 @@ export default function TeacherProfilePage({
               {savingAccess ? "Saving..." : "Save Class Access"}
             </button>
           </div>
+        </div>
+
+        {/* Monthly Compensation & Payroll */}
+        <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4 md:col-span-2">
+          <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+            <h3 className="font-headline-md text-sm font-bold text-on-surface flex items-center gap-2">
+              <span className="material-symbols-outlined text-secondary text-[18px]">account_balance_wallet</span>
+              Monthly Salary & Compensation
+            </h3>
+            <span className="px-2.5 py-0.5 rounded bg-secondary/10 text-secondary text-xs font-bold font-mono">
+              {teacher.baseSalary ? `Rs. ${Number(teacher.baseSalary).toLocaleString()}` : "Not Set"}
+            </span>
+          </div>
+
+          <p className="text-[11px] leading-relaxed text-on-surface-variant">
+            Set the base monthly compensation for this educator. This salary amount is used by the Payroll module to generate and track monthly disbursements.
+          </p>
+
+          <div className="max-w-md space-y-2">
+            <label htmlFor="teacher-profile-salary" className="block text-xs font-semibold text-on-surface">
+              Base Monthly Salary (PKR)
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                id="teacher-profile-salary"
+                type="number"
+                min="0"
+                step="500"
+                value={salaryInput}
+                onChange={(e) => {
+                  setSalarySaved(false);
+                  setSalaryInput(e.target.value);
+                }}
+                placeholder="e.g. 60000"
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+              />
+              <button
+                type="button"
+                onClick={saveSalary}
+                disabled={savingSalary}
+                className="px-4 py-2 rounded-lg bg-secondary text-on-secondary font-semibold text-xs hover:bg-secondary/90 disabled:opacity-50 shrink-0"
+              >
+                {savingSalary ? "Saving..." : "Save Salary"}
+              </button>
+            </div>
+          </div>
+
+          {salaryError && (
+            <div role="alert" className="p-2.5 rounded bg-error-container text-on-error-container text-xs flex items-center gap-2 max-w-md">
+              <span className="material-symbols-outlined text-[16px]">error</span>
+              <span>{salaryError}</span>
+            </div>
+          )}
+          {salarySaved && (
+            <div role="status" className="p-2.5 rounded bg-tertiary-container/20 text-on-tertiary-container text-xs flex items-center gap-2 max-w-md">
+              <span className="material-symbols-outlined text-[16px]">check_circle</span>
+              <span>Base monthly salary updated successfully.</span>
+            </div>
+          )}
         </div>
       </div>
     </div>

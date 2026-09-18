@@ -75,6 +75,7 @@ export async function GET(req: NextRequest) {
       paidAmount: c.paidAmount,
       balance: Math.max(0, c.totalExpected - c.paidAmount),
       status: c.status,
+      receiptUrl: c.receiptUrl || undefined,
       // `paymentDate`, `paymentMethod`, `receiptNumber` and `notes` used to be emitted here as
       // fabricated values on a financial record: the receipt number was synthesised from the
       // challan id (`REC-<challanId>`) and matched no real receipt ever issued, the method was
@@ -226,7 +227,7 @@ export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const body = await req.json();
-    const { challanId, amount, paymentMethod, notes } = body;
+    const { challanId, amount, paymentMethod, notes, receiptUrl } = body;
 
     if (!challanId || amount === undefined || amount <= 0) {
       return NextResponse.json(
@@ -275,6 +276,7 @@ export async function PUT(req: NextRequest) {
       paymentMode: "CASH",
       notes: notes || "Counter payment",
       collectedBy: authUser.uid,
+      receiptUrl: receiptUrl ? String(receiptUrl) : undefined,
       createdAt: new Date().toISOString(),
     };
 

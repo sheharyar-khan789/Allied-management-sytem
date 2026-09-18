@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import FileUpload from "@/components/FileUpload";
 
 export default function AddNewStudentPage() {
   const router = useRouter();
@@ -39,6 +40,7 @@ export default function AddNewStudentPage() {
     guardianPhone: "",
     guardianEmail: "",
     guardianOccupation: "",
+    photoUrl: "",
   });
 
   useEffect(() => {
@@ -198,6 +200,18 @@ export default function AddNewStudentPage() {
           <div className="flex items-center gap-2 pb-3 border-b border-surface-container-low">
             <span className="material-symbols-outlined text-secondary text-[20px]">badge</span>
             <h2 className="font-headline-md text-sm font-bold text-on-surface">1. Personal Information</h2>
+          </div>
+
+          <div className="pb-3 border-b border-surface-container-low">
+            <FileUpload
+              folder="profile-photos"
+              label="Student Profile Photograph"
+              helperText="Upload official student photo (JPG, PNG, WebP up to 5MB)"
+              currentUrl={formData.photoUrl}
+              onUploadComplete={(url) => setFormData((prev) => ({ ...prev, photoUrl: url }))}
+              onRemove={() => setFormData((prev) => ({ ...prev, photoUrl: "" }))}
+              previewType="image"
+            />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">

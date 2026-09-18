@@ -88,6 +88,8 @@ export async function GET(
       classId: student.classId,
       status: student.status,
       admissionDate: student.createdAt,
+      photoUrl: student.photoUrl || "",
+      documents: student.documents || [],
       class: {
         id: student.classId,
         name: targetClass?.name || "",
@@ -207,6 +209,8 @@ export async function PUT(
       guardianEmail: body.guardianEmail !== undefined ? String(body.guardianEmail).trim().toLowerCase() : existing.guardianEmail,
       classId: body.classId || existing.classId,
       status: body.status || existing.status,
+      photoUrl: body.photoUrl !== undefined ? body.photoUrl : existing.photoUrl,
+      documents: body.documents !== undefined ? body.documents : (existing.documents || []),
       updatedAt: new Date().toISOString()
     };
 

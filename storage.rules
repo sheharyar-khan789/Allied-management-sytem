@@ -1,6 +1,16 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    // Multi-tenant school storage hierarchy: /schools/{schoolId}/{folder}/{filename}
+    // Only authenticated users belonging to the specific schoolId may read files.
+    // Direct client uploads are blocked to enforce server-side validation pipeline.
+    match /schools/{schoolId}/{folder}/{filename} {
+      allow read: if request.auth != null &&
+                     request.auth.token.schoolId == schoolId;
+      allow write: if false; // All writes are performed securely via Firebase Admin SDK
+    }
+
+    // Default deny-all fallback for any other storage paths
     match /{allPaths=**} {
       allow read, write: if false;
     }

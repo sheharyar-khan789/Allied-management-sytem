@@ -62,7 +62,8 @@ export async function GET(req: NextRequest) {
       academicYear: settings.academicYear || getDefaultAcademicYear(),
       currencySymbol: settings.currencySymbol || "Rs.",
       gradingSystem: settings.gradingSystemLabel || "Standard 4.0 / Percentage",
-      currentSessionId: sessions[0].id
+      currentSessionId: sessions[0].id,
+      logoUrl: settings.logoUrl || school?.logoUrl || "",
     };
 
     return NextResponse.json({ success: true, settings: formatted, sessions });
@@ -120,6 +121,7 @@ export async function PUT(req: NextRequest) {
         || current?.gradingSystemLabel
         || "Standard 4.0 / Percentage",
       gradingScale: current?.gradingScale || [],
+      logoUrl: body.logoUrl !== undefined ? body.logoUrl : (current?.logoUrl || school?.logoUrl || ""),
       updatedAt: new Date().toISOString(),
     };
 

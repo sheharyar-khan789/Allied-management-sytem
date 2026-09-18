@@ -6,9 +6,8 @@ import { useAuth } from "@/lib/firebase/auth-context";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, signup, sendPasswordReset } = useAuth();
+  const { login, sendPasswordReset } = useAuth();
 
-  const [mode, setMode] = useState<"login" | "signup">("login");
   const [role, setRole] = useState<"admin" | "teacher" | "student" | "parent">("admin");
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -16,13 +15,6 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
-
-  // Signup fields
-  const [fullName, setFullName] = useState("");
-  const [schoolName, setSchoolName] = useState("");
-  const [signupEmail, setSignupEmail] = useState("");
-  const [signupPassword, setSignupPassword] = useState("");
-  const [signupConfirmPassword, setSignupConfirmPassword] = useState("");
 
   // Forgot Password modal
   const [showForgotModal, setShowForgotModal] = useState(false);
@@ -95,37 +87,6 @@ export default function LoginPage() {
     }
   };
 
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSuccessMessage("");
-
-    if (signupPassword !== signupConfirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-
-    if (signupPassword.length < 6) {
-      setError("Password must be at least 6 characters.");
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      await signup(fullName, signupEmail, signupPassword, schoolName);
-      setSuccessMessage("School administration account created successfully! Redirecting...");
-      setTimeout(() => {
-        router.push("/admin");
-        router.refresh();
-      }, 1500);
-    } catch (err: any) {
-      setError(err.message || "Failed to create school account.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setResetMessage("");
@@ -169,40 +130,12 @@ export default function LoginPage() {
             </div>
             <div className="space-y-1">
               <h1 className="font-headline-lg text-2xl sm:text-3xl text-on-surface font-bold tracking-tight">
-                {mode === "login" ? "Sign in to School Portal" : "Register New Institution"}
+                Sign in to School Portal
               </h1>
               <p className="font-body-md text-sm text-on-surface-variant font-medium">
-                {mode === "login"
-                  ? "Allied School Management System"
-                  : "Create Initial School Administrator & Campus Profile"}
+                Allied School Management System
               </p>
             </div>
-          </div>
-
-          {/* Mode Switcher (Sign In / Register Institution) */}
-          <div className="mt-4 flex rounded-lg p-1 bg-surface-container-low border border-surface-container-high/40">
-            <button
-              type="button"
-              onClick={() => { setMode("login"); setError(""); setSuccessMessage(""); }}
-              className={`flex-1 py-1.5 text-xs font-semibold rounded transition-all ${
-                mode === "login"
-                  ? "bg-surface-container-lowest text-secondary shadow-sm"
-                  : "text-on-surface-variant hover:text-on-surface"
-              }`}
-            >
-              Sign In to Existing Account
-            </button>
-            <button
-              type="button"
-              onClick={() => { setMode("signup"); setError(""); setSuccessMessage(""); }}
-              className={`flex-1 py-1.5 text-xs font-semibold rounded transition-all ${
-                mode === "signup"
-                  ? "bg-surface-container-lowest text-secondary shadow-sm"
-                  : "text-on-surface-variant hover:text-on-surface"
-              }`}
-            >
-              Register School (Admin Only)
-            </button>
           </div>
 
           {/* Error & Success Alerts */}
@@ -220,11 +153,8 @@ export default function LoginPage() {
             </div>
           )}
 
-          {/* ---------------- LOGIN MODE ---------------- */}
-          {mode === "login" ? (
-            <>
-              {/* Academic Role Selection Tabs */}
-              <div className="mt-space-md">
+          {/* Academic Role Selection Tabs */}
+          <div className="mt-space-md">
                 {/* A <label> is for a single form control; this heads a group of toggle
                     buttons, so it had no control to name and announced nothing. Replaced with a
                     real labelled group, and each button reports its own pressed state. */}
@@ -407,100 +337,6 @@ export default function LoginPage() {
                   </button>
                 </div>
               </form>
-
-            </>
-          ) : (
-            /* ---------------- SIGNUP / REGISTER SCHOOL MODE ---------------- */
-            <form onSubmit={handleSignup} className="mt-space-md space-y-space-md">
-              <div className="p-3 bg-surface-container-low rounded-lg border border-surface-container-high/40 text-xs text-on-surface-variant">
-                <strong className="text-secondary font-semibold">Institutional Setup:</strong> Public registration provisions the primary School Administrator account and creates the school’s own secure, isolated data space.
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="signup-school-name" className="font-label-lg text-xs font-semibold text-on-surface">School / Campus Name *</label>
-                <input
-                  id="signup-school-name"
-                  type="text"
-                  required
-                  value={schoolName}
-                  onChange={(e) => setSchoolName(e.target.value)}
-                  placeholder="e.g. Allied School Model Town Campus"
-                  className="w-full h-11 px-3 bg-surface-container-lowest text-on-surface font-body-md text-sm rounded-lg border border-outline-variant focus:border-secondary focus:ring-2 focus:ring-secondary/20 focus:outline-none"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="signup-full-name" className="font-label-lg text-xs font-semibold text-on-surface">Administrator Full Name *</label>
-                <input
-                  id="signup-full-name"
-                  type="text"
-                  required
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="e.g. Dr. Tariq Mehmood"
-                  className="w-full h-11 px-3 bg-surface-container-lowest text-on-surface font-body-md text-sm rounded-lg border border-outline-variant focus:border-secondary focus:ring-2 focus:ring-secondary/20 focus:outline-none"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label htmlFor="signup-email" className="font-label-lg text-xs font-semibold text-on-surface">Official Admin Email *</label>
-                <input
-                  id="signup-email"
-                  type="email"
-                  required
-                  value={signupEmail}
-                  onChange={(e) => setSignupEmail(e.target.value)}
-                  placeholder="e.g. principal@alliedschool.edu"
-                  className="w-full h-11 px-3 bg-surface-container-lowest text-on-surface font-body-md text-sm rounded-lg border border-outline-variant focus:border-secondary focus:ring-2 focus:ring-secondary/20 focus:outline-none"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label htmlFor="signup-password" className="font-label-lg text-xs font-semibold text-on-surface">Master Password *</label>
-                  <input
-                    id="signup-password"
-                    type="password"
-                    required
-                    value={signupPassword}
-                    onChange={(e) => setSignupPassword(e.target.value)}
-                    minLength={10}
-                    placeholder="Min 10 characters"
-                    className="w-full h-11 px-3 bg-surface-container-lowest text-on-surface font-body-md text-sm rounded-lg border border-outline-variant focus:border-secondary focus:ring-2 focus:ring-secondary/20 focus:outline-none"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label htmlFor="signup-confirm-password" className="font-label-lg text-xs font-semibold text-on-surface">Confirm Password *</label>
-                  <input
-                    id="signup-confirm-password"
-                    type="password"
-                    required
-                    value={signupConfirmPassword}
-                    onChange={(e) => setSignupConfirmPassword(e.target.value)}
-                    placeholder="Repeat password"
-                    className="w-full h-11 px-3 bg-surface-container-lowest text-on-surface font-body-md text-sm rounded-lg border border-outline-variant focus:border-secondary focus:ring-2 focus:ring-secondary/20 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full h-11 flex items-center justify-center gap-2 font-label-lg text-sm font-semibold text-on-primary bg-secondary hover:bg-secondary/90 active:bg-primary-container rounded-lg shadow-md transition-all disabled:opacity-50"
-                >
-                  {loading ? (
-                    <span>Setting up your school...</span>
-                  ) : (
-                    <>
-                      <span>Complete School Registration</span>
-                      <span className="material-symbols-outlined text-[20px]">domain_add</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          )}
 
           {/* Footnote */}
           <div className="mt-space-md pt-space-xs flex items-center justify-center gap-2 text-[11px] text-on-surface-variant font-medium">

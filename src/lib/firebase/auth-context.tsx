@@ -22,7 +22,7 @@ interface AuthContextType {
   schoolId: string | null;
   loading: boolean;
   login: (email: string, pass: string) => Promise<UserProfile>;
-  signup: (fullName: string, email: string, pass: string, schoolName: string) => Promise<void>;
+  signup: (fullName: string, email: string, pass: string, schoolName: string, registrationSecret?: string) => Promise<void>;
   logout: () => Promise<void>;
   sendPasswordReset: (email: string) => Promise<void>;
   changePassword: (newPass: string) => Promise<void>;
@@ -84,7 +84,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     fullName: string,
     email: string,
     pass: string,
-    schoolName: string
+    schoolName: string,
+    registrationSecret?: string
   ): Promise<void> => {
     // 1. Create Firebase Auth user on client
     const cred = await createUserWithEmailAndPassword(auth, email, pass);
@@ -100,6 +101,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         password: pass,
         schoolName,
         idToken,
+        registrationSecret,
       }),
     });
 

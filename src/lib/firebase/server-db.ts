@@ -20,6 +20,7 @@ import {
   SchoolSettingsDoc,
   TimetableDoc,
   AnnouncementDoc,
+  PayrollRecordDoc,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -42,6 +43,7 @@ const localStore: {
   auditLogs: Map<string, AuditLogDoc>;
   timetables: Map<string, TimetableDoc>;
   announcements: Map<string, AnnouncementDoc>;
+  payrollRecords: Map<string, PayrollRecordDoc>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -61,6 +63,7 @@ const localStore: {
   auditLogs: new Map(),
   timetables: new Map(),
   announcements: new Map(),
+  payrollRecords: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -76,6 +79,20 @@ export function onFirestoreError(operation: string, error: any): void {
   if (process.env.NODE_ENV === "production") {
     throw new Error(`Database error during ${operation}: ${error?.message || "Operation failed"}`);
   }
+}
+
+/**
+ * Strips undefined fields from an object so Firestore writes never fail with
+ * 'Cannot use "undefined" as a Firestore value' when optional properties are omitted.
+ */
+export function cleanUndefined<T extends Record<string, any>>(obj: T): T {
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+  return result as T;
 }
 
 // Populate seed in fallback memory ONLY during non-production development
@@ -596,7 +613,7 @@ export async function saveStudentServer(student: StudentDoc): Promise<string> {
 
   if (hasAdminCredentials) {
     try {
-      await adminDb.collection("students").doc(id).set(data, { merge: true });
+      await adminDb.collection("students").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveStudentServer(${id})`, e);
     }
@@ -663,7 +680,7 @@ export async function saveTeacherServer(teacher: TeacherDoc): Promise<string> {
 
   if (hasAdminCredentials) {
     try {
-      await adminDb.collection("teachers").doc(id).set(data, { merge: true });
+      await adminDb.collection("teachers").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveTeacherServer(${id})`, e);
     }
@@ -705,7 +722,7 @@ export async function saveClassServer(classData: ClassDoc): Promise<string> {
 
   if (hasAdminCredentials) {
     try {
-      await adminDb.collection("classes").doc(id).set(data, { merge: true });
+      await adminDb.collection("classes").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveClassServer(${id})`, e);
     }
@@ -780,7 +797,7 @@ export async function saveTimetableEntryServer(entry: TimetableDoc): Promise<str
 
   if (hasAdminCredentials) {
     try {
-      await adminDb.collection("timetables").doc(id).set(data, { merge: true });
+      await adminDb.collection("timetables").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveTimetableEntryServer(${id})`, e);
     }
@@ -967,7 +984,7 @@ export async function saveFeeChallanServer(challan: FeeChallanDoc): Promise<stri
 
   if (hasAdminCredentials) {
     try {
-      await adminDb.collection("feeChallans").doc(id).set(data, { merge: true });
+      await adminDb.collection("feeChallans").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveFeeChallanServer(${id})`, e);
     }
@@ -1019,6 +1036,7 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
           balanceAmount: newBalance,
           status: newStatus,
           updatedAt: new Date().toISOString(),
+          ...(payment.receiptUrl ? { receiptUrl: payment.receiptUrl } : {}),
         };
 
         const paymentRef = adminDb.collection("payments").doc(payment.id);
@@ -1054,6 +1072,9 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
     challan.status = "PAID";
   } else if (challan.paidAmount > 0) {
     challan.status = "PARTIAL";
+  }
+  if (payment.receiptUrl) {
+    challan.receiptUrl = payment.receiptUrl;
   }
   challan.updatedAt = new Date().toISOString();
   localStore.feeChallans.set(challanId, challan);
@@ -1132,6 +1153,7 @@ export async function saveExamServer(examData: ExamDoc): Promise<string> {
     startDate: examData.startDate || new Date().toISOString(),
     endDate: examData.endDate || new Date().toISOString(),
     status: examData.status || "UPCOMING",
+    ...(examData.resultSheetUrl ? { resultSheetUrl: examData.resultSheetUrl } : {}),
     createdAt: examData.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -1139,7 +1161,7 @@ export async function saveExamServer(examData: ExamDoc): Promise<string> {
 
   if (hasAdminCredentials) {
     try {
-      await adminDb.collection("exams").doc(id).set(data, { merge: true });
+      await adminDb.collection("exams").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveExamServer(${id})`, e);
     }
@@ -1176,7 +1198,7 @@ export async function saveExamScheduleServer(sched: ExamScheduleDoc): Promise<st
 
   if (hasAdminCredentials) {
     try {
-      await adminDb.collection("examSchedules").doc(id).set(data, { merge: true });
+      await adminDb.collection("examSchedules").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveExamScheduleServer(${id})`, e);
     }
@@ -1295,7 +1317,7 @@ export async function saveStudentObservationServer(obs: StudentObservationDoc): 
 
   if (hasAdminCredentials) {
     try {
-      await adminDb.collection("studentObservations").doc(id).set(data);
+      await adminDb.collection("studentObservations").doc(id).set(cleanUndefined(data));
     } catch (e) {
       onFirestoreError(`saveStudentObservationServer(${id})`, e);
     }
@@ -1454,3 +1476,82 @@ export async function deleteAnnouncementServer(schoolId: string, announcementId:
   }
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// PAYROLL RECORDS
+// ---------------------------------------------------------------------------
+export async function getPayrollRecordsServer(
+  schoolId: string,
+  month?: string,
+  year?: number,
+  teacherId?: string
+): Promise<PayrollRecordDoc[]> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      let query: FirebaseFirestore.Query = adminDb
+        .collection("payrollRecords")
+        .where("schoolId", "==", schoolId);
+
+      if (month) {
+        query = query.where("month", "==", month);
+      }
+      if (year !== undefined) {
+        query = query.where("year", "==", Number(year));
+      }
+      if (teacherId) {
+        query = query.where("teacherId", "==", teacherId);
+      }
+
+      const snap = await query.get();
+      return snap.docs.map((d) => d.data() as PayrollRecordDoc);
+    } catch (e) {
+      onFirestoreError("getPayrollRecordsServer", e);
+    }
+  }
+
+  // In-memory fallback
+  let list = Array.from(localStore.payrollRecords.values()).filter(
+    (p) => p.schoolId === schoolId
+  );
+  if (month) {
+    list = list.filter((p) => p.month.toLowerCase() === month.toLowerCase());
+  }
+  if (year !== undefined) {
+    list = list.filter((p) => p.year === Number(year));
+  }
+  if (teacherId) {
+    list = list.filter((p) => p.teacherId === teacherId);
+  }
+  return list;
+}
+
+export async function savePayrollRecordServer(
+  record: PayrollRecordDoc
+): Promise<string> {
+  assertProductionDbReady();
+  const id =
+    record.id ||
+    `payrec_${record.schoolId}_${record.teacherId}_${record.year}_${record.month.toLowerCase()}`;
+  const data: PayrollRecordDoc = {
+    ...record,
+    id,
+    updatedAt: new Date().toISOString(),
+    createdAt: record.createdAt || new Date().toISOString(),
+  };
+  localStore.payrollRecords.set(id, data);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb
+        .collection("payrollRecords")
+        .doc(id)
+        .set(cleanUndefined(data), { merge: true });
+    } catch (e) {
+      onFirestoreError(`savePayrollRecordServer(${id})`, e);
+      throw e;
+    }
+  }
+  return id;
+}
+

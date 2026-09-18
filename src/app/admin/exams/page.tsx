@@ -2,11 +2,14 @@
 
 import React, { useEffect, useState, useCallback } from "react";
 import { calculateGrade, formatDate } from "@/lib/utils";
+import FileUpload from "@/components/FileUpload";
 
 export default function ExamsManagementPage() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [selectedExamId, setSelectedExamId] = useState("");
+  const [activeSheetUrl, setActiveSheetUrl] = useState("");
+  const [showSheetUploader, setShowSheetUploader] = useState(false);
   const [classes, setClasses] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [selectedScheduleId, setSelectedScheduleId] = useState("");
@@ -15,7 +18,7 @@ export default function ExamsManagementPage() {
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   const [showNewExam, setShowNewExam] = useState(false);
-  const [newExam, setNewExam] = useState({ title: "", term: "", startDate: "", endDate: "" });
+  const [newExam, setNewExam] = useState({ title: "", term: "", startDate: "", endDate: "", resultSheetUrl: "" });
   const [creatingExam, setCreatingExam] = useState(false);
 
   const [showAddSchedule, setShowAddSchedule] = useState(false);
@@ -42,8 +45,9 @@ export default function ExamsManagementPage() {
       .then((json) => {
         if (json.success) {
           setData(json);
-          const activeId = json.activeExam?.id || json.exams[0]?.id || "";
+          const activeId = examId || json.activeExam?.id || json.exams[0]?.id || "";
           setSelectedExamId(activeId);
+          setActiveSheetUrl(json.activeExam?.resultSheetUrl || "");
           const scheds = json.activeExam?.schedules || [];
           setSchedules(scheds);
           if (scheds.length > 0) {
@@ -58,6 +62,23 @@ export default function ExamsManagementPage() {
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
+
+  const handleUpdateResultSheet = async (url: string) => {
+    if (!selectedExamId) return;
+    try {
+      const res = await fetch("/api/exams", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ examId: selectedExamId, resultSheetUrl: url }),
+      });
+      if (res.ok) {
+        setActiveSheetUrl(url);
+        await loadExams(selectedExamId);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   useEffect(() => {
     loadExams();
@@ -83,7 +104,7 @@ export default function ExamsManagementPage() {
         return;
       }
       setShowNewExam(false);
-      setNewExam({ title: "", term: "", startDate: "", endDate: "" });
+      setNewExam({ title: "", term: "", startDate: "", endDate: "", resultSheetUrl: "" });
       await loadExams(json.exam.id);
     } catch {
       setFormError("Failed to create exam.");
@@ -133,6 +154,7 @@ export default function ExamsManagementPage() {
           grade: r.grade,
           gpa: r.gpa,
           remarks: r.remarks || "",
+          cardUrl: r.cardUrl || "",
         }))
       );
     } else {
@@ -177,6 +199,7 @@ export default function ExamsManagementPage() {
             studentId: sm.studentId,
             marksObtained: Number(sm.marksObtained),
             remarks: sm.remarks,
+            cardUrl: sm.cardUrl || undefined,
           })),
         }),
       });
@@ -258,7 +281,29 @@ export default function ExamsManagementPage() {
             <p className="text-xs text-on-surface-variant">No examination cycles created yet.</p>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {activeSheetUrl && (
+            <a
+              href={activeSheetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/10 text-primary font-label-md text-xs font-semibold hover:bg-primary/20 transition-all"
+              title="View or download attached exam result sheet / timetable"
+            >
+              <span className="material-symbols-outlined text-[18px]">description</span>
+              <span>View Date Sheet / Results</span>
+            </a>
+          )}
+          {selectedExamId && (
+            <button
+              onClick={() => setShowSheetUploader((v) => !v)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container text-on-surface font-label-md text-xs font-semibold hover:bg-surface-container-high transition-all"
+              title="Attach or replace result sheet / timetable document"
+            >
+              <span className="material-symbols-outlined text-[18px]">upload_file</span>
+              <span>{activeSheetUrl ? "Update Document" : "Attach Document"}</span>
+            </button>
+          )}
           <button
             onClick={() => setShowNewExam((v) => !v)}
             className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-container text-on-surface font-label-md text-xs font-semibold hover:bg-surface-container-high transition-all"
@@ -277,6 +322,30 @@ export default function ExamsManagementPage() {
           )}
         </div>
       </div>
+
+      {showSheetUploader && selectedExamId && (
+        <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold text-on-surface">Attach Exam Date Sheet / Consolidated Result Sheet</h4>
+            <button
+              onClick={() => setShowSheetUploader(false)}
+              className="text-on-surface-variant hover:text-on-surface"
+            >
+              <span className="material-symbols-outlined text-[18px]">close</span>
+            </button>
+          </div>
+          <FileUpload
+            folder="result-cards"
+            value={activeSheetUrl}
+            onChange={(url) => {
+              handleUpdateResultSheet(url);
+            }}
+            accept="image/*,application/pdf"
+            previewType="file"
+            helperText="Upload official exam timetable, date sheet, or consolidated result sheet (Max 10MB)"
+          />
+        </div>
+      )}
 
       {showNewExam && (
         <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
@@ -314,6 +383,19 @@ export default function ExamsManagementPage() {
               value={newExam.endDate}
               onChange={(e) => setNewExam((s) => ({ ...s, endDate: e.target.value }))}
               className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+            />
+          </div>
+          <div className="sm:col-span-4">
+            <label className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">
+              Result Sheet / Timetable Document (Optional)
+            </label>
+            <FileUpload
+              folder="result-cards"
+              value={newExam.resultSheetUrl}
+              onChange={(url) => setNewExam((s) => ({ ...s, resultSheetUrl: url }))}
+              accept="image/*,application/pdf"
+              previewType="file"
+              helperText="Upload official exam timetable, date sheet, or consolidated result sheet (Max 10MB)"
             />
           </div>
           <div className="sm:col-span-4">
@@ -475,6 +557,7 @@ export default function ExamsManagementPage() {
                   <th className="py-3 px-4 font-bold">Grade</th>
                   <th className="py-3 px-4 font-bold">GPA</th>
                   <th className="py-3 px-4 font-bold">Remarks</th>
+                  <th className="py-3 px-4 font-bold text-right">Result Card</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container-low">
@@ -525,6 +608,24 @@ export default function ExamsManagementPage() {
 
                       {/* Remarks */}
                       <td className="py-3 px-4 text-on-surface-variant text-[11px]">{sm.remarks}</td>
+
+                      {/* Result Card */}
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        {sm.cardUrl ? (
+                          <a
+                            href={sm.cardUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-primary hover:underline font-semibold text-[11px]"
+                            title="View Student Result Card"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">badge</span>
+                            Card
+                          </a>
+                        ) : (
+                          <span className="text-on-surface-variant/50 text-[10px]">—</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}

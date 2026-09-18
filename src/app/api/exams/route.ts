@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getExamsServer,
@@ -109,6 +109,7 @@ export async function GET(req: NextRequest) {
             grade: existing?.grade ?? gradeFor(0, gradingScale).grade,
             gpa: existing?.gpa ?? gradeFor(0, gradingScale).gpa,
             remarks: existing?.remarks ?? "",
+            cardUrl: existing?.cardUrl || undefined,
           };
         });
 
@@ -135,6 +136,7 @@ export async function GET(req: NextRequest) {
       startDate: e.startDate,
       endDate: e.endDate,
       status: e.status,
+      resultSheetUrl: e.resultSheetUrl || undefined,
       schedulesCount: e.id === activeExam?.id ? schedulesFormatted.length : undefined,
     }));
 
@@ -145,6 +147,7 @@ export async function GET(req: NextRequest) {
       startDate: activeExam.startDate,
       endDate: activeExam.endDate,
       status: activeExam.status,
+      resultSheetUrl: activeExam.resultSheetUrl || undefined,
       schedules: schedulesFormatted,
     } : null;
 
@@ -167,7 +170,7 @@ export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const body = await req.json();
-    const { title, term, startDate, endDate, schedules } = body;
+    const { title, term, startDate, endDate, schedules, resultSheetUrl } = body;
 
     if (!title || !startDate || !endDate) {
       return NextResponse.json(
@@ -194,6 +197,7 @@ export async function POST(req: NextRequest) {
       startDate,
       endDate,
       status: "UPCOMING",
+      resultSheetUrl: resultSheetUrl ? String(resultSheetUrl) : undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -332,6 +336,26 @@ export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     const body = await req.json();
+
+    // Support updating exam metadata (such as result sheet URL or status) by ADMIN
+    if (body.examId && !body.examScheduleId) {
+      if (authUser.role !== "ADMIN") {
+        return NextResponse.json({ error: "Only administrators can update exam cycle details." }, { status: 403 });
+      }
+      const exams = await getExamsServer(authUser.schoolId);
+      const targetExam = exams.find((e) => e.id === body.examId);
+      if (!targetExam) {
+        return NextResponse.json({ error: "Exam not found." }, { status: 404 });
+      }
+      if (body.resultSheetUrl !== undefined) {
+        targetExam.resultSheetUrl = body.resultSheetUrl ? String(body.resultSheetUrl) : undefined;
+      }
+      if (body.title) targetExam.name = String(body.title);
+      if (body.status) targetExam.status = body.status;
+      await saveExamServer(targetExam);
+      return NextResponse.json({ success: true, exam: targetExam });
+    }
+
     const { examScheduleId, studentMarks } = body;
 
     if (!examScheduleId || !Array.isArray(studentMarks)) {
@@ -402,6 +426,7 @@ export async function PUT(req: NextRequest) {
         gpa,
         status: percentage >= (schedule!.passingMarks / totalMarks) * 100 ? "PASS" : "FAIL",
         remarks: sm.remarks || "",
+        cardUrl: sm.cardUrl ? String(sm.cardUrl) : undefined,
         evaluatedBy: authUser.uid,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),

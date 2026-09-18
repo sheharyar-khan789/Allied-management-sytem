@@ -47,6 +47,7 @@ export async function GET(
       phone: teacher.phone,
       email: teacher.email,
       status: teacher.status,
+      photoUrl: teacher.photoUrl || "",
       joiningDate: teacher.joiningDate || teacher.createdAt,
       managedClasses: managed.map((c) => ({
         id: c.id,
@@ -65,6 +66,7 @@ export async function GET(
       // can actually manage it — until now nothing in the entire application could write this
       // field, so every teacher permanently had an empty array.
       assignedClassIds: Array.isArray(teacher.assignedClassIds) ? teacher.assignedClassIds : [],
+      baseSalary: teacher.baseSalary ?? teacher.salary ?? 0,
     };
 
     return NextResponse.json({
@@ -132,6 +134,15 @@ export async function PUT(
       assignedClassIds = requested;
     }
 
+    let updatedSalary = existing.baseSalary ?? existing.salary;
+    if (body.baseSalary !== undefined && body.baseSalary !== "") {
+      const parsed = Number(body.baseSalary);
+      if (!isNaN(parsed) && parsed >= 0) updatedSalary = parsed;
+    } else if (body.salary !== undefined && body.salary !== "") {
+      const parsed = Number(body.salary);
+      if (!isNaN(parsed) && parsed >= 0) updatedSalary = parsed;
+    }
+
     const updated: typeof existing = {
       ...existing,
       assignedClassIds,
@@ -142,6 +153,9 @@ export async function PUT(
       phone: body.phone || existing.phone,
       email: body.email || existing.email,
       status: body.status || existing.status,
+      photoUrl: body.photoUrl !== undefined ? body.photoUrl : existing.photoUrl,
+      baseSalary: updatedSalary,
+      salary: updatedSalary,
       updatedAt: new Date().toISOString()
     };
 

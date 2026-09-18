@@ -62,7 +62,9 @@ export async function GET(req: NextRequest) {
         phone: t.phone,
         email: t.email,
         status: t.status,
+        photoUrl: t.photoUrl || "",
         joiningDate: t.joiningDate || t.createdAt,
+        baseSalary: t.baseSalary ?? t.salary ?? 0,
         managedClasses: managed,
         taughtSubjectsCount: taught.length,
         taughtSubjects: taught,
@@ -159,6 +161,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const parsedSalary = body.baseSalary !== undefined && body.baseSalary !== ""
+      ? Number(body.baseSalary)
+      : body.salary !== undefined && body.salary !== ""
+      ? Number(body.salary)
+      : undefined;
+
     const teacherDoc: TeacherDoc = {
       id: teacherId,
       schoolId: authUser.schoolId,
@@ -170,10 +178,13 @@ export async function POST(req: NextRequest) {
       designation: designation || "Subject Educator",
       department: specialization || "Academic Faculty",
       qualification: qualification || "M.Sc / B.Ed",
+      photoUrl: body.photoUrl || undefined,
       status: "ACTIVE",
       assignedClassIds: [],
       assignedSubjectIds: [],
       weeklyLoad: 20,
+      baseSalary: parsedSalary !== undefined && !isNaN(parsedSalary) && parsedSalary >= 0 ? parsedSalary : undefined,
+      salary: parsedSalary !== undefined && !isNaN(parsedSalary) && parsedSalary >= 0 ? parsedSalary : undefined,
       joiningDate: new Date().toISOString().split("T")[0],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

@@ -3,6 +3,7 @@
 import React, { useEffect, useState, use } from "react";
 import Link from "next/link";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import FileUpload from "@/components/FileUpload";
 
 export default function StudentDossierPage({
   params,
@@ -14,7 +15,15 @@ export default function StudentDossierPage({
 
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "attendance" | "fees" | "exams" | "conduct">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "attendance" | "fees" | "exams" | "conduct" | "documents">("overview");
+
+  // Document upload state
+  const [docModalOpen, setDocModalOpen] = useState(false);
+  const [docType, setDocType] = useState<"ID_CARD" | "CERTIFICATE" | "ADMISSION_FORM" | "OTHER">("ID_CARD");
+  const [docName, setDocName] = useState("");
+  const [docUrl, setDocUrl] = useState("");
+  const [docSaving, setDocSaving] = useState(false);
+  const [photoSaving, setPhotoSaving] = useState(false);
 
   // Payment modal state
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
@@ -105,6 +114,79 @@ export default function StudentDossierPage({
     }
   };
 
+  const handleUpdatePhoto = async (photoUrl: string) => {
+    setPhotoSaving(true);
+    try {
+      const res = await fetch(`/api/students/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ photoUrl }),
+      });
+      if (res.ok) {
+        fetchStudentDossier();
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setPhotoSaving(false);
+    }
+  };
+
+  const handleAddDocument = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!docUrl || !docName) return;
+    setDocSaving(true);
+
+    try {
+      const currentDocs = data?.student?.documents || [];
+      const newDoc = {
+        id: `doc-${Date.now()}`,
+        name: docName,
+        type: docType,
+        url: docUrl,
+        uploadedAt: new Date().toISOString(),
+      };
+      const updatedDocs = [...currentDocs, newDoc];
+
+      const res = await fetch(`/api/students/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documents: updatedDocs }),
+      });
+
+      if (res.ok) {
+        setDocModalOpen(false);
+        setDocName("");
+        setDocUrl("");
+        fetchStudentDossier();
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setDocSaving(false);
+    }
+  };
+
+  const handleDeleteDocument = async (docId: string) => {
+    if (!confirm("Are you sure you want to remove this attached document?")) return;
+    try {
+      const currentDocs = data?.student?.documents || [];
+      const updatedDocs = currentDocs.filter((d: any) => d.id !== docId);
+
+      const res = await fetch(`/api/students/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documents: updatedDocs }),
+      });
+
+      if (res.ok) {
+        fetchStudentDossier();
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4">
@@ -132,10 +214,21 @@ export default function StudentDossierPage({
       {/* Student Dossier Profile Banner */}
       <div className="p-6 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-xl bg-secondary text-white flex items-center justify-center font-headline-lg text-2xl font-bold shadow-md">
-            {student.firstName.charAt(0)}
-            {student.lastName.charAt(0)}
-          </div>
+          {student.photoUrl ? (
+            <img
+              src={student.photoUrl}
+              alt={`${student.firstName} ${student.lastName}`}
+              className="w-16 h-16 rounded-xl object-cover border border-surface-container-high shadow-md shrink-0"
+              onError={(e) => {
+                (e.currentTarget as HTMLElement).style.display = "none";
+              }}
+            />
+          ) : (
+            <div className="w-16 h-16 rounded-xl bg-secondary text-white flex items-center justify-center font-headline-lg text-2xl font-bold shadow-md shrink-0">
+              {student.firstName.charAt(0)}
+              {student.lastName.charAt(0)}
+            </div>
+          )}
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="font-headline-lg text-2xl font-bold text-on-surface">
@@ -244,6 +337,7 @@ export default function StudentDossierPage({
           { key: "fees", label: "Fee Ledger & Challans", icon: "receipt_long" },
           { key: "exams", label: "Official Report Card", icon: "grade" },
           { key: "conduct", label: "Observations & Conduct", icon: "psychology" },
+          { key: "documents", label: "Documents & Files", icon: "folder_open" },
         ].map((tab) => (
           <button
             key={tab.key}
@@ -572,6 +666,199 @@ export default function StudentDossierPage({
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tab 6: Attached Documents & Files */}
+      {activeTab === "documents" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-headline-md text-sm font-bold text-on-surface">
+                Student Documents & Verified Records
+              </h3>
+              <p className="text-xs text-on-surface-variant font-medium mt-0.5">
+                Manage official copies of ID cards, certificates, and admission files stored in Firebase Storage.
+              </p>
+            </div>
+            <button
+              onClick={() => setDocModalOpen(true)}
+              className="px-3.5 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold flex items-center gap-1.5 hover:bg-secondary/90 shadow-sm"
+            >
+              <span className="material-symbols-outlined text-[18px]">upload_file</span>
+              <span>Attach Document</span>
+            </button>
+          </div>
+
+          {/* Photo Management Card */}
+          <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40">
+            <h4 className="font-bold text-xs text-on-surface mb-3 flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-[18px] text-secondary">account_box</span>
+              <span>Official Student Photograph</span>
+            </h4>
+            <FileUpload
+              folder="profile-photos"
+              label=""
+              helperText="Upload official passport-size portrait (JPG, PNG, WebP up to 5MB)"
+              currentUrl={student.photoUrl}
+              onUploadComplete={handleUpdatePhoto}
+              onRemove={() => handleUpdatePhoto("")}
+              previewType="image"
+            />
+            {photoSaving && <p className="text-[11px] text-secondary mt-1">Updating student photograph...</p>}
+          </div>
+
+          {/* Documents Grid */}
+          {(!student.documents || student.documents.length === 0) ? (
+            <div className="p-8 rounded-xl bg-surface-container-lowest border border-dashed border-outline-variant text-center space-y-2">
+              <span className="material-symbols-outlined text-4xl text-on-surface-variant">inventory_2</span>
+              <p className="text-xs font-semibold text-on-surface">No documents attached yet</p>
+              <p className="text-[11px] text-on-surface-variant max-w-sm mx-auto">
+                Attach identity documentation, prior school leaving certificates, or birth registration documents.
+              </p>
+              <button
+                onClick={() => setDocModalOpen(true)}
+                className="mt-2 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-secondary/10 text-secondary text-xs font-semibold hover:bg-secondary/20"
+              >
+                <span className="material-symbols-outlined text-[16px]">add</span>
+                <span>Attach First Document</span>
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+              {student.documents.map((doc: any) => (
+                <div
+                  key={doc.id}
+                  className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-col justify-between space-y-3"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-surface-container flex items-center justify-center shrink-0 text-secondary">
+                      <span className="material-symbols-outlined text-[22px]">
+                        {doc.url?.includes(".pdf") ? "picture_as_pdf" : "description"}
+                      </span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-secondary/10 text-secondary">
+                          {doc.type.replace(/_/g, " ")}
+                        </span>
+                      </div>
+                      <h5 className="font-semibold text-xs text-on-surface truncate mt-1" title={doc.name}>
+                        {doc.name}
+                      </h5>
+                      <p className="text-[10px] text-on-surface-variant mt-0.5">
+                        Uploaded {formatDate(doc.uploadedAt)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-surface-container-low flex items-center justify-between">
+                    <a
+                      href={doc.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-secondary hover:underline"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                      <span>View File</span>
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteDocument(doc.id)}
+                      className="p-1 text-on-surface-variant hover:text-error rounded-md transition-colors"
+                      title="Delete document"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">delete</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Document Upload Modal */}
+      {docModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="attach-document-heading"
+            className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 my-8"
+          >
+            <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+              <h3 id="attach-document-heading" className="font-headline-md text-sm font-bold text-on-surface">
+                Attach Student Document
+              </h3>
+              <button
+                onClick={() => { setDocModalOpen(false); setDocUrl(""); setDocName(""); }}
+                className="text-on-surface-variant hover:text-on-surface"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleAddDocument} className="space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-on-surface mb-1">Document Category *</label>
+                <select
+                  value={docType}
+                  onChange={(e) => setDocType(e.target.value as any)}
+                  className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40"
+                >
+                  <option value="ID_CARD">B-Form / ID Card Scan</option>
+                  <option value="CERTIFICATE">Birth / Leaving Certificate</option>
+                  <option value="ADMISSION_FORM">Admission Application Form</option>
+                  <option value="OTHER">Other Educational Record</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-on-surface mb-1">Document Title / Label *</label>
+                <input
+                  type="text"
+                  required
+                  value={docName}
+                  onChange={(e) => setDocName(e.target.value)}
+                  placeholder="e.g. NADRA B-Form Verified Copy"
+                  className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+                />
+              </div>
+
+              <FileUpload
+                folder="documents"
+                label="Select File to Upload *"
+                helperText="Upload PDF or scanned image (up to 10MB)"
+                currentUrl={docUrl}
+                onUploadComplete={(url, meta) => {
+                  setDocUrl(url);
+                  if (!docName && meta?.filename) {
+                    setDocName(meta.filename.replace(/\.[^/.]+$/, ""));
+                  }
+                }}
+                onRemove={() => setDocUrl("")}
+                previewType="file"
+              />
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-surface-container-low">
+                <button
+                  type="button"
+                  onClick={() => { setDocModalOpen(false); setDocUrl(""); setDocName(""); }}
+                  className="px-4 py-2 rounded-lg text-xs font-semibold text-on-surface-variant hover:bg-surface-container-low"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={docSaving || !docUrl || !docName}
+                  className="px-4 py-2 rounded-lg text-xs font-semibold bg-secondary text-on-secondary hover:bg-secondary/90 disabled:opacity-50"
+                >
+                  {docSaving ? "Saving..." : "Attach Document"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

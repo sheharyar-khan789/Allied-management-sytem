@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getClassesServer,
@@ -127,7 +127,7 @@ export async function POST(req: NextRequest) {
       numericLevel: parseInt(name.replace(/[^0-9]/g, "")) || count,
       capacity: Number(capacity) || 35,
       roomNo: roomNumber || `Room ${name}`,
-      classTeacherId: classTeacherId || undefined,
+      ...(classTeacherId ? { classTeacherId } : {}),
       classTeacherName,
       academicYear: schoolSettings?.academicYear || new Date().getFullYear().toString(),
       createdAt: new Date().toISOString(),

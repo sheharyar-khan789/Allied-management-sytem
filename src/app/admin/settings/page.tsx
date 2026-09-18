@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import FileUpload from "@/components/FileUpload";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>({
@@ -13,6 +14,7 @@ export default function SettingsPage() {
     academicYear: "",
     currencySymbol: "Rs.",
     gradingSystem: "Standard 4.0 / Percentage",
+    logoUrl: "",
   });
   const [sessions, setSessions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -117,6 +119,18 @@ export default function SettingsPage() {
           <div className="flex items-center gap-2 pb-3 border-b border-surface-container-low">
             <span className="material-symbols-outlined text-secondary text-[20px]">school</span>
             <h2 className="font-headline-md text-sm font-bold text-on-surface">Institutional Profile</h2>
+          </div>
+
+          <div className="pb-2 border-b border-surface-container-low">
+            <FileUpload
+              folder="school-logo"
+              label="Official School Logo / Crest"
+              helperText="Upload official emblem (JPG, PNG, WebP up to 5MB)"
+              currentUrl={settings.logoUrl}
+              onUploadComplete={(url) => setSettings((prev: any) => ({ ...prev, logoUrl: url }))}
+              onRemove={() => setSettings((prev: any) => ({ ...prev, logoUrl: "" }))}
+              previewType="image"
+            />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">

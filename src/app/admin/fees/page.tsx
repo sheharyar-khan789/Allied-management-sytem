@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import FileUpload from "@/components/FileUpload";
 
 export default function FeeManagementPage() {
   const [data, setData] = useState<any>(null);
@@ -16,6 +17,7 @@ export default function FeeManagementPage() {
   const [selectedChallan, setSelectedChallan] = useState<any>(null);
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("Bank Deposit");
+  const [payReceiptUrl, setPayReceiptUrl] = useState("");
   const [payLoading, setPayLoading] = useState(false);
 
   const fetchFees = async () => {
@@ -55,11 +57,13 @@ export default function FeeManagementPage() {
           challanId: selectedChallan.id,
           amount: Number(payAmount),
           paymentMethod: payMethod,
+          receiptUrl: payReceiptUrl || undefined,
         }),
       });
 
       if (res.ok) {
         setPaymentModalOpen(false);
+        setPayReceiptUrl("");
         fetchFees();
       }
     } catch (err) {
@@ -278,6 +282,18 @@ export default function FeeManagementPage() {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right no-print whitespace-nowrap space-x-2">
+                      {ch.receiptUrl && (
+                        <a
+                          href={ch.receiptUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary font-semibold text-[11px] inline-flex items-center gap-0.5 hover:underline mr-1"
+                          title="View Uploaded Receipt / Slip"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">receipt_long</span>
+                          Slip
+                        </a>
+                      )}
                       <a href={`/print/challan/${ch.id}`} className="text-secondary font-semibold text-[11px]">
                         Print
                       </a>
@@ -287,6 +303,7 @@ export default function FeeManagementPage() {
                           onClick={() => {
                             setSelectedChallan(ch);
                             setPayAmount(ch.balance.toString());
+                            setPayReceiptUrl(ch.receiptUrl || "");
                             setPaymentModalOpen(true);
                           }}
                           className="px-2.5 py-1 rounded bg-secondary text-on-secondary font-semibold text-[11px] hover:bg-secondary/90 shadow-sm transition-all"
@@ -367,6 +384,18 @@ export default function FeeManagementPage() {
                   <option value="Cash Counter">Cash Collection Counter</option>
                   <option value="Online Raast">Online / Raast Transfer</option>
                 </select>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-on-surface mb-1">Payment Slip / Receipt (Optional)</label>
+                <FileUpload
+                  folder="fee-receipts"
+                  value={payReceiptUrl}
+                  onChange={(url) => setPayReceiptUrl(url)}
+                  accept="image/*,application/pdf"
+                  previewType="file"
+                  helperText="Upload paid bank receipt, Raast screenshot, or slip (Max 10MB)"
+                />
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-surface-container-low">
