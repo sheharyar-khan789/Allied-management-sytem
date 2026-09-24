@@ -3,6 +3,7 @@ import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getStudentByIdServer,
   saveStudentServer,
+  deleteStudentServer,
   getStudentAttendanceServer,
   getStudentFeeChallansServer,
   getExamResultsServer,
@@ -269,6 +270,22 @@ export async function DELETE(
     const existing = await getStudentByIdServer(authUser.schoolId, id);
     if (!existing) {
       return NextResponse.json({ error: "Student not found." }, { status: 404 });
+    }
+
+    const isPermanent = req.nextUrl.searchParams.get("permanent") === "true";
+    if (isPermanent) {
+      await deleteStudentServer(authUser.schoolId, id);
+      await createAuditLogServer(
+        authUser.schoolId,
+        authUser.uid,
+        authUser.email,
+        authUser.role,
+        "DELETE_STUDENT",
+        "STUDENT",
+        id,
+        `Deleted student ${existing.fullName} (${existing.admissionNo}).`
+      );
+      return NextResponse.json({ success: true, message: "Student deleted successfully." });
     }
 
     await saveStudentServer({

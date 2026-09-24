@@ -3,6 +3,7 @@ import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getTeacherByIdServer,
   saveTeacherServer,
+  deleteTeacherServer,
   createAuditLogServer,
   getClassesServer,
   getSubjectsServer
@@ -272,3 +273,41 @@ export async function PUT(
     );
   }
 }
+
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN"]);
+    const { id } = await params;
+
+    const existing = await getTeacherByIdServer(authUser.schoolId, id);
+    if (!existing) {
+      return NextResponse.json({ error: "Teacher not found." }, { status: 404 });
+    }
+
+    await deleteTeacherServer(authUser.schoolId, id);
+
+    await createAuditLogServer(
+      authUser.schoolId,
+      authUser.uid,
+      authUser.email,
+      authUser.role,
+      "DELETE_TEACHER",
+      "TEACHER",
+      id,
+      `Deleted faculty member ${existing.fullName} (${existing.employeeId}).`
+    );
+
+    return NextResponse.json({ success: true, message: "Faculty member deleted successfully." });
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    console.error("Teacher delete error:", error);
+    return NextResponse.json(
+      { error: "Failed to delete teacher record." },
+      { status: 500 }
+    );
+  }
+}
+

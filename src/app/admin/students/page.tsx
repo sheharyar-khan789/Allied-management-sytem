@@ -128,6 +128,24 @@ export default function StudentsManagementPage() {
     }
   };
 
+  const handleDeleteStudent = async (id: string, name: string) => {
+    if (!confirm(`Are you sure you want to delete student ${name}?`)) return;
+    // Optimistically update UI immediately
+    setStudents((prev) => prev.filter((s) => s.id !== id));
+    try {
+      const res = await fetch(`/api/students/${id}?permanent=true`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        alert(data.error || "Failed to delete student.");
+        fetchStudents();
+      }
+    } catch (err) {
+      console.error("Error deleting student:", err);
+      alert("Failed to delete student.");
+      fetchStudents();
+    }
+  };
+
   return (
     <div className="flex flex-col w-full gap-space-lg">
       {/* Header Bar */}
@@ -337,11 +355,20 @@ export default function StudentsManagementPage() {
                         <button
                           type="button"
                           onClick={() => handleArchive(st.id, st.fullName)}
-                          className="p-1.5 rounded-lg hover:bg-error-container text-on-surface-variant hover:text-error transition-colors"
+                          className="p-1.5 rounded-lg hover:bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors"
                           title="Archive Student"
                           aria-label="Archive student"
                         >
                           <span className="material-symbols-outlined text-[18px]">archive</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteStudent(st.id, st.fullName)}
+                          className="p-1.5 rounded-lg hover:bg-error-container text-on-surface-variant hover:text-error transition-colors"
+                          title="Delete Student"
+                          aria-label={`Delete ${st.fullName}`}
+                        >
+                          <span className="material-symbols-outlined text-[18px]">delete</span>
                         </button>
                       </div>
                     </td>

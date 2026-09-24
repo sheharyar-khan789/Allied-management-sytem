@@ -131,6 +131,26 @@ export default function TeachersManagementPage() {
     }
   };
 
+  const handleDeleteTeacher = async (id: string, name: string) => {
+    if (!confirm(`Are you sure you want to delete ${name}?`)) {
+      return;
+    }
+    // Optimistically remove from state immediately
+    setTeachers((prev) => prev.filter((t) => t.id !== id));
+    try {
+      const res = await fetch(`/api/teachers/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        alert(data.error || "Failed to delete teacher.");
+        fetchTeachers();
+      }
+    } catch (err) {
+      console.error("Error deleting teacher:", err);
+      alert("Failed to delete teacher.");
+      fetchTeachers();
+    }
+  };
+
   return (
     <div className="flex flex-col w-full gap-space-lg">
       {/* Header Bar */}
@@ -348,6 +368,15 @@ export default function TeachersManagementPage() {
                         >
                           <span className="material-symbols-outlined text-[18px]">visibility</span>
                         </Link>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTeacher(t.id, t.fullName)}
+                          className="p-1.5 rounded-lg hover:bg-error-container text-on-surface-variant hover:text-error transition-colors inline-block"
+                          title="Delete Faculty Member"
+                          aria-label={`Delete ${t.fullName}`}
+                        >
+                          <span className="material-symbols-outlined text-[18px]">delete</span>
+                        </button>
                       </div>
                     </td>
                   </tr>

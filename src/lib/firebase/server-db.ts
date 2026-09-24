@@ -621,6 +621,22 @@ export async function saveStudentServer(student: StudentDoc): Promise<string> {
   return id;
 }
 
+export async function deleteStudentServer(schoolId: string, studentId: string): Promise<boolean> {
+  const existing = await getStudentByIdServer(schoolId, studentId);
+  if (!existing) return false;
+
+  localStore.students.delete(studentId);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("students").doc(studentId).delete();
+    } catch (e) {
+      onFirestoreError(`deleteStudentServer(${studentId})`, e);
+    }
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // TEACHERS
 // ---------------------------------------------------------------------------
@@ -686,6 +702,22 @@ export async function saveTeacherServer(teacher: TeacherDoc): Promise<string> {
     }
   }
   return id;
+}
+
+export async function deleteTeacherServer(schoolId: string, teacherId: string): Promise<boolean> {
+  const existing = await getTeacherByIdServer(schoolId, teacherId);
+  if (!existing) return false;
+
+  localStore.teachers.delete(teacherId);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("teachers").doc(teacherId).delete();
+    } catch (e) {
+      onFirestoreError(`deleteTeacherServer(${teacherId})`, e);
+    }
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
