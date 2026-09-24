@@ -3,15 +3,9 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.env.production
 *.tsbuildinfo
 
+Allied-management-sytem/
 stitch_school_management_saas_system/
 stitch_school_management_saas_system (3).zip
-
-.env
-.env.local
-.env.*.local
-
-.env
-.env.local
-.env.*.local

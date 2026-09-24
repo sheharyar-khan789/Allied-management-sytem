@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { jwtVerify } from "jose";
+import { jwtVerify, SignJWT } from "jose";
 import { dashboardPathForRole } from "@/lib/role-home";
+
+const SESSION_IDLE_SECONDS = 5 * 60;
 
 function getJwtSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -30,6 +32,9 @@ interface SessionPayload {
   role: "ADMIN" | "TEACHER" | "STUDENT" | "PARENT";
   schoolId: string;
   name: string;
+  teacherId?: string;
+  studentId?: string;
+  studentIds?: string[];
 }
 
 /**
@@ -116,6 +121,31 @@ export async function middleware(req: NextRequest) {
     return response;
   };
 
+  const attachSlidingSession = async (response: NextResponse, sess: SessionPayload) => {
+    const token = await new SignJWT({
+      uid: sess.uid,
+      email: sess.email,
+      role: sess.role,
+      schoolId: sess.schoolId,
+      name: sess.name,
+      teacherId: sess.teacherId,
+      studentId: sess.studentId,
+      studentIds: sess.studentIds,
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuedAt()
+      .setExpirationTime(`${SESSION_IDLE_SECONDS}s`)
+      .sign(SECRET_KEY);
+    response.cookies.set("allied_session", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: SESSION_IDLE_SECONDS,
+    });
+    return attachCsp(response);
+  };
+
   const nextWithNonce = () =>
     NextResponse.next({ request: { headers: requestHeaders } });
 
@@ -147,14 +177,14 @@ export async function middleware(req: NextRequest) {
     return attachCsp(nextWithNonce());
   }
 
-  const requireRole = (allowed: SessionPayload["role"][]) => {
+  const requireRole = async (allowed: SessionPayload["role"][]) => {
     if (!session || !session.uid) {
       return attachCsp(NextResponse.redirect(new URL("/login", req.url)));
     }
     if (!allowed.includes(session.role)) {
       return attachCsp(NextResponse.redirect(new URL(dashboardPathForRole(session.role), req.url)));
     }
-    return attachCsp(nextWithNonce());
+    return attachSlidingSession(nextWithNonce(), session);
   };
 
   if (pathname.startsWith("/admin")) {
@@ -177,7 +207,7 @@ export async function middleware(req: NextRequest) {
     if (!session || !session.uid) {
       return attachCsp(NextResponse.redirect(new URL("/login", req.url)));
     }
-    return attachCsp(nextWithNonce());
+    return attachSlidingSession(nextWithNonce(), session);
   }
 
   return attachCsp(nextWithNonce());

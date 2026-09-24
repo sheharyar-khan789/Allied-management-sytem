@@ -52,6 +52,70 @@ export default function StudentsManagementPage() {
     fetchStudents();
   }, [search, selectedClass, selectedStatus]);
 
+  const [editingStudent, setEditingStudent] = useState<any>(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState("");
+  const [editFormData, setEditFormData] = useState({
+    firstName: "",
+    lastName: "",
+    gender: "Female",
+    dob: "",
+    bloodGroup: "",
+    rollNumber: "",
+    classId: "",
+    status: "ACTIVE",
+    contactNumber: "",
+    guardianName: "",
+    guardianRelation: "Father",
+    guardianPhone: "",
+    guardianEmail: "",
+  });
+
+  const openEditModal = (st: any) => {
+    setEditingStudent(st);
+    setEditFormData({
+      firstName: st.firstName || "",
+      lastName: st.lastName || "",
+      gender: st.gender || "Female",
+      dob: st.dob || "",
+      bloodGroup: st.bloodGroup !== "Not Specified" ? st.bloodGroup : "",
+      rollNumber: st.rollNumber || "",
+      classId: st.classId || "",
+      status: st.status || "ACTIVE",
+      contactNumber: st.contactNumber || "",
+      guardianName: st.guardianName || "",
+      guardianRelation: st.guardianRelation || "Father",
+      guardianPhone: st.guardianPhone || "",
+      guardianEmail: st.guardianEmail || "",
+    });
+    setEditError("");
+    setEditModalOpen(true);
+  };
+
+  const handleSaveStudentEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEditError("");
+    setEditLoading(true);
+    try {
+      const res = await fetch(`/api/students/${editingStudent.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editFormData),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to update student.");
+      }
+      setEditModalOpen(false);
+      fetchStudents();
+    } catch (err: any) {
+      setEditError(err.message || "Failed to update student.");
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
   const handleArchive = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to archive student ${name}?`)) return;
     try {
@@ -253,6 +317,15 @@ export default function StudentsManagementPage() {
                     {/* Actions */}
                     <td className="py-3 px-4 text-right">
                       <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(st)}
+                          className="p-1.5 rounded-lg hover:bg-surface-container text-secondary transition-colors"
+                          title="Edit Student"
+                          aria-label={`Edit ${st.fullName}`}
+                        >
+                          <span className="material-symbols-outlined text-[18px]">edit</span>
+                        </button>
                         <Link
                           href={`/admin/students/${st.id}`}
                           className="p-1.5 rounded-lg hover:bg-surface-container text-secondary transition-colors"
@@ -279,6 +352,177 @@ export default function StudentsManagementPage() {
           </div>
         )}
       </div>
+
+      {/* Edit Student Modal */}
+      {editModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-student-heading"
+            className="bg-surface-container-lowest rounded-xl max-w-lg w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8"
+          >
+            <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+              <h3 id="edit-student-heading" className="font-headline-md text-sm font-bold text-on-surface">
+                Edit Student Details
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditModalOpen(false)}
+                className="text-on-surface-variant hover:text-on-surface"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            {editError && (
+              <div className="p-2.5 rounded bg-error-container text-on-error-container text-xs flex items-center gap-2">
+                <span className="material-symbols-outlined text-[16px]">error</span>
+                <span>{editError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveStudentEdit} className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="modal-edit-st-first-name" className="block font-semibold text-on-surface mb-1">First Name *</label>
+                  <input
+                    id="modal-edit-st-first-name"
+                    type="text"
+                    required
+                    value={editFormData.firstName}
+                    onChange={(e) => setEditFormData({ ...editFormData, firstName: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="modal-edit-st-last-name" className="block font-semibold text-on-surface mb-1">Last Name</label>
+                  <input
+                    id="modal-edit-st-last-name"
+                    type="text"
+                    value={editFormData.lastName}
+                    onChange={(e) => setEditFormData({ ...editFormData, lastName: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="modal-edit-st-gender" className="block font-semibold text-on-surface mb-1">Gender</label>
+                  <select
+                    id="modal-edit-st-gender"
+                    value={editFormData.gender}
+                    onChange={(e) => setEditFormData({ ...editFormData, gender: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  >
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="modal-edit-st-dob" className="block font-semibold text-on-surface mb-1">Date of Birth</label>
+                  <input
+                    id="modal-edit-st-dob"
+                    type="date"
+                    value={editFormData.dob}
+                    onChange={(e) => setEditFormData({ ...editFormData, dob: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="modal-edit-st-class" className="block font-semibold text-on-surface mb-1">Class Cohort *</label>
+                  <select
+                    id="modal-edit-st-class"
+                    required
+                    value={editFormData.classId}
+                    onChange={(e) => setEditFormData({ ...editFormData, classId: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  >
+                    <option value="">Select Class</option>
+                    {classes.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.displayName || `${c.name}-${c.section}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="modal-edit-st-roll" className="block font-semibold text-on-surface mb-1">Roll Number</label>
+                  <input
+                    id="modal-edit-st-roll"
+                    type="text"
+                    value={editFormData.rollNumber}
+                    onChange={(e) => setEditFormData({ ...editFormData, rollNumber: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="modal-edit-st-status" className="block font-semibold text-on-surface mb-1">Status</label>
+                  <select
+                    id="modal-edit-st-status"
+                    value={editFormData.status}
+                    onChange={(e) => setEditFormData({ ...editFormData, status: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 font-semibold"
+                  >
+                    <option value="ACTIVE">ACTIVE</option>
+                    <option value="INACTIVE">INACTIVE</option>
+                    <option value="ALUMNI">ALUMNI</option>
+                    <option value="SUSPENDED">SUSPENDED</option>
+                    <option value="WITHDRAWN">WITHDRAWN</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="modal-edit-st-contact" className="block font-semibold text-on-surface mb-1">Contact Phone</label>
+                  <input
+                    id="modal-edit-st-contact"
+                    type="tel"
+                    value={editFormData.contactNumber}
+                    onChange={(e) => setEditFormData({ ...editFormData, contactNumber: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="modal-edit-st-guardian-name" className="block font-semibold text-on-surface mb-1">Guardian Name *</label>
+                  <input
+                    id="modal-edit-st-guardian-name"
+                    type="text"
+                    required
+                    value={editFormData.guardianName}
+                    onChange={(e) => setEditFormData({ ...editFormData, guardianName: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="modal-edit-st-guardian-phone" className="block font-semibold text-on-surface mb-1">Guardian Phone *</label>
+                  <input
+                    id="modal-edit-st-guardian-phone"
+                    type="tel"
+                    required
+                    value={editFormData.guardianPhone}
+                    onChange={(e) => setEditFormData({ ...editFormData, guardianPhone: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-surface-container-low">
+                <button
+                  type="button"
+                  onClick={() => setEditModalOpen(false)}
+                  className="px-3 py-1.5 rounded bg-surface-container text-on-surface font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editLoading}
+                  className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50"
+                >
+                  {editLoading ? "Saving..." : "Update Student"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

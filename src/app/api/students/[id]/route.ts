@@ -197,12 +197,14 @@ export async function PUT(
 
     const updated: typeof existing = {
       ...existing,
-      fullName: body.firstName ? `${body.firstName} ${body.lastName || ""}`.trim() : existing.fullName,
-      rollNo: body.rollNumber || existing.rollNo,
-      gender: body.gender === "Male" ? "MALE" : body.gender === "Female" ? "FEMALE" : existing.gender,
+      fullName: body.fullName ? body.fullName.trim() : body.firstName ? `${body.firstName} ${body.lastName || ""}`.trim() : existing.fullName,
+      rollNo: body.rollNumber || body.rollNo || existing.rollNo,
+      gender: body.gender === "Male" || body.gender === "MALE" ? "MALE" : body.gender === "Female" || body.gender === "FEMALE" ? "FEMALE" : existing.gender,
       dob: body.dob || existing.dob,
       bloodGroup: body.bloodGroup || existing.bloodGroup,
-      phone: body.contactNumber || existing.phone,
+      phone: body.contactNumber || body.phone || existing.phone,
+      address: body.address !== undefined ? body.address : existing.address,
+      fatherName: body.fatherName || body.guardianName || existing.fatherName,
       guardianName: body.guardianName || existing.guardianName,
       guardianRelation: body.guardianRelation || existing.guardianRelation,
       guardianPhone: body.guardianPhone || existing.guardianPhone,
@@ -213,6 +215,15 @@ export async function PUT(
       documents: body.documents !== undefined ? body.documents : (existing.documents || []),
       updatedAt: new Date().toISOString()
     };
+
+    if (body.classId && body.classId !== existing.classId) {
+      const classes = await getClassesServer(authUser.schoolId);
+      const targetClass = classes.find((c) => c.id === body.classId);
+      if (targetClass) {
+        updated.className = `${targetClass.name}-${targetClass.section}`;
+        updated.section = targetClass.section;
+      }
+    }
 
     await saveStudentServer(updated);
 

@@ -22,6 +22,7 @@ export interface UserProfile {
   role: UserRole;
   schoolId: string;
   status: UserStatus;
+  passwordHash?: string;
   teacherId?: string;
   studentId?: string;
   studentIds?: string[];
@@ -83,6 +84,7 @@ export interface TeacherDoc {
   qualification: string;
   photoUrl?: string;
   joiningDate?: string;
+  endingDate?: string | null;
   status: "ACTIVE" | "INACTIVE";
   assignedClassIds: string[];
   assignedSubjectIds: string[];
@@ -101,8 +103,8 @@ export interface ClassDoc {
   numericLevel: number;
   capacity: number;
   roomNo?: string;
-  classTeacherId?: string;
-  classTeacherName?: string;
+  classTeacherId?: string | null;
+  classTeacherName?: string | null;
   academicYear: string;
   createdAt: string;
   updatedAt: string;
@@ -115,8 +117,8 @@ export interface SubjectDoc {
   className?: string;
   name: string;
   code: string;
-  teacherId?: string;
-  teacherName?: string;
+  teacherId?: string | null;
+  teacherName?: string | null;
   credits: number;
   createdAt: string;
   updatedAt: string;

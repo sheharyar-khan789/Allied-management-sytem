@@ -7,6 +7,7 @@ import {
   getClassesServer,
   getSubjectsServer
 } from "@/lib/firebase/server-db";
+import { validateDateString, isDateBefore } from "@/lib/date-utils";
 
 export async function GET(
   req: NextRequest,
@@ -48,20 +49,39 @@ export async function GET(
       email: teacher.email,
       status: teacher.status,
       photoUrl: teacher.photoUrl || "",
-      joiningDate: teacher.joiningDate || teacher.createdAt,
+      joiningDate: teacher.joiningDate || (teacher.createdAt ? teacher.createdAt.split("T")[0] : ""),
+      endingDate: teacher.endingDate || null,
       managedClasses: managed.map((c) => ({
         id: c.id,
         name: c.name,
         section: c.section,
+        displayName: `${c.name}-${c.section}`,
         roomNumber: c.roomNo || "Room",
         students: []
       })),
-      taughtSubjects: taught.map((s) => ({
-        id: s.id,
-        name: s.name,
-        code: s.code,
-        class: { name: s.className?.split("-")[0] || "Class", section: s.className?.split("-")[1] || "A" }
-      })),
+      assignedClasses: classes
+        .filter((c) => (teacher.assignedClassIds || []).includes(c.id))
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          section: c.section,
+          displayName: `${c.name}-${c.section}`,
+          isClassIncharge: c.classTeacherId === teacher.id,
+        })),
+      taughtSubjects: taught.map((s) => {
+        const cls = classes.find((c) => c.id === s.classId);
+        return {
+          id: s.id,
+          name: s.name,
+          code: s.code,
+          classId: s.classId,
+          class: {
+            name: cls ? cls.name : (s.className?.split("-")[0] || "Class"),
+            section: cls ? cls.section : (s.className?.split("-")[1] || "A"),
+            displayName: cls ? `${cls.name}-${cls.section}` : (s.className || "Class"),
+          },
+        };
+      }),
       // The authoritative teacher-authorization field. Surfaced so the admin faculty profile
       // can actually manage it — until now nothing in the entire application could write this
       // field, so every teacher permanently had an empty array.
@@ -143,6 +163,68 @@ export async function PUT(
       if (!isNaN(parsed) && parsed >= 0) updatedSalary = parsed;
     }
 
+    // Validate and process employment dates
+    let updatedJoiningDate = existing.joiningDate;
+    if (body.joiningDate !== undefined) {
+      if (!body.joiningDate || typeof body.joiningDate !== "string" || !body.joiningDate.trim()) {
+        return NextResponse.json(
+          { error: "Joining Date cannot be empty." },
+          { status: 400 }
+        );
+      }
+      const parsed = validateDateString(body.joiningDate);
+      if (!parsed) {
+        return NextResponse.json(
+          { error: "Invalid Joining Date format. Please provide a valid date (YYYY-MM-DD)." },
+          { status: 400 }
+        );
+      }
+      updatedJoiningDate = parsed;
+    }
+
+    let updatedEndingDate = existing.endingDate ?? null;
+    let inferredStatus = body.status || existing.status;
+
+    if (body.endingDate !== undefined) {
+      if (body.endingDate === null || body.endingDate === "") {
+        updatedEndingDate = null;
+        if (!body.status && existing.status === "INACTIVE" && existing.endingDate) {
+          inferredStatus = "ACTIVE";
+        }
+      } else {
+        if (typeof body.endingDate !== "string" || !body.endingDate.trim()) {
+          return NextResponse.json(
+            { error: "Invalid Ending Date format." },
+            { status: 400 }
+          );
+        }
+        const parsedEnding = validateDateString(body.endingDate);
+        if (!parsedEnding) {
+          return NextResponse.json(
+            { error: "Invalid Ending Date format. Please provide a valid date (YYYY-MM-DD)." },
+            { status: 400 }
+          );
+        }
+        const effectiveJoining = updatedJoiningDate || (existing.createdAt ? existing.createdAt.split("T")[0] : null);
+        if (effectiveJoining && isDateBefore(parsedEnding, effectiveJoining)) {
+          return NextResponse.json(
+            { error: "Ending Date cannot be earlier than Joining Date." },
+            { status: 400 }
+          );
+        }
+        updatedEndingDate = parsedEnding;
+        // When ending date is set, infer/mark teacher as INACTIVE
+        inferredStatus = "INACTIVE";
+      }
+    } else if (body.joiningDate !== undefined && existing.endingDate) {
+      if (isDateBefore(existing.endingDate, updatedJoiningDate!)) {
+        return NextResponse.json(
+          { error: "Ending Date cannot be earlier than Joining Date." },
+          { status: 400 }
+        );
+      }
+    }
+
     const updated: typeof existing = {
       ...existing,
       assignedClassIds,
@@ -152,10 +234,12 @@ export async function PUT(
       department: body.specialization || existing.department,
       phone: body.phone || existing.phone,
       email: body.email || existing.email,
-      status: body.status || existing.status,
+      status: inferredStatus,
       photoUrl: body.photoUrl !== undefined ? body.photoUrl : existing.photoUrl,
       baseSalary: updatedSalary,
       salary: updatedSalary,
+      joiningDate: updatedJoiningDate,
+      endingDate: updatedEndingDate,
       updatedAt: new Date().toISOString()
     };
 

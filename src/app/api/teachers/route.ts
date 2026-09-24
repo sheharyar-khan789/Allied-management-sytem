@@ -12,6 +12,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { TeacherDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
+import { validateDateString, isDateBefore } from "@/lib/date-utils";
 
 export async function GET(req: NextRequest) {
   try {
@@ -46,6 +47,7 @@ export async function GET(req: NextRequest) {
     const teacherRecords = filtered.map((t) => {
       const managed = classes.filter((c) => c.classTeacherId === t.id).map((c) => `${c.name}-${c.section}`);
       const taught = subjects.filter((s) => s.teacherId === t.id).map((s) => `${s.name} (${s.code})`);
+      const assigned = classes.filter((c) => (t.assignedClassIds || []).includes(c.id)).map((c) => `${c.name}-${c.section}`);
 
       return {
         id: t.id,
@@ -63,9 +65,11 @@ export async function GET(req: NextRequest) {
         email: t.email,
         status: t.status,
         photoUrl: t.photoUrl || "",
-        joiningDate: t.joiningDate || t.createdAt,
+        joiningDate: t.joiningDate || (t.createdAt ? t.createdAt.split("T")[0] : ""),
+        endingDate: t.endingDate || null,
         baseSalary: t.baseSalary ?? t.salary ?? 0,
         managedClasses: managed,
+        assignedClasses: assigned,
         taughtSubjectsCount: taught.length,
         taughtSubjects: taught,
       };
@@ -95,6 +99,8 @@ export async function POST(req: NextRequest) {
       specialization,
       phone,
       email,
+      joiningDate,
+      endingDate,
     } = body;
 
     if (!firstName || !lastName || !email || !phone) {
@@ -102,6 +108,38 @@ export async function POST(req: NextRequest) {
         { error: "First Name, Last Name, Email, and Phone are required." },
         { status: 400 }
       );
+    }
+
+    if (!joiningDate || typeof joiningDate !== "string" || !joiningDate.trim()) {
+      return NextResponse.json(
+        { error: "Joining Date is required." },
+        { status: 400 }
+      );
+    }
+
+    const cleanJoiningDate = validateDateString(joiningDate);
+    if (!cleanJoiningDate) {
+      return NextResponse.json(
+        { error: "Invalid Joining Date format. Please provide a valid date (YYYY-MM-DD)." },
+        { status: 400 }
+      );
+    }
+
+    let cleanEndingDate: string | null = null;
+    if (endingDate !== undefined && endingDate !== null && endingDate !== "") {
+      cleanEndingDate = validateDateString(endingDate);
+      if (!cleanEndingDate) {
+        return NextResponse.json(
+          { error: "Invalid Ending Date format. Please provide a valid date (YYYY-MM-DD)." },
+          { status: 400 }
+        );
+      }
+      if (isDateBefore(cleanEndingDate, cleanJoiningDate)) {
+        return NextResponse.json(
+          { error: "Ending Date cannot be earlier than Joining Date." },
+          { status: 400 }
+        );
+      }
     }
 
     const existingTeachers = await getTeachersServer(authUser.schoolId);
@@ -179,13 +217,14 @@ export async function POST(req: NextRequest) {
       department: specialization || "Academic Faculty",
       qualification: qualification || "M.Sc / B.Ed",
       photoUrl: body.photoUrl || undefined,
-      status: "ACTIVE",
+      status: cleanEndingDate ? "INACTIVE" : "ACTIVE",
       assignedClassIds: [],
       assignedSubjectIds: [],
       weeklyLoad: 20,
       baseSalary: parsedSalary !== undefined && !isNaN(parsedSalary) && parsedSalary >= 0 ? parsedSalary : undefined,
       salary: parsedSalary !== undefined && !isNaN(parsedSalary) && parsedSalary >= 0 ? parsedSalary : undefined,
-      joiningDate: new Date().toISOString().split("T")[0],
+      joiningDate: cleanJoiningDate,
+      endingDate: cleanEndingDate || null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -201,7 +240,7 @@ export async function POST(req: NextRequest) {
         role: "TEACHER",
         schoolId: authUser.schoolId,
         teacherId: teacherId,
-        status: "ACTIVE",
+        status: cleanEndingDate ? "INACTIVE" : "ACTIVE",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });

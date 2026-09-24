@@ -14,30 +14,26 @@ import {
 } from "@/lib/firebase/server-db";
 import { getDefaultAcademicYear } from "@/lib/school-display";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET(req: NextRequest) {
   try {
-    // This route returns school-wide financials (expected/collected/outstanding fees,
-    // per-class collection rates) and the recent administrative audit trail. It is only ever
-    // called by /admin (the teacher portal has its own timetable-based dashboard), so a
-    // TEACHER session had no reason to be able to read any of it.
     const authUser = await requireAuth(req, ["ADMIN"]);
     const schoolId = authUser.schoolId;
 
-    // Bounded rolling window instead of reading the entire attendance collection on every
-    // dashboard load. The window is returned to the client so the figure can be labelled
-    // honestly rather than presented as an all-time average it never was.
     const attendanceWindowStart = analyticsAttendanceWindowStart();
 
     const [
-      students,
-      teachers,
-      classes,
-      challans,
-      payments,
-      auditLogs,
-      settings,
-      attendanceRecords
-    ] = await Promise.all([
+      studentsRes,
+      teachersRes,
+      classesRes,
+      challansRes,
+      paymentsRes,
+      auditLogsRes,
+      settingsRes,
+      attendanceRes
+    ] = await Promise.allSettled([
       getStudentsServer(schoolId),
       getTeachersServer(schoolId),
       getClassesServer(schoolId),
@@ -48,8 +44,17 @@ export async function GET(req: NextRequest) {
       getAttendanceServer(schoolId, undefined, undefined, undefined, attendanceWindowStart)
     ]);
 
-    const activeStudents = students.filter((s) => s.status === "ACTIVE");
-    const activeTeachers = teachers.filter((t) => t.status === "ACTIVE");
+    const students = studentsRes.status === "fulfilled" ? studentsRes.value : [];
+    const teachers = teachersRes.status === "fulfilled" ? teachersRes.value : [];
+    const classes = classesRes.status === "fulfilled" ? classesRes.value : [];
+    const challans = challansRes.status === "fulfilled" ? challansRes.value : [];
+    const payments = paymentsRes.status === "fulfilled" ? paymentsRes.value : [];
+    const auditLogs = auditLogsRes.status === "fulfilled" ? auditLogsRes.value : [];
+    const settings = settingsRes.status === "fulfilled" ? settingsRes.value : null;
+    const attendanceRecords = attendanceRes.status === "fulfilled" ? attendanceRes.value : [];
+
+    const activeStudents = students.filter((s) => !s.status || s.status.toUpperCase() === "ACTIVE");
+    const activeTeachers = teachers.filter((t) => !t.status || t.status.toUpperCase() === "ACTIVE");
 
     // Real Attendance calculations
     const totalAttRecords = attendanceRecords.length;
@@ -62,20 +67,21 @@ export async function GET(req: NextRequest) {
     const totalExpected = challans.reduce((sum, c) => sum + (c.totalExpected || 0), 0);
     const totalCollected = challans.reduce((sum, c) => sum + (c.paidAmount || 0), 0);
     const totalOutstanding = challans.reduce((sum, c) => sum + Math.max(0, (c.totalExpected || 0) - (c.paidAmount || 0)), 0);
-    const collectionRate = totalExpected > 0 ? ((totalCollected / totalExpected) * 100).toFixed(1) : "0";
+    const collectionRate = totalExpected > 0 ? Number(((totalCollected / totalExpected) * 100).toFixed(1)) : 0;
 
     // Class snapshots
     const classWiseSnapshots = classes.map((cls) => {
       const clsStudents = students.filter((s) => s.classId === cls.id);
-      const clsChallans = challans.filter((c) => c.classId === cls.id);
+      const clsStudentIds = new Set(clsStudents.map((s) => s.id));
+      const clsChallans = challans.filter((c) => c.classId === cls.id || (c.studentId && clsStudentIds.has(c.studentId)));
       const clsExpected = clsChallans.reduce((sum, c) => sum + (c.totalExpected || 0), 0);
       const clsCollected = clsChallans.reduce((sum, c) => sum + (c.paidAmount || 0), 0);
       const clsOutstanding = Math.max(0, clsExpected - clsCollected);
-      const clsPct = clsExpected > 0 ? Math.round((clsCollected / clsExpected) * 100) : 100;
+      const clsPct = clsExpected > 0 ? Math.round((clsCollected / clsExpected) * 100) : 0;
 
       return {
         id: cls.id,
-        className: `${cls.name}-${cls.section}`,
+        className: cls.name.includes(cls.section) ? cls.name : `${cls.name}-${cls.section}`,
         roomNumber: cls.roomNo || "-",
         studentCount: clsStudents.length,
         classTeacherName: cls.classTeacherName || "Unassigned",
@@ -89,15 +95,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       stats: {
-        totalStudents: activeStudents.length,
-        totalTeachers: activeTeachers.length,
+        totalStudents: activeStudents.length || students.length,
+        totalTeachers: activeTeachers.length || teachers.length,
         totalClasses: classes.length,
         attendancePercentage,
         attendanceWindowDays: ANALYTICS_ATTENDANCE_WINDOW_DAYS,
         totalExpectedFee: totalExpected,
         totalCollectedFee: totalCollected,
         totalOutstandingFee: totalOutstanding,
-        collectionRate: Number(collectionRate),
+        collectionRate,
       },
       classWiseSnapshots,
       recentAuditLogs: auditLogs,
@@ -106,6 +112,12 @@ export async function GET(req: NextRequest) {
         schoolName: "Allied School",
         campusName: "Main Campus",
         academicYear: getDefaultAcademicYear()
+      },
+    }, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
       },
     });
   } catch (error: any) {

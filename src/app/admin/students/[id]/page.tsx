@@ -39,6 +39,30 @@ export default function StudentDossierPage({
   const [noteContent, setNoteContent] = useState("");
   const [noteLoading, setNoteLoading] = useState(false);
 
+  // Edit Student modal state
+  const [classes, setClasses] = useState<any[]>([]);
+  const [editStudentModalOpen, setEditStudentModalOpen] = useState(false);
+  const [editStudentLoading, setEditStudentLoading] = useState(false);
+  const [editStudentError, setEditStudentError] = useState("");
+  const [studentFormData, setStudentFormData] = useState({
+    firstName: "",
+    lastName: "",
+    gender: "Female",
+    dob: "",
+    bloodGroup: "",
+    rollNumber: "",
+    classId: "",
+    status: "ACTIVE",
+    contactNumber: "",
+    email: "",
+    address: "",
+    guardianName: "",
+    guardianRelation: "Father",
+    guardianPhone: "",
+    guardianEmail: "",
+    photoUrl: "",
+  });
+
   const fetchStudentDossier = async () => {
     try {
       const res = await fetch(`/api/students/${id}`);
@@ -55,7 +79,64 @@ export default function StudentDossierPage({
 
   useEffect(() => {
     fetchStudentDossier();
+    fetch("/api/classes")
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.success && Array.isArray(j.classes)) setClasses(j.classes);
+      })
+      .catch(console.error);
   }, [id]);
+
+  const openEditStudentModal = () => {
+    if (!data?.student) return;
+    const st = data.student;
+    setStudentFormData({
+      firstName: st.firstName || "",
+      lastName: st.lastName || "",
+      gender: st.gender || "Female",
+      dob: st.dob || "",
+      bloodGroup: st.bloodGroup !== "Not Specified" ? st.bloodGroup : "",
+      rollNumber: st.rollNumber || "",
+      classId: st.classId || "",
+      status: st.status || "ACTIVE",
+      contactNumber: st.contactNumber || "",
+      email: st.email !== "Not Available" ? st.email : "",
+      address: st.address !== "Not Provided" ? st.address : "",
+      guardianName: st.guardianName || "",
+      guardianRelation: st.guardianRelation || "Father",
+      guardianPhone: st.guardianPhone || "",
+      guardianEmail: st.guardianEmail || "",
+      photoUrl: st.photoUrl || "",
+    });
+    setEditStudentError("");
+    setEditStudentModalOpen(true);
+  };
+
+  const handleUpdateStudent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEditStudentError("");
+    setEditStudentLoading(true);
+
+    try {
+      const res = await fetch(`/api/students/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(studentFormData),
+      });
+
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json.error || "Failed to update student.");
+      }
+
+      setEditStudentModalOpen(false);
+      fetchStudentDossier();
+    } catch (err: any) {
+      setEditStudentError(err.message || "Failed to update student.");
+    } finally {
+      setEditStudentLoading(false);
+    }
+  };
 
   const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -249,6 +330,15 @@ export default function StudentDossierPage({
 
         <div className="flex flex-wrap items-center gap-2 self-start md:self-auto">
           <button
+            type="button"
+            onClick={openEditStudentModal}
+            className="px-3.5 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 shadow-sm flex items-center gap-1.5 transition-colors"
+          >
+            <span className="material-symbols-outlined text-[18px]">edit</span>
+            <span>Edit Student</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setNoteModalOpen(true)}
             className="px-3.5 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold flex items-center gap-1.5 transition-colors"
           >
@@ -1010,6 +1100,259 @@ export default function StudentDossierPage({
                   className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50"
                 >
                   {noteLoading ? "Saving..." : "Save Observation"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Student Modal */}
+      {editStudentModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-student-heading"
+            className="bg-surface-container-lowest rounded-xl max-w-2xl w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8"
+          >
+            <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+              <h3 id="edit-student-heading" className="font-headline-md text-sm font-bold text-on-surface">
+                Edit Student Dossier
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditStudentModalOpen(false)}
+                className="text-on-surface-variant hover:text-on-surface"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            {editStudentError && (
+              <div className="p-2.5 rounded bg-error-container text-on-error-container text-xs flex items-center gap-2">
+                <span className="material-symbols-outlined text-[16px]">error</span>
+                <span>{editStudentError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleUpdateStudent} className="space-y-4 text-xs">
+              <div className="pb-2 border-b border-surface-container-low">
+                <FileUpload
+                  folder="profile-photos"
+                  label="Student Photograph"
+                  helperText="Upload official student photo (JPG, PNG, WebP up to 5MB)"
+                  currentUrl={studentFormData.photoUrl}
+                  onUploadComplete={(url) => setStudentFormData({ ...studentFormData, photoUrl: url })}
+                  onRemove={() => setStudentFormData({ ...studentFormData, photoUrl: "" })}
+                  previewType="image"
+                />
+              </div>
+
+              <div>
+                <h4 className="font-bold text-on-surface mb-2 text-[11px] uppercase tracking-wider text-secondary">Student Personal Information</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="edit-st-first-name" className="block font-semibold text-on-surface mb-1">First Name *</label>
+                    <input
+                      id="edit-st-first-name"
+                      type="text"
+                      required
+                      value={studentFormData.firstName}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, firstName: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-last-name" className="block font-semibold text-on-surface mb-1">Last Name</label>
+                    <input
+                      id="edit-st-last-name"
+                      type="text"
+                      value={studentFormData.lastName}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, lastName: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-gender" className="block font-semibold text-on-surface mb-1">Gender</label>
+                    <select
+                      id="edit-st-gender"
+                      value={studentFormData.gender}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, gender: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    >
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-dob" className="block font-semibold text-on-surface mb-1">Date of Birth</label>
+                    <input
+                      id="edit-st-dob"
+                      type="date"
+                      value={studentFormData.dob}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, dob: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-blood" className="block font-semibold text-on-surface mb-1">Blood Group</label>
+                    <input
+                      id="edit-st-blood"
+                      type="text"
+                      value={studentFormData.bloodGroup}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, bloodGroup: e.target.value })}
+                      placeholder="e.g. B+"
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-contact" className="block font-semibold text-on-surface mb-1">Contact Phone</label>
+                    <input
+                      id="edit-st-contact"
+                      type="tel"
+                      value={studentFormData.contactNumber}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, contactNumber: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-email" className="block font-semibold text-on-surface mb-1">Student Email</label>
+                    <input
+                      id="edit-st-email"
+                      type="email"
+                      value={studentFormData.email}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, email: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-address" className="block font-semibold text-on-surface mb-1">Residential Address</label>
+                    <input
+                      id="edit-st-address"
+                      type="text"
+                      value={studentFormData.address}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, address: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="font-bold text-on-surface mb-2 text-[11px] uppercase tracking-wider text-secondary">Academic Enrollment</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label htmlFor="edit-st-class" className="block font-semibold text-on-surface mb-1">Class Cohort *</label>
+                    <select
+                      id="edit-st-class"
+                      required
+                      value={studentFormData.classId}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, classId: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    >
+                      <option value="">Select Class</option>
+                      {classes.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.displayName || `${c.name}-${c.section}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-roll" className="block font-semibold text-on-surface mb-1">Roll Number</label>
+                    <input
+                      id="edit-st-roll"
+                      type="text"
+                      value={studentFormData.rollNumber}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, rollNumber: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-status" className="block font-semibold text-on-surface mb-1">Status</label>
+                    <select
+                      id="edit-st-status"
+                      value={studentFormData.status}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, status: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 font-semibold"
+                    >
+                      <option value="ACTIVE">ACTIVE</option>
+                      <option value="INACTIVE">INACTIVE</option>
+                      <option value="ALUMNI">ALUMNI</option>
+                      <option value="SUSPENDED">SUSPENDED</option>
+                      <option value="WITHDRAWN">WITHDRAWN</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="font-bold text-on-surface mb-2 text-[11px] uppercase tracking-wider text-secondary">Guardian Details</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="edit-st-guardian-name" className="block font-semibold text-on-surface mb-1">Guardian Name *</label>
+                    <input
+                      id="edit-st-guardian-name"
+                      type="text"
+                      required
+                      value={studentFormData.guardianName}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, guardianName: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-guardian-relation" className="block font-semibold text-on-surface mb-1">Relationship</label>
+                    <select
+                      id="edit-st-guardian-relation"
+                      value={studentFormData.guardianRelation}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, guardianRelation: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    >
+                      <option value="Father">Father</option>
+                      <option value="Mother">Mother</option>
+                      <option value="Guardian">Legal Guardian</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-guardian-phone" className="block font-semibold text-on-surface mb-1">Guardian Phone *</label>
+                    <input
+                      id="edit-st-guardian-phone"
+                      type="tel"
+                      required
+                      value={studentFormData.guardianPhone}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, guardianPhone: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-guardian-email" className="block font-semibold text-on-surface mb-1">Guardian Email</label>
+                    <input
+                      id="edit-st-guardian-email"
+                      type="email"
+                      value={studentFormData.guardianEmail}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, guardianEmail: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-surface-container-low">
+                <button
+                  type="button"
+                  onClick={() => setEditStudentModalOpen(false)}
+                  className="px-3 py-1.5 rounded bg-surface-container text-on-surface font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editStudentLoading}
+                  className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50"
+                >
+                  {editStudentLoading ? "Saving..." : "Update Student"}
                 </button>
               </div>
             </form>

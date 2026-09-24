@@ -96,35 +96,54 @@ export async function uploadFileToStorage(options: UploadOptions): Promise<Uploa
   const downloadToken = crypto.randomUUID();
 
   if (hasAdminCredentials) {
-    const file = adminBucket.file(storagePath);
-    await file.save(buffer, {
-      metadata: {
-        contentType,
+    try {
+      const file = adminBucket.file(storagePath);
+      await file.save(buffer, {
         metadata: {
-          firebaseStorageDownloadTokens: downloadToken,
-          schoolId,
-          uploadedAt: new Date().toISOString(),
-          originalFilename: filename,
+          contentType,
+          metadata: {
+            firebaseStorageDownloadTokens: downloadToken,
+            schoolId,
+            uploadedAt: new Date().toISOString(),
+            originalFilename: filename,
+          },
         },
-      },
-      resumable: false,
-    });
+        resumable: false,
+      });
 
-    // Generate Firebase Storage persistent download URL using download token
-    const encodedPath = encodeURIComponent(storagePath);
-    const bucketName = adminBucket.name;
-    const downloadUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media&token=${downloadToken}`;
+      // Generate Firebase Storage persistent download URL using download token
+      const encodedPath = encodeURIComponent(storagePath);
+      const bucketName = adminBucket.name;
+      const downloadUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodedPath}?alt=media&token=${downloadToken}`;
 
-    return {
-      url: downloadUrl,
-      storagePath,
-      filename: uniqueName,
-      contentType,
-      size: buffer.length,
-    };
+      return {
+        url: downloadUrl,
+        storagePath,
+        filename: uniqueName,
+        contentType,
+        size: buffer.length,
+      };
+    } catch (err) {
+      // In production, surface the real error so the admin knows Storage must be configured
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(
+          `Firebase Storage upload failed: ${(err as Error).message}. ` +
+          "Ensure Firebase Storage is enabled in the Firebase Console (Storage → Get Started)."
+        );
+      }
+      // In development, fall through to data URI fallback
+      console.warn("[storage] Firebase Storage upload failed, falling back to data URI:", (err as Error).message);
+    }
   }
 
-  // Local development / mock fallback (data URI) when live GCP credentials are not present
+  // Development-only fallback (data URI) when Firebase Storage is unavailable or credentials are missing
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "File upload is not available: Firebase Admin credentials are not configured. " +
+      "Set FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY environment variables."
+    );
+  }
+
   const base64 = buffer.toString("base64");
   const dataUri = `data:${contentType};base64,${base64}`;
 

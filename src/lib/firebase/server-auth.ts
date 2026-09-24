@@ -26,6 +26,8 @@ function getJwtSecret(): Uint8Array {
 
 const SECRET_KEY = getJwtSecret();
 
+export const SESSION_IDLE_SECONDS = 5 * 60;
+
 export interface AuthenticatedUser {
   uid: string;
   email: string;
@@ -41,7 +43,7 @@ export async function createSessionCookieServer(payload: AuthenticatedUser): Pro
   return new SignJWT({ ...payload })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime("7d")
+    .setExpirationTime(`${SESSION_IDLE_SECONDS}s`)
     .sign(SECRET_KEY);
 }
 

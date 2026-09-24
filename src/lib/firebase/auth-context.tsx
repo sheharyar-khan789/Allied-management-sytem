@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import {
   User,
   signInWithEmailAndPassword,
@@ -114,7 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     document.cookie = "session_user=; path=/; max-age=0";
   };
 
-  const logout = async (): Promise<void> => {
+  const logout = useCallback(async (): Promise<void> => {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
     } catch {}
@@ -123,7 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setProfile(null);
     document.cookie = "session_user=; path=/; max-age=0";
     router.push("/login");
-  };
+  }, [router]);
 
   const sendPasswordReset = async (email: string): Promise<void> => {
     await fbResetPassword(auth, email);
@@ -133,6 +133,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!auth.currentUser) throw new Error("No authenticated user.");
     await fbUpdatePassword(auth.currentUser, newPass);
   };
+
+  useEffect(() => {
+    if (!profile && !user) return;
+
+    const IDLE_MS = 5 * 60 * 1000;
+    const REFRESH_MS = 4 * 60 * 1000;
+    let lastActivity = Date.now();
+    let lastRefresh = Date.now();
+    let timer: ReturnType<typeof setTimeout>;
+    let signedOut = false;
+
+    const idleLogout = () => {
+      if (signedOut) return;
+      signedOut = true;
+      void logout();
+    };
+
+    const onActivity = () => {
+      if (document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastActivity >= IDLE_MS) {
+        idleLogout();
+        return;
+      }
+      lastActivity = now;
+      clearTimeout(timer);
+      timer = setTimeout(idleLogout, IDLE_MS);
+      if (now - lastRefresh >= REFRESH_MS) {
+        lastRefresh = now;
+        void fetch("/api/auth/me", { credentials: "same-origin" });
+      }
+    };
+
+    const events: Array<keyof WindowEventMap> = [
+      "mousedown",
+      "mousemove",
+      "keydown",
+      "scroll",
+      "touchstart",
+      "click",
+    ];
+    events.forEach((eventName) => window.addEventListener(eventName, onActivity, { passive: true }));
+    document.addEventListener("visibilitychange", onActivity);
+    onActivity();
+
+    return () => {
+      clearTimeout(timer);
+      events.forEach((eventName) => window.removeEventListener(eventName, onActivity));
+      document.removeEventListener("visibilitychange", onActivity);
+    };
+  }, [profile, user, logout]);
 
   return (
     <AuthContext.Provider

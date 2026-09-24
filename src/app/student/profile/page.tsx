@@ -6,6 +6,12 @@ import { formatDate } from "@/lib/utils";
 export default function StudentProfilePage() {
   const [student, setStudent] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [savingPassword, setSavingPassword] = useState(false);
 
   useEffect(() => {
     fetch("/api/student/me")
@@ -16,6 +22,42 @@ export default function StudentProfilePage() {
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
+
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordError("");
+    setPasswordMessage("");
+
+    if (newPassword.length < 8 || newPassword.length > 128) {
+      setPasswordError("New password must be between 8 and 128 characters.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError("New password and confirmation do not match.");
+      return;
+    }
+
+    setSavingPassword(true);
+    try {
+      const res = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to change password.");
+      }
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordMessage("Password updated. Use the new password the next time you sign in.");
+    } catch (err: any) {
+      setPasswordError(err.message || "Failed to change password.");
+    } finally {
+      setSavingPassword(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -127,6 +169,71 @@ export default function StudentProfilePage() {
           </div>
         </div>
       </div>
+
+      <form
+        onSubmit={handlePasswordChange}
+        className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4"
+      >
+        <h3 className="font-headline-md text-sm font-bold text-on-surface border-b border-surface-container-low pb-2 flex items-center gap-2">
+          <span className="material-symbols-outlined text-secondary text-[18px]">lock</span>
+          Change Password
+        </h3>
+        {passwordError && (
+          <p className="text-xs text-error">{passwordError}</p>
+        )}
+        {passwordMessage && (
+          <p className="text-xs text-secondary">{passwordMessage}</p>
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          <div>
+            <label htmlFor="student-current-password" className="text-on-surface-variant">Current password</label>
+            <input
+              id="student-current-password"
+              type="password"
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-surface-container-high bg-surface-container-lowest text-on-surface"
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="student-new-password" className="text-on-surface-variant">New password</label>
+            <input
+              id="student-new-password"
+              type="password"
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-surface-container-high bg-surface-container-lowest text-on-surface"
+              required
+              minLength={8}
+              maxLength={128}
+            />
+          </div>
+          <div>
+            <label htmlFor="student-confirm-password" className="text-on-surface-variant">Confirm new password</label>
+            <input
+              id="student-confirm-password"
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-surface-container-high bg-surface-container-lowest text-on-surface"
+              required
+              minLength={8}
+              maxLength={128}
+            />
+          </div>
+        </div>
+        <button
+          type="submit"
+          disabled={savingPassword}
+          className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold text-xs hover:bg-secondary/90 disabled:opacity-60"
+        >
+          {savingPassword ? "Saving..." : "Update password"}
+        </button>
+      </form>
     </div>
   );
 }

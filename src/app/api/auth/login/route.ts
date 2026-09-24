@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import bcrypt from "bcryptjs";
 import { getUserByEmailServer, createAuditLogServer } from "@/lib/firebase/server-db";
-import { createSessionCookieServer, AuthenticatedUser } from "@/lib/firebase/server-auth";
+import { createSessionCookieServer, AuthenticatedUser, SESSION_IDLE_SECONDS } from "@/lib/firebase/server-auth";
 import { dashboardPathForRole } from "@/lib/role-home";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
@@ -135,6 +136,13 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    if (!isAuthenticated && password) {
+      const hashedUser = await getUserByEmailServer(identifier);
+      if (hashedUser?.passwordHash && bcrypt.compareSync(password, hashedUser.passwordHash)) {
+        isAuthenticated = true;
+      }
+    }
+
     // If authentication failed
     if (!isAuthenticated) {
       recordAuthFailure(clientIp);
@@ -265,7 +273,7 @@ export async function POST(req: NextRequest) {
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
-      maxAge: 60 * 60 * 24 * 7,
+      maxAge: SESSION_IDLE_SECONDS,
     });
 
     return response;

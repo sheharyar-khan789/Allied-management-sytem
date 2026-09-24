@@ -11,7 +11,7 @@ export default function AdminDashboardPage() {
 
   const fetchDashboard = async () => {
     try {
-      const res = await fetch("/api/dashboard");
+      const res = await fetch("/api/dashboard", { cache: "no-store" });
       const json = await res.json();
       if (json.success) {
         setData(json);

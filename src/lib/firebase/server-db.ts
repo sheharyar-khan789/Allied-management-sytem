@@ -710,6 +710,26 @@ export async function getClassesServer(schoolId: string): Promise<ClassDoc[]> {
   return local.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export async function getClassByIdServer(schoolId: string, classId: string): Promise<ClassDoc | null> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("classes").doc(classId).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as ClassDoc;
+        if (data.schoolId === schoolId) return data;
+      }
+    } catch (e) {
+      onFirestoreError(`getClassByIdServer(${classId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+
+  const local = localStore.classes.get(classId);
+  if (local && local.schoolId === schoolId) return local;
+  return null;
+}
+
 export async function saveClassServer(classData: ClassDoc): Promise<string> {
   const id = classData.id || `cls-${Date.now()}`;
   const data: ClassDoc = {
@@ -753,6 +773,62 @@ export async function getSubjectsServer(schoolId: string, classId?: string): Pro
   let list = Array.from(localStore.subjects.values()).filter((s) => s.schoolId === schoolId);
   if (classId && classId !== "ALL") list = list.filter((s) => s.classId === classId);
   return list.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function getSubjectByIdServer(schoolId: string, subjectId: string): Promise<SubjectDoc | null> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("subjects").doc(subjectId).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as SubjectDoc;
+        if (data.schoolId === schoolId) return data;
+      }
+    } catch (e) {
+      onFirestoreError(`getSubjectByIdServer(${subjectId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+
+  const local = localStore.subjects.get(subjectId);
+  if (local && local.schoolId === schoolId) return local;
+  return null;
+}
+
+export async function saveSubjectServer(subject: SubjectDoc): Promise<string> {
+  const id = subject.id || `sb-${Date.now()}`;
+  const data: SubjectDoc = {
+    ...subject,
+    id,
+    updatedAt: new Date().toISOString(),
+    createdAt: subject.createdAt || new Date().toISOString(),
+  };
+  localStore.subjects.set(id, data);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("subjects").doc(id).set(cleanUndefined(data), { merge: true });
+    } catch (e) {
+      onFirestoreError(`saveSubjectServer(${id})`, e);
+    }
+  }
+  return id;
+}
+
+export async function deleteSubjectServer(schoolId: string, subjectId: string): Promise<boolean> {
+  const existing = await getSubjectByIdServer(schoolId, subjectId);
+  if (!existing) return false;
+
+  localStore.subjects.delete(subjectId);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("subjects").doc(subjectId).delete();
+    } catch (e) {
+      onFirestoreError(`deleteSubjectServer(${subjectId})`, e);
+    }
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -832,11 +908,16 @@ export async function getAttendanceServer(
     try {
       let ref = adminDb.collection("attendance").where("schoolId", "==", schoolId);
       if (date) ref = ref.where("date", "==", date);
-      else if (fromDate) ref = ref.where("date", ">=", fromDate);
       if (classId && classId !== "ALL") ref = ref.where("classId", "==", classId);
       if (studentId) ref = ref.where("studentId", "==", studentId);
       const snap = await ref.get();
-      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceDoc));
+      let records = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceDoc));
+      if (fromDate) {
+        records = records.filter((a) => a.date >= fromDate);
+      }
+      if (records.length > 0 || process.env.NODE_ENV === "production") {
+        return records;
+      }
     } catch (e) {
       onFirestoreError(`getAttendanceServer(${schoolId})`, e);
     }
@@ -926,7 +1007,10 @@ export async function getFeeChallansServer(
       if (status && status.toUpperCase() !== "ALL") ref = ref.where("status", "==", status);
       if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, 250));
       const snap = await ref.get();
-      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeChallanDoc));
+      const challans = snap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeChallanDoc));
+      if (challans.length > 0 || process.env.NODE_ENV === "production") {
+        return challans;
+      }
     } catch (e) {
       onFirestoreError(`getFeeChallansServer(${schoolId})`, e);
     }

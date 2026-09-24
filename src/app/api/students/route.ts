@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getStudentsServer,
   saveStudentServer,
   createUserServer,
   getUserByEmailServer,
-  saveFeeChallanServer,
   createAuditLogServer,
-  getClassesServer
+  getClassesServer,
+  getSchoolServer,
+  getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
-import { StudentDoc, FeeChallanDoc } from "@/lib/firebase/types";
+import { StudentDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { linkGuardianEmailToStudent } from "@/lib/link-parent";
 import { assertTeacherOwnsClass, resolveAuthenticatedTeacher } from "@/lib/academic-access";
@@ -135,39 +136,49 @@ export async function POST(req: NextRequest) {
     // Use a timestamp+random suffix (not a sequential count) for the internal ID so two
     // concurrent enrollments can never collide and silently overwrite one another.
     const uniqueSuffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const studentId = `std-${uniqueSuffix}`;
-    const studentEmail = body.email?.trim().toLowerCase() || `student.${uniqueSuffix}@alliedschool.edu`;
+    const studentId = `std_${uniqueSuffix}`;
+    const schoolSettings = await getSchoolSettingsServer(authUser.schoolId);
+    const school = await getSchoolServer(authUser.schoolId);
+    const schoolEmail = schoolSettings?.email || school?.email || authUser.email || "alliedschool.edu";
+    const domain = schoolEmail.includes("@") ? schoolEmail.split("@")[1].trim().toLowerCase() : "alliedschool.edu";
+
+    const cleanFirst = firstName.trim().toLowerCase().replace(/[^a-z0-9]/g, "") || "student";
+    const cleanLast = lastName.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    const rollSlug = rollNumber ? rollNumber.trim().toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+    const baseUsername = cleanLast ? `student.${cleanFirst}.${cleanLast}` : `student.${cleanFirst}`;
+
+    const emailCandidates = [
+      `${baseUsername}@${domain}`,
+      rollSlug ? `${baseUsername}.${rollSlug}@${domain}` : `${baseUsername}.${count}@${domain}`,
+      `${baseUsername}.${studentId.replace(/[^a-z0-9]/g, "")}@${domain}`,
+    ];
+    let studentEmail = emailCandidates[0];
+    for (const candidate of emailCandidates) {
+      studentEmail = candidate;
+      const taken = await getUserByEmailServer(candidate);
+      if (!taken) break;
+    }
+    if (await getUserByEmailServer(studentEmail)) {
+      return NextResponse.json({ error: "Could not allocate a unique student login email." }, { status: 409 });
+    }
+
     let userUid = `user_std_${uniqueSuffix}`;
     let createdAuthUid: string | null = null;
-    let temporaryPassword: string | null = null;
-
-    if (body.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(studentEmail)) {
-      return NextResponse.json({ error: "Please enter a valid student email address." }, { status: 400 });
-    }
-
-    const existingUser = await getUserByEmailServer(studentEmail);
-    if (existingUser) {
-      return NextResponse.json({ error: "A user with this student email already exists." }, { status: 409 });
-    }
+    const initialPassword = process.env.DEFAULT_STUDENT_INITIAL_PASSWORD || "Student@123";
+    const passwordHash = bcrypt.hashSync(initialPassword, 10);
+    const temporaryPassword = initialPassword;
 
     if (hasAdminCredentials) {
       try {
-        // Cryptographically secure, high-entropy temporary password — Math.random() is a
-        // non-cryptographic PRNG (predictable given enough samples, and Date.now()'s last 4
-        // digits repeat every 10 seconds), which is unsuitable for a real account credential
-        // even though it's shown once and meant to be changed. Same fix and rationale already
-        // applied to parent account provisioning in src/lib/link-parent.ts.
-        const generatedPassword = `Student@${crypto.randomBytes(12).toString("base64url")}!1`;
         const studentAuthUser = await adminAuth.createUser({
           email: studentEmail,
           emailVerified: true,
-          password: generatedPassword,
+          password: initialPassword,
           displayName: fullName,
           disabled: false,
         });
         userUid = studentAuthUser.uid;
         createdAuthUid = studentAuthUser.uid;
-        temporaryPassword = generatedPassword;
 
         await adminAuth.setCustomUserClaims(studentAuthUser.uid, {
           role: "STUDENT",
@@ -236,6 +247,7 @@ export async function POST(req: NextRequest) {
         schoolId: authUser.schoolId,
         studentId: studentId,
         status: "ACTIVE",
+        passwordHash,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
@@ -249,47 +261,6 @@ export async function POST(req: NextRequest) {
         }
       }
       throw dbErr;
-    }
-
-    // Create an initial fee challan ONLY when the admin actually supplied real fee figures
-    // and a due date. Previously this always fabricated a challan with invented amounts
-    // (Rs. 5000 tuition, Rs. 2000 admission fee, a hardcoded "September 2024" period, etc.)
-    // regardless of the school's real fee structure. Admins can generate the real first
-    // challan for this student at any time from the Fees module, which already uses actual
-    // admin-entered figures.
-    const suppliedTuitionFee = Number(body.tuitionFee);
-    if (suppliedTuitionFee > 0 && body.dueDate) {
-      const admissionFee = Number(body.admissionFee) || 0;
-      const examFee = Number(body.examFee) || 0;
-      const otherFee = Number(body.otherFee) || 0;
-      const discount = Number(body.discount) || 0;
-      const totalExpected = suppliedTuitionFee + admissionFee + examFee + otherFee - discount;
-      const challanDoc: FeeChallanDoc = {
-        id: `ch-adm-${uniqueSuffix}`,
-        schoolId: authUser.schoolId,
-        studentId: studentId,
-        studentName: fullName,
-        admissionNo,
-        classId,
-        className,
-        challanNo: `CHL-${currentYear}-ADM-${count.toString().padStart(4, "0")}`,
-        month: body.month || new Date().toLocaleString("en-US", { month: "long" }),
-        year: Number(body.year) || currentYear,
-        issueDate: new Date().toISOString().split("T")[0],
-        dueDate: body.dueDate,
-        tuitionFee: suppliedTuitionFee,
-        admissionFee,
-        examFee,
-        otherFee,
-        discount,
-        totalExpected,
-        paidAmount: 0,
-        balanceAmount: totalExpected,
-        status: "PENDING",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      await saveFeeChallanServer(challanDoc);
     }
 
     let parentTemporaryPassword: string | undefined;

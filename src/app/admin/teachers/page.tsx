@@ -20,6 +20,8 @@ const EMPTY_TEACHER_FORM = {
   email: "",
   photoUrl: "",
   baseSalary: "",
+  joiningDate: "",
+  endingDate: "",
 };
 
 export default function TeachersManagementPage() {
@@ -27,12 +29,9 @@ export default function TeachersManagementPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingTeacher, setEditingTeacher] = useState<any>(null);
   const [formLoading, setFormLoading] = useState(false);
   const [error, setError] = useState("");
-  // The API provisions a real Firebase Auth account and returns its one-time password exactly
-  // once, never storing or logging it. Until now the UI discarded that value silently, so a
-  // newly created teacher had a working account nobody could ever sign in to. It is now shown
-  // to the admin so they can hand it over.
   const [newCredentials, setNewCredentials] = useState<
     { email: string; password: string; name: string } | null
   >(null);
@@ -57,21 +56,62 @@ export default function TeachersManagementPage() {
     fetchTeachers();
   }, [search]);
 
-  const handleAddTeacher = async (e: React.FormEvent) => {
+  const openCreateModal = () => {
+    setEditingTeacher(null);
+    setFormData(EMPTY_TEACHER_FORM);
+    setError("");
+    setModalOpen(true);
+  };
+
+  const openEditModal = (t: any) => {
+    setEditingTeacher(t);
+    const names = (t.fullName || "").split(" ");
+    setFormData({
+      firstName: t.firstName || names[0] || "",
+      lastName: t.lastName || names.slice(1).join(" ") || "",
+      designation: t.designation || "",
+      qualification: t.qualification || "",
+      specialization: t.specialization || t.department || "",
+      phone: t.phone || "",
+      email: t.email || "",
+      photoUrl: t.photoUrl || "",
+      baseSalary: String(t.baseSalary ?? t.salary ?? ""),
+      joiningDate: t.joiningDate || "",
+      endingDate: t.endingDate || "",
+    });
+    setError("");
+    setModalOpen(true);
+  };
+
+  const handleSaveTeacher = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+
+    if (!formData.joiningDate) {
+      setError("Joining Date is required.");
+      return;
+    }
+
+    if (formData.endingDate && formData.joiningDate && formData.endingDate < formData.joiningDate) {
+      setError("Ending Date cannot be earlier than Joining Date.");
+      return;
+    }
+
     setFormLoading(true);
 
     try {
-      const res = await fetch("/api/teachers", {
-        method: "POST",
+      const url = editingTeacher ? `/api/teachers/${editingTeacher.id}` : "/api/teachers";
+      const method = editingTeacher ? "PUT" : "POST";
+
+      const res = await fetch(url, {
+        method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(formData),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || "Failed to add teacher.");
+        throw new Error(data.error || `Failed to ${editingTeacher ? "update" : "add"} teacher.`);
       }
 
       setModalOpen(false);
@@ -111,7 +151,7 @@ export default function TeachersManagementPage() {
 
         <button
           type="button"
-          onClick={() => setModalOpen(true)}
+          onClick={openCreateModal}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 shadow-sm transition-all self-start sm:self-auto"
         >
           <span className="material-symbols-outlined text-[18px]">person_add</span>
@@ -270,20 +310,45 @@ export default function TeachersManagementPage() {
                     </td>
 
                     <td className="py-3 px-4">
-                      <span className="px-2 py-0.5 rounded-full bg-tertiary-container/10 text-on-tertiary-container font-bold text-[10px]">
-                        {t.status}
-                      </span>
+                      <div className="flex flex-col gap-0.5">
+                        <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] w-fit ${
+                          t.status === "ACTIVE"
+                            ? "bg-tertiary-container/10 text-on-tertiary-container"
+                            : "bg-error-container/20 text-error"
+                        }`}>
+                          {t.status}
+                        </span>
+                        <span className="text-[10px] text-on-surface-variant">
+                          Joined: {t.joiningDate || "—"}
+                        </span>
+                        {t.endingDate && (
+                          <span className="text-[10px] text-error font-medium">
+                            Left: {t.endingDate}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     <td className="py-3 px-4 text-right">
-                      <Link
-                        href={`/admin/teachers/${t.id}`}
-                        className="p-1.5 rounded-lg hover:bg-surface-container text-secondary transition-colors inline-block"
-                        title="View Faculty Profile"
-                        aria-label="View faculty profile"
-                      >
-                        <span className="material-symbols-outlined text-[18px]">visibility</span>
-                      </Link>
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(t)}
+                          className="p-1.5 rounded-lg hover:bg-surface-container text-secondary transition-colors inline-block"
+                          title="Edit Faculty Member"
+                          aria-label={`Edit ${t.fullName}`}
+                        >
+                          <span className="material-symbols-outlined text-[18px]">edit</span>
+                        </button>
+                        <Link
+                          href={`/admin/teachers/${t.id}`}
+                          className="p-1.5 rounded-lg hover:bg-surface-container text-secondary transition-colors inline-block"
+                          title="View Faculty Profile"
+                          aria-label="View faculty profile"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">visibility</span>
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -303,7 +368,9 @@ export default function TeachersManagementPage() {
             className="bg-surface-container-lowest rounded-xl max-w-lg w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8"
           >
             <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
-              <h3 id="add-faculty-heading" className="font-headline-md text-sm font-bold text-on-surface">Add New Faculty Member</h3>
+              <h3 id="add-faculty-heading" className="font-headline-md text-sm font-bold text-on-surface">
+                {editingTeacher ? "Edit Faculty Member" : "Add New Faculty Member"}
+              </h3>
               <button
                 onClick={() => setModalOpen(false)}
                 className="text-on-surface-variant hover:text-on-surface"
@@ -319,7 +386,7 @@ export default function TeachersManagementPage() {
               </div>
             )}
 
-            <form onSubmit={handleAddTeacher} className="space-y-3 text-xs">
+            <form onSubmit={handleSaveTeacher} className="space-y-3 text-xs">
               <div className="pb-2 border-b border-surface-container-low">
                 <FileUpload
                   folder="profile-photos"
@@ -407,9 +474,25 @@ export default function TeachersManagementPage() {
                     className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                   />
                 </div>
-                <div className="col-span-2">
-                  <label htmlFor="teachers-base-salary" className="block font-semibold text-on-surface mb-1">Base Monthly Salary (PKR)</label>
-                  <input id="teachers-base-salary"
+                <div>
+                  <label htmlFor="teachers-joining-date" className="block font-semibold text-on-surface mb-1">
+                    Joining Date *
+                  </label>
+                  <input
+                    id="teachers-joining-date"
+                    type="date"
+                    required
+                    value={formData.joiningDate}
+                    onChange={(e) => setFormData({ ...formData, joiningDate: e.target.value })}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="teachers-base-salary" className="block font-semibold text-on-surface mb-1">
+                    Base Monthly Salary (PKR)
+                  </label>
+                  <input
+                    id="teachers-base-salary"
                     type="number"
                     min="0"
                     step="500"
@@ -419,6 +502,23 @@ export default function TeachersManagementPage() {
                     className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                   />
                 </div>
+                {editingTeacher && (
+                  <div className="col-span-2">
+                    <label htmlFor="teachers-ending-date" className="block font-semibold text-on-surface mb-1">
+                      Ending Date / Leaving Date
+                    </label>
+                    <input
+                      id="teachers-ending-date"
+                      type="date"
+                      value={formData.endingDate}
+                      onChange={(e) => setFormData({ ...formData, endingDate: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                    <p className="text-[10px] text-on-surface-variant mt-1">
+                      Leave empty for active teachers. Setting an ending date marks this educator as inactive while preserving all historical classes, attendance, marks, and records.
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-surface-container-low">
@@ -434,7 +534,7 @@ export default function TeachersManagementPage() {
                   disabled={formLoading}
                   className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50"
                 >
-                  {formLoading ? "Creating..." : "Save Faculty"}
+                  {formLoading ? (editingTeacher ? "Updating..." : "Creating...") : (editingTeacher ? "Update Faculty" : "Save Faculty")}
                 </button>
               </div>
             </form>

@@ -7,12 +7,25 @@ export default function ClassesAndSubjectsPage() {
   const [teachers, setTeachers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [classModalOpen, setClassModalOpen] = useState(false);
+  const [editingClass, setEditingClass] = useState<any>(null);
   const [formLoading, setFormLoading] = useState(false);
-  const [className, setClassName] = useState("Class 11");
+  const [error, setError] = useState("");
+  const [className, setClassName] = useState("");
   const [section, setSection] = useState("A");
-  const [roomNumber, setRoomNumber] = useState("Room 205");
+  const [roomNumber, setRoomNumber] = useState("");
   const [capacity, setCapacity] = useState("30");
   const [selectedTeacherId, setSelectedTeacherId] = useState("");
+
+  // Subject management state
+  const [subjectModalOpen, setSubjectModalOpen] = useState(false);
+  const [editingSubject, setEditingSubject] = useState<any>(null);
+  const [subjectFormLoading, setSubjectFormLoading] = useState(false);
+  const [subjectError, setSubjectError] = useState("");
+  const [subjectName, setSubjectName] = useState("");
+  const [subjectCode, setSubjectCode] = useState("");
+  const [subjectClassId, setSubjectClassId] = useState("");
+  const [subjectTeacherId, setSubjectTeacherId] = useState("");
+  const [subjectCredits, setSubjectCredits] = useState("3");
 
   const fetchClasses = async () => {
     try {
@@ -34,7 +47,6 @@ export default function ClassesAndSubjectsPage() {
       const json = await res.json();
       if (json.success) {
         setTeachers(json.teachers);
-        if (json.teachers.length > 0) setSelectedTeacherId(json.teachers[0].id);
       }
     } catch (err) {
       console.error(err);
@@ -46,31 +58,156 @@ export default function ClassesAndSubjectsPage() {
     fetchTeachers();
   }, []);
 
-  const handleCreateClass = async (e: React.FormEvent) => {
+  const openCreateModal = () => {
+    setEditingClass(null);
+    setClassName("");
+    setSection("A");
+    setRoomNumber("");
+    setCapacity("30");
+    setSelectedTeacherId("");
+    setError("");
+    setClassModalOpen(true);
+  };
+
+  const openEditModal = (cls: any) => {
+    setEditingClass(cls);
+    setClassName(cls.name || "");
+    setSection(cls.section || "A");
+    setRoomNumber(cls.roomNumber !== "-" ? cls.roomNumber : "");
+    setCapacity(String(cls.capacity || 30));
+    setSelectedTeacherId(cls.classTeacherId || "");
+    setError("");
+    setClassModalOpen(true);
+  };
+
+  const handleSaveClass = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError("");
     setFormLoading(true);
 
     try {
+      const method = editingClass ? "PUT" : "POST";
+      const payload: any = {
+        name: className,
+        section,
+        roomNumber,
+        capacity: Number(capacity),
+        classTeacherId: selectedTeacherId || null,
+      };
+      if (editingClass) {
+        payload.id = editingClass.id;
+      }
+
       const res = await fetch("/api/classes", {
-        method: "POST",
+        method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: className,
-          section,
-          roomNumber,
-          capacity: Number(capacity),
-          classTeacherId: selectedTeacherId || null,
-        }),
+        body: JSON.stringify(payload),
       });
 
-      if (res.ok) {
-        setClassModalOpen(false);
-        fetchClasses();
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Failed to ${editingClass ? "update" : "create"} class.`);
       }
-    } catch (err) {
-      console.error(err);
+
+      setClassModalOpen(false);
+      fetchClasses();
+    } catch (err: any) {
+      setError(err.message || "An unexpected error occurred.");
     } finally {
       setFormLoading(false);
+    }
+  };
+
+  const openCreateSubjectModal = (preselectedClassId?: string) => {
+    setEditingSubject(null);
+    setSubjectName("");
+    setSubjectCode("");
+    setSubjectClassId(preselectedClassId || classes[0]?.id || "");
+    setSubjectTeacherId("");
+    setSubjectCredits("3");
+    setSubjectError("");
+    setSubjectModalOpen(true);
+  };
+
+  const openEditSubjectModal = (sub: any, cls: any) => {
+    setEditingSubject(sub);
+    setSubjectName(sub.name || "");
+    setSubjectCode(sub.code || "");
+    setSubjectClassId(sub.classId || cls.id || "");
+    setSubjectTeacherId(sub.teacherId || "");
+    setSubjectCredits(String(sub.credits || 3));
+    setSubjectError("");
+    setSubjectModalOpen(true);
+  };
+
+  const handleSaveSubject = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubjectError("");
+
+    if (!subjectName.trim()) {
+      setSubjectError("Subject name is required.");
+      return;
+    }
+
+    if (!subjectClassId) {
+      setSubjectError("Please select a class for this subject.");
+      return;
+    }
+
+    setSubjectFormLoading(true);
+
+    try {
+      const method = editingSubject ? "PUT" : "POST";
+      const payload: any = {
+        name: subjectName.trim(),
+        code: subjectCode.trim(),
+        classId: subjectClassId,
+        teacherId: subjectTeacherId || null,
+        credits: Number(subjectCredits) || 3,
+      };
+
+      if (editingSubject) {
+        payload.id = editingSubject.id;
+      }
+
+      const res = await fetch("/api/subjects", {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Failed to ${editingSubject ? "update" : "create"} subject.`);
+      }
+
+      setSubjectModalOpen(false);
+      fetchClasses();
+    } catch (err: any) {
+      setSubjectError(err.message || "An unexpected error occurred.");
+    } finally {
+      setSubjectFormLoading(false);
+    }
+  };
+
+  const handleDeleteSubject = async (subjectId: string) => {
+    if (!confirm("Are you sure you want to delete this subject?")) return;
+
+    try {
+      const res = await fetch(`/api/subjects?id=${encodeURIComponent(subjectId)}`, {
+        method: "DELETE",
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Failed to delete subject.");
+        return;
+      }
+
+      fetchClasses();
+    } catch (err: any) {
+      console.error(err);
+      alert("Failed to delete subject.");
     }
   };
 
@@ -92,14 +229,24 @@ export default function ClassesAndSubjectsPage() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setClassModalOpen(true)}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 shadow-sm transition-all self-start sm:self-auto"
-        >
-          <span className="material-symbols-outlined text-[18px]">add</span>
-          <span>Create New Class</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openCreateSubjectModal()}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-surface-container-high text-on-surface font-label-md text-xs font-semibold hover:bg-surface-container-highest shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">menu_book</span>
+            <span>Add Subject</span>
+          </button>
+          <button
+            type="button"
+            onClick={openCreateModal}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 shadow-sm transition-all self-start sm:self-auto"
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            <span>Create New Class</span>
+          </button>
+        </div>
       </div>
 
       {/* Grid of Classes */}
@@ -131,9 +278,20 @@ export default function ClassesAndSubjectsPage() {
                       </span>
                     </div>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full bg-surface-container font-label-sm text-[11px] font-bold text-on-surface">
-                    Section {cls.section}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="px-2 py-0.5 rounded-full bg-surface-container font-label-sm text-[11px] font-bold text-on-surface">
+                      Section {cls.section}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => openEditModal(cls)}
+                      className="p-1 rounded-lg hover:bg-surface-container text-on-surface-variant hover:text-secondary transition-colors"
+                      title="Edit Class Cohort"
+                      aria-label={`Edit ${cls.displayName}`}
+                    >
+                      <span className="material-symbols-outlined text-[16px]">edit</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Class Teacher */}
@@ -158,26 +316,72 @@ export default function ClassesAndSubjectsPage() {
                   </div>
                 </div>
 
-                {/* Subjects Preview */}
+                {/* Subjects Section */}
                 <div className="mt-4 pt-3 border-t border-surface-container-low">
-                  <span className="text-[10px] uppercase font-bold text-on-surface-variant tracking-wider">
-                    Syllabus Subjects ({cls.subjects.length})
-                  </span>
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {cls.subjects.slice(0, 5).map((sub: any) => (
-                      <span
-                        key={sub.id}
-                        className="px-2 py-0.5 rounded bg-surface-container text-[10px] font-medium text-on-surface"
-                      >
-                        {sub.name}
-                      </span>
-                    ))}
-                    {cls.subjects.length > 5 && (
-                      <span className="px-1.5 py-0.5 rounded bg-surface-container-high text-[10px] font-bold text-on-surface-variant">
-                        +{cls.subjects.length - 5} more
-                      </span>
-                    )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] uppercase font-bold text-on-surface-variant tracking-wider">
+                      Curriculum Subjects ({cls.subjects.length})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => openCreateSubjectModal(cls.id)}
+                      className="text-[11px] font-semibold text-secondary hover:underline flex items-center gap-0.5"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">add</span>
+                      <span>Add Subject</span>
+                    </button>
                   </div>
+
+                  {cls.subjects.length === 0 ? (
+                    <div className="mt-2 py-3 px-3 rounded-lg bg-surface-container-low/50 border border-dashed border-outline-variant/40 text-center">
+                      <p className="text-[11px] text-on-surface-variant italic">No subjects assigned</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5 mt-2 max-h-48 overflow-y-auto pr-1">
+                      {cls.subjects.map((sub: any) => (
+                        <div
+                          key={sub.id}
+                          className="p-2 rounded-lg bg-surface-container-low/80 border border-surface-container-high/40 flex items-center justify-between text-xs"
+                        >
+                          <div className="flex flex-col min-w-0 pr-2">
+                            <span className="font-semibold text-on-surface truncate">{sub.name}</span>
+                            <span className="text-[10px] text-on-surface-variant font-mono">
+                              {sub.code ? `${sub.code} • ` : ""}Teacher:{" "}
+                              <span
+                                className={
+                                  sub.teacherName && sub.teacherName !== "Unassigned"
+                                    ? "text-primary font-medium"
+                                    : "text-error"
+                                }
+                              >
+                                {sub.teacherName || "Unassigned"}
+                              </span>
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => openEditSubjectModal(sub, cls)}
+                              className="p-1 rounded hover:bg-surface-container text-secondary"
+                              title="Edit Subject & Teacher"
+                              aria-label={`Edit ${sub.name}`}
+                            >
+                              <span className="material-symbols-outlined text-[15px]">edit</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSubject(sub.id)}
+                              className="p-1 rounded hover:bg-surface-container text-error/80 hover:text-error"
+                              title="Delete Subject"
+                              aria-label={`Delete ${sub.name}`}
+                            >
+                              <span className="material-symbols-outlined text-[15px]">delete</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -203,7 +407,9 @@ export default function ClassesAndSubjectsPage() {
             className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8"
           >
             <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
-              <h3 id="create-class-heading" className="font-headline-md text-sm font-bold text-on-surface">Create New Class Cohort</h3>
+              <h3 id="create-class-heading" className="font-headline-md text-sm font-bold text-on-surface">
+                {editingClass ? "Edit Class Cohort" : "Create New Class Cohort"}
+              </h3>
               <button
                 onClick={() => setClassModalOpen(false)}
                 className="text-on-surface-variant hover:text-on-surface"
@@ -212,7 +418,13 @@ export default function ClassesAndSubjectsPage() {
               </button>
             </div>
 
-            <form onSubmit={handleCreateClass} className="space-y-3 text-xs">
+            {error && (
+              <div className="p-2.5 rounded-lg bg-error-container/30 border border-error/30 text-error text-xs">
+                {error}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveClass} className="space-y-3 text-xs">
               <div>
                 <label htmlFor="classes-class-name-1" className="block font-semibold text-on-surface mb-1">Class Name *</label>
                 <input id="classes-class-name-1"
@@ -289,7 +501,144 @@ export default function ClassesAndSubjectsPage() {
                   disabled={formLoading}
                   className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50"
                 >
-                  {formLoading ? "Creating..." : "Save Class"}
+                  {formLoading ? (editingClass ? "Updating..." : "Creating...") : (editingClass ? "Update Class" : "Save Class")}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Create / Edit Subject Modal */}
+      {subjectModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="subject-modal-heading"
+            className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8"
+          >
+            <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+              <h3 id="subject-modal-heading" className="font-headline-md text-sm font-bold text-on-surface">
+                {editingSubject ? "Edit Subject & Teacher Assignment" : "Add Subject to Class"}
+              </h3>
+              <button
+                onClick={() => setSubjectModalOpen(false)}
+                className="text-on-surface-variant hover:text-on-surface"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            {subjectError && (
+              <div className="p-2.5 rounded-lg bg-error-container/30 border border-error/30 text-error text-xs">
+                {subjectError}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveSubject} className="space-y-3 text-xs">
+              <div>
+                <label htmlFor="subject-name" className="block font-semibold text-on-surface mb-1">
+                  Subject Name *
+                </label>
+                <input
+                  id="subject-name"
+                  type="text"
+                  required
+                  value={subjectName}
+                  onChange={(e) => setSubjectName(e.target.value)}
+                  placeholder="e.g. Mathematics, English, General Science"
+                  className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="subject-code" className="block font-semibold text-on-surface mb-1">
+                  Subject Code
+                </label>
+                <input
+                  id="subject-code"
+                  type="text"
+                  value={subjectCode}
+                  onChange={(e) => setSubjectCode(e.target.value)}
+                  placeholder="e.g. MTH-10, ENG-09 (optional)"
+                  className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="subject-class" className="block font-semibold text-on-surface mb-1">
+                  Target Class Cohort *
+                </label>
+                <select
+                  id="subject-class"
+                  required
+                  value={subjectClassId}
+                  onChange={(e) => setSubjectClassId(e.target.value)}
+                  className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 font-semibold"
+                >
+                  <option value="">Select a class</option>
+                  {classes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="subject-teacher" className="block font-semibold text-on-surface mb-1">
+                  Assigned Subject Teacher
+                </label>
+                <select
+                  id="subject-teacher"
+                  value={subjectTeacherId}
+                  onChange={(e) => setSubjectTeacherId(e.target.value)}
+                  className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                >
+                  <option value="">Unassigned</option>
+                  {teachers.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.fullName} ({t.designation})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-on-surface-variant mt-0.5">
+                  Assigns this educator to teach this curriculum subject and grants them grading/attendance access.
+                </p>
+              </div>
+
+              <div>
+                <label htmlFor="subject-credits" className="block font-semibold text-on-surface mb-1">
+                  Weekly Periods / Credits
+                </label>
+                <input
+                  id="subject-credits"
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={subjectCredits}
+                  onChange={(e) => setSubjectCredits(e.target.value)}
+                  className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-surface-container-low">
+                <button
+                  type="button"
+                  onClick={() => setSubjectModalOpen(false)}
+                  className="px-3 py-1.5 rounded bg-surface-container text-on-surface font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={subjectFormLoading}
+                  className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50"
+                >
+                  {subjectFormLoading
+                    ? (editingSubject ? "Updating..." : "Saving...")
+                    : (editingSubject ? "Update Subject" : "Save Subject")}
                 </button>
               </div>
             </form>

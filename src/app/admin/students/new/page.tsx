@@ -422,40 +422,27 @@ export default function AddNewStudentPage() {
           </div>
         </div>
 
-        {/* Section 4: Initial Admission Fee Challan Breakdown */}
-        <div className="p-5 rounded-xl bg-surface-container-low/60 border border-surface-container-high/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <span className="font-label-sm text-[11px] uppercase tracking-wider text-secondary font-bold">
-              Automatic Initial Challan
-            </span>
-            <p className="text-xs text-on-surface font-medium mt-0.5">
-              Generates first-month challan: Tuition Rs. 5,000 + Admission Rs. 2,000 + Reg. Rs. 500 ={" "}
-              <span className="font-bold text-on-surface">Rs. 7,500</span>
-            </p>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Link
-              href="/admin/students"
-              className="px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-semibold text-xs transition-colors"
-            >
-              Cancel
-            </Link>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-5 py-2 rounded-lg bg-secondary text-on-secondary font-semibold text-xs hover:bg-secondary/90 shadow-sm transition-all disabled:opacity-50 flex items-center gap-1.5"
-            >
-              {loading ? (
-                <span>Registering Student...</span>
-              ) : (
-                <>
-                  <span className="material-symbols-outlined text-[18px]">how_to_reg</span>
-                  <span>Complete Enrollment</span>
-                </>
-              )}
-            </button>
-          </div>
+        <div className="flex items-center justify-end gap-3 pt-2">
+          <Link
+            href="/admin/students"
+            className="px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-semibold text-xs transition-colors"
+          >
+            Cancel
+          </Link>
+          <button
+            type="submit"
+            disabled={loading}
+            className="px-5 py-2 rounded-lg bg-secondary text-on-secondary font-semibold text-xs hover:bg-secondary/90 shadow-sm transition-all disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {loading ? (
+              <span>Registering Student...</span>
+            ) : (
+              <>
+                <span className="material-symbols-outlined text-[18px]">how_to_reg</span>
+                <span>Complete Enrollment</span>
+              </>
+            )}
+          </button>
         </div>
       </form>
     </div>

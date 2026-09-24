@@ -7,9 +7,11 @@ import {
   getSubjectsServer,
   createAuditLogServer,
   getTeacherByIdServer,
+  getTeachersServer,
+  saveTeacherServer,
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
-import { ClassDoc } from "@/lib/firebase/types";
+import { ClassDoc, TeacherDoc } from "@/lib/firebase/types";
 import { resolveAuthenticatedTeacher } from "@/lib/academic-access";
 
 export async function GET(req: NextRequest) {
@@ -19,10 +21,11 @@ export async function GET(req: NextRequest) {
     // enumerate every class in the school together with its roster size and class-teacher
     // name. Restricted to the roles that actually use it.
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
-    const [classes, students, subjects] = await Promise.all([
+    const [classes, students, subjects, teachers] = await Promise.all([
       getClassesServer(authUser.schoolId),
       getStudentsServer(authUser.schoolId),
-      getSubjectsServer(authUser.schoolId)
+      getSubjectsServer(authUser.schoolId),
+      getTeachersServer(authUser.schoolId),
     ]);
 
     // A TEACHER's class list (used to populate class selectors/dropdowns on the teacher
@@ -38,6 +41,10 @@ export async function GET(req: NextRequest) {
     const formatted = visibleClasses.map((c) => {
       const clsStudents = students.filter((s) => s.classId === c.id);
       const clsSubjects = subjects.filter((s) => s.classId === c.id);
+      const classTeacher = c.classTeacherId ? teachers.find((t) => t.id === c.classTeacherId) : null;
+      const classTeacherName = classTeacher
+        ? classTeacher.fullName
+        : (c.classTeacherName && c.classTeacherName !== "Unassigned" ? c.classTeacherName : "Unassigned");
 
       return {
         id: c.id,
@@ -48,14 +55,21 @@ export async function GET(req: NextRequest) {
         capacity: c.capacity,
         studentCount: clsStudents.length,
         activeStudentCount: clsStudents.filter((s) => s.status === "ACTIVE").length,
-        classTeacherId: c.classTeacherId,
-        classTeacherName: c.classTeacherName || "Unassigned",
-        subjects: clsSubjects.map((s) => ({
-          id: s.id,
-          name: s.name,
-          code: s.code,
-          teacherName: s.teacherName || "Faculty",
-        })),
+        classTeacherId: c.classTeacherId || null,
+        classTeacherName,
+        subjects: clsSubjects.map((s) => {
+          const subTeacher = s.teacherId ? teachers.find((t) => t.id === s.teacherId) : null;
+          return {
+            id: s.id,
+            name: s.name,
+            code: s.code,
+            classId: s.classId,
+            teacherId: s.teacherId || null,
+            teacherName: subTeacher
+              ? subTeacher.fullName
+              : (s.teacherName && s.teacherName !== "Unassigned" ? s.teacherName : "Unassigned"),
+          };
+        }),
       };
     });
 
@@ -81,9 +95,10 @@ export async function POST(req: NextRequest) {
     }
 
     let classTeacherName = "Unassigned";
+    let assignedTeacher: TeacherDoc | null = null;
     if (classTeacherId) {
-      const teacher = await getTeacherByIdServer(authUser.schoolId, classTeacherId);
-      if (teacher) classTeacherName = teacher.fullName;
+      assignedTeacher = await getTeacherByIdServer(authUser.schoolId, classTeacherId);
+      if (assignedTeacher) classTeacherName = assignedTeacher.fullName;
     }
 
     const existingClasses = await getClassesServer(authUser.schoolId);
@@ -127,7 +142,7 @@ export async function POST(req: NextRequest) {
       numericLevel: parseInt(name.replace(/[^0-9]/g, "")) || count,
       capacity: Number(capacity) || 35,
       roomNo: roomNumber || `Room ${name}`,
-      ...(classTeacherId ? { classTeacherId } : {}),
+      classTeacherId: classTeacherId || null,
       classTeacherName,
       academicYear: schoolSettings?.academicYear || new Date().getFullYear().toString(),
       createdAt: new Date().toISOString(),
@@ -135,6 +150,16 @@ export async function POST(req: NextRequest) {
     };
 
     await saveClassServer(newClass);
+
+    // Two-way sync: add class to assigned teacher
+    if (assignedTeacher) {
+      const classIds = new Set(assignedTeacher.assignedClassIds || []);
+      classIds.add(classId);
+      await saveTeacherServer({
+        ...assignedTeacher,
+        assignedClassIds: Array.from(classIds),
+      });
+    }
 
     await createAuditLogServer(
       authUser.schoolId,
@@ -157,3 +182,115 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+export async function PUT(req: NextRequest) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN"]);
+    const body = await req.json();
+    const { id, name, section, roomNumber, capacity, classTeacherId } = body;
+
+    if (!id || !name || !section) {
+      return NextResponse.json(
+        { error: "Class ID, name, and section are required." },
+        { status: 400 }
+      );
+    }
+
+    const existingClasses = await getClassesServer(authUser.schoolId);
+    const existing = existingClasses.find((c) => c.id === id);
+    if (!existing) {
+      return NextResponse.json({ error: "Class not found." }, { status: 404 });
+    }
+
+    const slug = (value: string) => String(value).toLowerCase().replace(/[^a-z0-9]/g, "");
+    const duplicate = existingClasses.some(
+      (c) =>
+        c.id !== id &&
+        slug(c.name) === slug(name) &&
+        slug(c.section || "") === slug(section)
+    );
+    if (duplicate) {
+      return NextResponse.json(
+        { error: `Another class ${name}-${section} already exists.` },
+        { status: 409 }
+      );
+    }
+
+    const oldClassTeacherId = existing.classTeacherId || null;
+    let classTeacherName = existing.classTeacherName || "Unassigned";
+    let newlyAssignedTeacher: TeacherDoc | null = null;
+
+    if (classTeacherId !== undefined) {
+      if (classTeacherId) {
+        newlyAssignedTeacher = await getTeacherByIdServer(authUser.schoolId, classTeacherId);
+        classTeacherName = newlyAssignedTeacher ? newlyAssignedTeacher.fullName : "Unassigned";
+      } else {
+        classTeacherName = "Unassigned";
+      }
+    }
+
+    const updated: ClassDoc = {
+      ...existing,
+      name: name.trim(),
+      section: section.trim(),
+      capacity: capacity !== undefined ? Number(capacity) || existing.capacity : existing.capacity,
+      roomNo: roomNumber !== undefined ? roomNumber.trim() : existing.roomNo,
+      classTeacherId: classTeacherId !== undefined ? (classTeacherId || null) : (existing.classTeacherId || null),
+      classTeacherName,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await saveClassServer(updated);
+
+    // Two-way sync: update teacher assignedClassIds
+    if (classTeacherId !== undefined) {
+      const targetTeacherId = classTeacherId || null;
+      // 1. Add class to newly assigned teacher
+      if (newlyAssignedTeacher) {
+        const classIds = new Set(newlyAssignedTeacher.assignedClassIds || []);
+        classIds.add(id);
+        await saveTeacherServer({
+          ...newlyAssignedTeacher,
+          assignedClassIds: Array.from(classIds),
+        });
+      }
+
+      // 2. If old teacher was replaced or unassigned, remove class unless they teach a subject in this class
+      if (oldClassTeacherId && oldClassTeacherId !== targetTeacherId) {
+        const oldTeacher = await getTeacherByIdServer(authUser.schoolId, oldClassTeacherId);
+        if (oldTeacher) {
+          const subjects = await getSubjectsServer(authUser.schoolId, id);
+          const stillTeachesSubject = subjects.some((s) => s.teacherId === oldClassTeacherId);
+          if (!stillTeachesSubject) {
+            const classIds = (oldTeacher.assignedClassIds || []).filter((cId) => cId !== id);
+            await saveTeacherServer({
+              ...oldTeacher,
+              assignedClassIds: classIds,
+            });
+          }
+        }
+      }
+    }
+
+    await createAuditLogServer(
+      authUser.schoolId,
+      authUser.uid,
+      authUser.email,
+      authUser.role,
+      "UPDATE_CLASS",
+      "CLASS",
+      id,
+      `Updated class ${updated.name}-${updated.section}.`
+    );
+
+    return NextResponse.json({ success: true, class: updated });
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    console.error("Class PUT error:", error);
+    return NextResponse.json(
+      { error: "Failed to update class." },
+      { status: 500 }
+    );
+  }
+}
+
