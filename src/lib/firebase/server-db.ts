@@ -782,6 +782,24 @@ export async function saveClassServer(classData: ClassDoc): Promise<string> {
   return id;
 }
 
+export async function deleteClassServer(schoolId: string, classId: string): Promise<boolean> {
+  assertProductionDbReady();
+  const existing = await getClassByIdServer(schoolId, classId);
+  if (!existing) return false;
+
+  localStore.classes.delete(classId);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("classes").doc(classId).delete();
+    } catch (e) {
+      onFirestoreError(`deleteClassServer(${classId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // SUBJECTS
 // ---------------------------------------------------------------------------

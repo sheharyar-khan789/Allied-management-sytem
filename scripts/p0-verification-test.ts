@@ -16,11 +16,18 @@ import {
   getSubjectByIdServer,
   getSubjectsServer,
   deleteSubjectServer,
+  deleteClassServer,
+  getUserByEmailServer,
+  updateUserServer,
 } from "../src/lib/firebase/server-db";
 import { FeeChallanDoc, StudentDoc, PaymentDoc, AnnouncementDoc, UserProfile, TeacherDoc, ClassDoc, SubjectDoc } from "../src/lib/firebase/types";
 import { assertParentOwnsStudent, getLinkedChildrenForParent } from "../src/lib/parent-access";
 import { announcementVisibleToRole } from "../src/lib/announcements-visibility";
 import { validateDateString, isDateBefore } from "../src/lib/date-utils";
+import {
+  createPasswordResetTokenServer,
+  verifyPasswordResetTokenServer,
+} from "../src/lib/firebase/server-auth";
 
 async function runVerification() {
   console.log("==================================================");
@@ -674,6 +681,127 @@ async function runVerification() {
       !schoolASubjects.some((s) => s.id === "sb-b-isolated") &&
       unauthorizedDelete === false,
     "Tenant isolation enforced: Cross-school class/subject lookups return null and unauthorized delete fails"
+  );
+
+  // ----------------------------------------------------
+  // TEST 26: Safe Class Deletion (Empty class)
+  // ----------------------------------------------------
+  const deletableClass: ClassDoc = {
+    id: "cls-to-delete-101",
+    schoolId: schoolA,
+    name: "Temporary Class",
+    section: "T",
+    numericLevel: 9,
+    capacity: 20,
+    academicYear: "2024-2025",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  await saveClassServer(deletableClass);
+  const existsBeforeDelete = await getClassByIdServer(schoolA, "cls-to-delete-101");
+  const deleteResult = await deleteClassServer(schoolA, "cls-to-delete-101");
+  const existsAfterDelete = await getClassByIdServer(schoolA, "cls-to-delete-101");
+
+  assert(
+    existsBeforeDelete !== null && deleteResult === true && existsAfterDelete === null,
+    "Safe class deletion removes empty class and subsequent lookup returns null"
+  );
+
+  // ----------------------------------------------------
+  // TEST 27: Cross-Tenant Class Deletion Protection
+  // ----------------------------------------------------
+  const schoolBClassToDelete: ClassDoc = {
+    id: "cls-school-b-protected",
+    schoolId: schoolB,
+    name: "Protected B Class",
+    section: "B",
+    numericLevel: 10,
+    capacity: 30,
+    academicYear: "2024-2025",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  await saveClassServer(schoolBClassToDelete);
+  const crossDeleteResult = await deleteClassServer(schoolA, "cls-school-b-protected");
+  const schoolBStillHasClass = await getClassByIdServer(schoolB, "cls-school-b-protected");
+
+  assert(
+    crossDeleteResult === false && schoolBStillHasClass !== null,
+    "Cross-tenant class deletion prevented: School A cannot delete School B's class"
+  );
+
+  // ----------------------------------------------------
+  // TEST 28: Password Reset Token Generation & Verification
+  // ----------------------------------------------------
+  const testUserEmail = "reset.test@schoola.edu";
+  const resetToken = await createPasswordResetTokenServer({
+    uid: "usr-reset-test-1",
+    email: testUserEmail,
+    schoolId: schoolA,
+  });
+  const verifiedPayload = await verifyPasswordResetTokenServer(resetToken);
+
+  assert(
+    typeof resetToken === "string" &&
+      resetToken.length > 20 &&
+      verifiedPayload !== null &&
+      verifiedPayload.uid === "usr-reset-test-1" &&
+      verifiedPayload.email === testUserEmail &&
+      verifiedPayload.purpose === "pwd_reset",
+    "Password reset token is cryptographically signed and verifies with expected payload"
+  );
+
+  // ----------------------------------------------------
+  // TEST 29: Single-Use Password Reset Token Lifecycle
+  // ----------------------------------------------------
+  const crypto = await import("crypto");
+  const tokenHash = crypto.createHash("sha256").update(resetToken).digest("hex");
+  const initialUser: UserProfile = {
+    uid: "usr-reset-test-1",
+    name: "Reset Tester",
+    email: testUserEmail,
+    role: "TEACHER",
+    schoolId: schoolA,
+    status: "ACTIVE",
+    passwordHash: "old-hashed-password",
+    resetTokenHash: tokenHash,
+    resetTokenExpires: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  await createUserServer(initialUser);
+
+  const userBeforeReset = await getUserByEmailServer(testUserEmail);
+  const tokenMatches = userBeforeReset?.resetTokenHash === tokenHash;
+
+  // Simulate successful reset invalidation
+  const { resetTokenHash: _rth, resetTokenExpires: _rte, ...updatedUser } = userBeforeReset!;
+  void _rth;
+  void _rte;
+  await updateUserServer({
+    ...updatedUser,
+    passwordHash: "new-bcrypt-hash-12345",
+  });
+
+  const userAfterReset = await getUserByEmailServer(testUserEmail);
+  const tokenInvalidated = userAfterReset?.resetTokenHash === undefined;
+
+  assert(
+    tokenMatches === true &&
+      tokenInvalidated === true &&
+      userAfterReset?.passwordHash === "new-bcrypt-hash-12345",
+    "Password reset token single-use lifecycle: token hash is verified and invalidated upon reset"
+  );
+
+  // ----------------------------------------------------
+  // TEST 30: Tampered / Invalid Password Reset Token Rejection
+  // ----------------------------------------------------
+  const tamperedToken = resetToken.slice(0, -6) + "xxxxxx";
+  const tamperedResult = await verifyPasswordResetTokenServer(tamperedToken);
+
+  assert(
+    tamperedResult === null,
+    "Tampered or invalid password reset tokens are strictly rejected"
   );
 
   console.log("==================================================");

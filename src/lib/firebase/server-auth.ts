@@ -47,6 +47,33 @@ export async function createSessionCookieServer(payload: AuthenticatedUser): Pro
     .sign(SECRET_KEY);
 }
 
+export const RESET_TOKEN_EXPIRES_SECONDS = 15 * 60; // 15 minutes
+
+export interface PasswordResetTokenPayload {
+  uid: string;
+  email: string;
+  schoolId: string;
+  purpose: "pwd_reset";
+}
+
+export async function createPasswordResetTokenServer(payload: Omit<PasswordResetTokenPayload, "purpose">): Promise<string> {
+  return new SignJWT({ ...payload, purpose: "pwd_reset" })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(`${RESET_TOKEN_EXPIRES_SECONDS}s`)
+    .sign(SECRET_KEY);
+}
+
+export async function verifyPasswordResetTokenServer(token: string): Promise<PasswordResetTokenPayload | null> {
+  try {
+    const { payload } = await jwtVerify(token, SECRET_KEY);
+    if (payload.purpose !== "pwd_reset") return null;
+    return payload as unknown as PasswordResetTokenPayload;
+  } catch {
+    return null;
+  }
+}
+
 export async function getAuthenticatedUser(req?: NextRequest): Promise<AuthenticatedUser | null> {
   let token: string | undefined;
 

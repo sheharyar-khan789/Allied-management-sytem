@@ -10,6 +10,8 @@ import {
   getTeachersServer,
   saveTeacherServer,
   createAuditLogServer,
+  getTimetableServer,
+  getExamResultsServer,
 } from "@/lib/firebase/server-db";
 import { SubjectDoc } from "@/lib/firebase/types";
 
@@ -293,6 +295,31 @@ export async function DELETE(req: NextRequest) {
     const existing = await getSubjectByIdServer(authUser.schoolId, subjectId);
     if (!existing) {
       return NextResponse.json({ error: "Subject not found." }, { status: 404 });
+    }
+
+    // Server-side dependency validations to protect data integrity:
+    // 1. Historical exam results
+    const examResults = await getExamResultsServer(authUser.schoolId);
+    const subjectResults = examResults.filter((r) => r.subjectId === subjectId);
+    if (subjectResults.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete subject "${existing.name}". It has ${subjectResults.length} historical exam result(s) associated with it. Subjects with examination history cannot be deleted.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // 2. Active timetable slots
+    const timetables = await getTimetableServer(authUser.schoolId);
+    const subjectTimetables = timetables.filter((t) => t.subjectId === subjectId);
+    if (subjectTimetables.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete subject "${existing.name}". It is assigned to ${subjectTimetables.length} timetable slot(s). Please remove all timetable schedule slots first.`,
+        },
+        { status: 409 }
+      );
     }
 
     // Clean up teacher assignment if assigned

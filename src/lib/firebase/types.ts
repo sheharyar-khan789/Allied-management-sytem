@@ -23,6 +23,8 @@ export interface UserProfile {
   schoolId: string;
   status: UserStatus;
   passwordHash?: string;
+  resetTokenHash?: string;
+  resetTokenExpires?: string;
   teacherId?: string;
   studentId?: string;
   studentIds?: string[];

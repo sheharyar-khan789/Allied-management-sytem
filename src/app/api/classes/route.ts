@@ -2,9 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getClassesServer,
+  getClassByIdServer,
   saveClassServer,
+  deleteClassServer,
   getStudentsServer,
   getSubjectsServer,
+  getAttendanceServer,
+  getExamResultsServer,
+  getTimetableServer,
+  getFeeChallansServer,
   createAuditLogServer,
   getTeacherByIdServer,
   getTeachersServer,
@@ -289,6 +295,137 @@ export async function PUT(req: NextRequest) {
     console.error("Class PUT error:", error);
     return NextResponse.json(
       { error: "Failed to update class." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN"]);
+    const { searchParams } = new URL(req.url);
+    let classId = searchParams.get("id");
+
+    if (!classId) {
+      try {
+        const body = await req.json();
+        classId = body.id;
+      } catch {
+        // no body
+      }
+    }
+
+    if (!classId || typeof classId !== "string") {
+      return NextResponse.json({ error: "Class ID is required." }, { status: 400 });
+    }
+
+    const targetClass = await getClassByIdServer(authUser.schoolId, classId);
+    if (!targetClass) {
+      return NextResponse.json({ error: "Class not found." }, { status: 404 });
+    }
+
+    // Server-side dependency validations to protect data integrity:
+    // 1. Enrolled students
+    const enrolledStudents = await getStudentsServer(authUser.schoolId, classId);
+    if (enrolledStudents.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete class "${targetClass.name}-${targetClass.section}". It has ${enrolledStudents.length} enrolled student(s). Please reassign or remove all students before deleting this class.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // 2. Active subjects
+    const subjects = await getSubjectsServer(authUser.schoolId, classId);
+    if (subjects.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete class "${targetClass.name}-${targetClass.section}". It has ${subjects.length} curriculum subject(s) assigned. Please remove or reassign all subjects first.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // 3. Historical attendance records
+    const attendanceRecords = await getAttendanceServer(authUser.schoolId, undefined, classId);
+    if (attendanceRecords.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete class "${targetClass.name}-${targetClass.section}". It has ${attendanceRecords.length} historical attendance record(s). Classes with attendance records cannot be deleted.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // 4. Historical exam results
+    const examResults = await getExamResultsServer(authUser.schoolId, undefined, classId);
+    if (examResults.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete class "${targetClass.name}-${targetClass.section}". It has ${examResults.length} historical exam result(s). Classes with examination history cannot be deleted.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // 5. Timetable schedule slots
+    const timetableEntries = await getTimetableServer(authUser.schoolId, undefined, classId);
+    if (timetableEntries.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete class "${targetClass.name}-${targetClass.section}". It has ${timetableEntries.length} timetable slot(s). Please remove all timetable schedule slots first.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // 6. Fee challans
+    const feeChallans = await getFeeChallansServer(authUser.schoolId);
+    const classChallans = feeChallans.filter((c) => c.classId === classId);
+    if (classChallans.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete class "${targetClass.name}-${targetClass.section}". It has ${classChallans.length} financial fee challan(s). Classes with financial records cannot be deleted.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // Clean up assignedClassIds from teachers
+    const teachers = await getTeachersServer(authUser.schoolId);
+    for (const teacher of teachers) {
+      if (teacher.assignedClassIds && teacher.assignedClassIds.includes(classId)) {
+        const updatedAssigned = teacher.assignedClassIds.filter((cId) => cId !== classId);
+        await saveTeacherServer({
+          ...teacher,
+          assignedClassIds: updatedAssigned,
+        });
+      }
+    }
+
+    await deleteClassServer(authUser.schoolId, classId);
+
+    await createAuditLogServer(
+      authUser.schoolId,
+      authUser.uid,
+      authUser.email,
+      authUser.role,
+      "DELETE_CLASS",
+      "CLASS",
+      classId,
+      `Deleted class ${targetClass.name}-${targetClass.section}.`
+    );
+
+    return NextResponse.json({
+      success: true,
+      message: `Class "${targetClass.name}-${targetClass.section}" deleted successfully.`,
+    });
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    console.error("Class DELETE error:", error);
+    return NextResponse.json(
+      { error: "Failed to delete class." },
       { status: 500 }
     );
   }

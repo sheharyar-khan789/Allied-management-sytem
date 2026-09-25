@@ -94,10 +94,20 @@ export default function LoginPage() {
 
     setResetLoading(true);
     try {
-      await sendPasswordReset(resetEmail);
-      setResetMessage("Password reset email sent. Please check your inbox.");
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: resetEmail }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setResetMessage(data.message || "If this email is registered, instructions have been dispatched.");
+      } else {
+        setResetMessage(data.error || "Unable to process password reset request.");
+      }
     } catch (err: any) {
-      setResetMessage("Notice: If this email is registered, instructions have been dispatched.");
+      setResetMessage("If this email is registered, instructions have been dispatched.");
     } finally {
       setResetLoading(false);
     }

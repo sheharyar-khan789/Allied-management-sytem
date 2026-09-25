@@ -170,8 +170,8 @@ export async function middleware(req: NextRequest) {
     }
   }
 
-  if (pathname === "/login" || pathname === "/register-institution-x7k2p") {
-    if (session && session.uid && session.role) {
+  if (pathname === "/login" || pathname === "/register-institution-x7k2p" || pathname === "/reset-password") {
+    if (pathname !== "/reset-password" && session && session.uid && session.role) {
       return attachCsp(NextResponse.redirect(new URL(dashboardPathForRole(session.role), req.url)));
     }
     return attachCsp(nextWithNonce());
@@ -222,6 +222,7 @@ export const config = {
     "/print/:path*",
     "/login",
     "/register-institution-x7k2p",
+    "/reset-password",
     "/",
   ],
 };

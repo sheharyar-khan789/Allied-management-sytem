@@ -211,6 +211,27 @@ export default function ClassesAndSubjectsPage() {
     }
   };
 
+  const handleDeleteClass = async (classId: string, displayName: string) => {
+    if (!confirm(`Are you sure you want to delete class "${displayName}"? This action cannot be undone.`)) return;
+
+    try {
+      const res = await fetch(`/api/classes?id=${encodeURIComponent(classId)}`, {
+        method: "DELETE",
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || "Failed to delete class.");
+        return;
+      }
+
+      fetchClasses();
+    } catch (err: any) {
+      console.error(err);
+      alert("Failed to delete class.");
+    }
+  };
+
   return (
     <div className="flex flex-col w-full gap-space-lg">
       {/* Header */}
@@ -290,6 +311,15 @@ export default function ClassesAndSubjectsPage() {
                       aria-label={`Edit ${cls.displayName}`}
                     >
                       <span className="material-symbols-outlined text-[16px]">edit</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteClass(cls.id, cls.displayName)}
+                      className="p-1 rounded-lg hover:bg-surface-container text-on-surface-variant hover:text-error transition-colors"
+                      title="Delete Class Cohort"
+                      aria-label={`Delete ${cls.displayName}`}
+                    >
+                      <span className="material-symbols-outlined text-[16px]">delete</span>
                     </button>
                   </div>
                 </div>

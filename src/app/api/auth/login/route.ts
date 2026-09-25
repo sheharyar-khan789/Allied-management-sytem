@@ -137,9 +137,13 @@ export async function POST(req: NextRequest) {
     }
 
     if (!isAuthenticated && password) {
-      const hashedUser = await getUserByEmailServer(identifier);
-      if (hashedUser?.passwordHash && bcrypt.compareSync(password, hashedUser.passwordHash)) {
-        isAuthenticated = true;
+      try {
+        const hashedUser = await getUserByEmailServer(identifier);
+        if (hashedUser?.passwordHash && bcrypt.compareSync(password, hashedUser.passwordHash)) {
+          isAuthenticated = true;
+        }
+      } catch {
+        // If database connection error occurs, proceed to unauthenticated check
       }
     }
 
