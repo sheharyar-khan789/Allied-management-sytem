@@ -135,7 +135,9 @@ export async function PUT(req: NextRequest) {
       "UPDATE_SETTINGS",
       "SETTING",
       authUser.schoolId,
-      "Updated institution profile and system configuration in Firestore."
+      current?.academicYear && current.academicYear !== updated.academicYear
+        ? `Switched active academic session from ${current.academicYear} to ${updated.academicYear}. Records of ${current.academicYear} are preserved and shown again when it is selected.`
+        : "Updated institution profile and system configuration in Firestore."
     );
 
     return NextResponse.json({ success: true, settings: updated });

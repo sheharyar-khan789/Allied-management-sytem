@@ -1,6 +1,11 @@
 import { adminDb, hasAdminCredentials } from "./admin";
 import { getDefaultAcademicYear } from "../school-display";
 import {
+  AcademicSessionContext,
+  resolveRecordSession,
+  SessionScopedRecord,
+} from "../academic-session";
+import {
   School,
   UserProfile,
   StudentDoc,
@@ -393,6 +398,7 @@ export async function getSchoolSettingsServer(schoolId: string): Promise<SchoolS
 }
 
 export async function updateSchoolSettingsServer(settings: SchoolSettingsDoc): Promise<void> {
+  invalidateAcademicSessionCache(settings.schoolId);
   localStore.settings.set(settings.schoolId, settings);
   if (hasAdminCredentials) {
     try {
@@ -404,6 +410,87 @@ export async function updateSchoolSettingsServer(settings: SchoolSettingsDoc): P
       onFirestoreError(`updateSchoolSettingsServer(${settings.schoolId})`, e);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// ACADEMIC SESSION ISOLATION (see src/lib/academic-session.ts)
+// ---------------------------------------------------------------------------
+/**
+ * Scope for session-dependent list reads. Omitted: the school's active session.
+ * `academicYear`: a specific session. `allSessions`: no session filter (e.g. school-wide
+ * admission-number sequencing, which must stay unique across sessions).
+ */
+export interface SessionScope {
+  academicYear?: string;
+  allSessions?: boolean;
+}
+
+// Short-lived per-school memo so a single request that calls several list getters doesn't
+// re-read settings/classes/exams for each one. Invalidated in-process on every write that can
+// change it (settings, classes, exams).
+const SESSION_CONTEXT_TTL_MS = 5_000;
+const sessionContextCache = new Map<string, { at: number; promise: Promise<AcademicSessionContext> }>();
+
+export function invalidateAcademicSessionCache(schoolId: string): void {
+  sessionContextCache.delete(schoolId);
+}
+
+export async function getAcademicSessionContextServer(schoolId: string): Promise<AcademicSessionContext> {
+  const cached = sessionContextCache.get(schoolId);
+  if (cached && Date.now() - cached.at < SESSION_CONTEXT_TTL_MS) return cached.promise;
+
+  const promise = (async () => {
+    const [settings, school, classes, exams] = await Promise.all([
+      getSchoolSettingsServer(schoolId),
+      getSchoolServer(schoolId),
+      fetchClassesRaw(schoolId),
+      fetchExamsRaw(schoolId),
+    ]);
+    const academicYear = settings?.academicYear || school?.academicYear || null;
+    const classYears = new Map<string, string>();
+    for (const c of classes) {
+      if (c.academicYear) classYears.set(c.id, c.academicYear);
+    }
+    const examSessions = new Map<string, string>();
+    for (const e of exams) {
+      if (e.session) examSessions.set(e.id, e.session);
+    }
+    return { academicYear, classYears, examSessions };
+  })();
+
+  sessionContextCache.set(schoolId, { at: Date.now(), promise });
+  promise.catch(() => sessionContextCache.delete(schoolId));
+  return promise;
+}
+
+/** Resolves which session a list read should return; null means "don't filter". */
+async function resolveSessionScope(
+  schoolId: string,
+  scope?: SessionScope
+): Promise<{ ctx: AcademicSessionContext; year: string | null }> {
+  const ctx = await getAcademicSessionContextServer(schoolId);
+  if (scope?.allSessions) return { ctx, year: null };
+  return { ctx, year: scope?.academicYear || ctx.academicYear };
+}
+
+function filterToSession<T extends SessionScopedRecord>(
+  ctx: AcademicSessionContext,
+  year: string | null,
+  records: T[]
+): T[] {
+  if (!year) return records;
+  return records.filter((r) => resolveRecordSession(ctx, r) === year);
+}
+
+/**
+ * The session a record being written belongs to. An explicit stamp is kept as is (so editing a
+ * historical record never moves it into the active session); otherwise it follows its exam or
+ * class, which is how legacy records are attributed on read too.
+ */
+async function sessionForWrite(schoolId: string, record: SessionScopedRecord): Promise<string | undefined> {
+  if (record.academicYear) return record.academicYear;
+  const ctx = await getAcademicSessionContextServer(schoolId);
+  return resolveRecordSession(ctx, record) || undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -488,7 +575,7 @@ export async function updateUserServer(user: UserProfile): Promise<void> {
 // ---------------------------------------------------------------------------
 // STUDENTS
 // ---------------------------------------------------------------------------
-export async function getStudentsServer(
+async function fetchStudentsRaw(
   schoolId: string,
   classId?: string,
   search?: string,
@@ -531,6 +618,22 @@ export async function getStudentsServer(
   }
   const sorted = students.sort((a, b) => a.fullName.localeCompare(b.fullName));
   return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
+}
+
+export async function getStudentsServer(
+  schoolId: string,
+  classId?: string,
+  search?: string,
+  maxLimit?: number,
+  status?: string,
+  scope?: SessionScope
+): Promise<StudentDoc[]> {
+  const { ctx, year } = await resolveSessionScope(schoolId, scope);
+  if (!year) return fetchStudentsRaw(schoolId, classId, search, maxLimit, status);
+  // The limit is applied after the session filter; limiting first would drop active-session
+  // students whenever older sessions fill the page.
+  const scoped = filterToSession(ctx, year, await fetchStudentsRaw(schoolId, classId, search, undefined, status));
+  return maxLimit && maxLimit > 0 ? scoped.slice(0, Math.min(maxLimit, 250)) : scoped;
 }
 
 export async function getStudentByIdServer(schoolId: string, studentId: string): Promise<StudentDoc | null> {
@@ -603,8 +706,10 @@ export async function getStudentByUserIdServer(schoolId: string, userId: string)
 
 export async function saveStudentServer(student: StudentDoc): Promise<string> {
   const id = student.id || `std-${Date.now()}`;
+  const academicYear = await sessionForWrite(student.schoolId, student);
   const data: StudentDoc = {
     ...student,
+    ...(academicYear ? { academicYear } : {}),
     id,
     updatedAt: new Date().toISOString(),
     createdAt: student.createdAt || new Date().toISOString()
@@ -723,7 +828,7 @@ export async function deleteTeacherServer(schoolId: string, teacherId: string): 
 // ---------------------------------------------------------------------------
 // CLASSES & COHORTS
 // ---------------------------------------------------------------------------
-export async function getClassesServer(schoolId: string): Promise<ClassDoc[]> {
+async function fetchClassesRaw(schoolId: string): Promise<ClassDoc[]> {
   assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
@@ -740,6 +845,13 @@ export async function getClassesServer(schoolId: string): Promise<ClassDoc[]> {
 
   const local = Array.from(localStore.classes.values()).filter((c) => c.schoolId === schoolId);
   return local.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function getClassesServer(schoolId: string, scope?: SessionScope): Promise<ClassDoc[]> {
+  const { ctx, year } = await resolveSessionScope(schoolId, scope);
+  const classes = await fetchClassesRaw(schoolId);
+  if (!year) return classes;
+  return classes.filter((c) => (c.academicYear || ctx.academicYear) === year);
 }
 
 export async function getClassByIdServer(schoolId: string, classId: string): Promise<ClassDoc | null> {
@@ -770,6 +882,7 @@ export async function saveClassServer(classData: ClassDoc): Promise<string> {
     updatedAt: new Date().toISOString(),
     createdAt: classData.createdAt || new Date().toISOString()
   };
+  invalidateAcademicSessionCache(data.schoolId);
   localStore.classes.set(id, data);
 
   if (hasAdminCredentials) {
@@ -787,6 +900,7 @@ export async function deleteClassServer(schoolId: string, classId: string): Prom
   const existing = await getClassByIdServer(schoolId, classId);
   if (!existing) return false;
 
+  invalidateAcademicSessionCache(schoolId);
   localStore.classes.delete(classId);
 
   if (hasAdminCredentials) {
@@ -803,7 +917,7 @@ export async function deleteClassServer(schoolId: string, classId: string): Prom
 // ---------------------------------------------------------------------------
 // SUBJECTS
 // ---------------------------------------------------------------------------
-export async function getSubjectsServer(schoolId: string, classId?: string): Promise<SubjectDoc[]> {
+async function fetchSubjectsRaw(schoolId: string, classId?: string): Promise<SubjectDoc[]> {
   assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
@@ -823,6 +937,15 @@ export async function getSubjectsServer(schoolId: string, classId?: string): Pro
   let list = Array.from(localStore.subjects.values()).filter((s) => s.schoolId === schoolId);
   if (classId && classId !== "ALL") list = list.filter((s) => s.classId === classId);
   return list.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function getSubjectsServer(
+  schoolId: string,
+  classId?: string,
+  scope?: SessionScope
+): Promise<SubjectDoc[]> {
+  const { ctx, year } = await resolveSessionScope(schoolId, scope);
+  return filterToSession(ctx, year, await fetchSubjectsRaw(schoolId, classId));
 }
 
 export async function getSubjectByIdServer(schoolId: string, subjectId: string): Promise<SubjectDoc | null> {
@@ -847,8 +970,10 @@ export async function getSubjectByIdServer(schoolId: string, subjectId: string):
 
 export async function saveSubjectServer(subject: SubjectDoc): Promise<string> {
   const id = subject.id || `sb-${Date.now()}`;
+  const academicYear = await sessionForWrite(subject.schoolId, subject);
   const data: SubjectDoc = {
     ...subject,
+    ...(academicYear ? { academicYear } : {}),
     id,
     updatedAt: new Date().toISOString(),
     createdAt: subject.createdAt || new Date().toISOString(),
@@ -884,7 +1009,7 @@ export async function deleteSubjectServer(schoolId: string, subjectId: string): 
 // ---------------------------------------------------------------------------
 // TIMETABLE & DAILY SCHEDULE
 // ---------------------------------------------------------------------------
-export async function getTimetableServer(
+async function fetchTimetableRaw(
   schoolId: string,
   teacherId?: string,
   classId?: string,
@@ -911,10 +1036,23 @@ export async function getTimetableServer(
   return list.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
 }
 
+export async function getTimetableServer(
+  schoolId: string,
+  teacherId?: string,
+  classId?: string,
+  dayOfWeek?: string,
+  scope?: SessionScope
+): Promise<TimetableDoc[]> {
+  const { ctx, year } = await resolveSessionScope(schoolId, scope);
+  return filterToSession(ctx, year, await fetchTimetableRaw(schoolId, teacherId, classId, dayOfWeek));
+}
+
 export async function saveTimetableEntryServer(entry: TimetableDoc): Promise<string> {
   const id = entry.id || `tt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const academicYear = await sessionForWrite(entry.schoolId, entry);
   const data: TimetableDoc = {
     ...entry,
+    ...(academicYear ? { academicYear } : {}),
     id,
     updatedAt: new Date().toISOString(),
     createdAt: entry.createdAt || new Date().toISOString()
@@ -947,7 +1085,7 @@ export async function saveTimetableEntryServer(entry: TimetableDoc): Promise<str
  * The equality-on-schoolId + range-on-date combination needs the composite index added to
  * firestore.indexes.json (`attendance: schoolId ASC, date ASC`).
  */
-export async function getAttendanceServer(
+async function fetchAttendanceRaw(
   schoolId: string,
   date?: string,
   classId?: string,
@@ -981,6 +1119,18 @@ export async function getAttendanceServer(
   return list;
 }
 
+export async function getAttendanceServer(
+  schoolId: string,
+  date?: string,
+  classId?: string,
+  studentId?: string,
+  fromDate?: string,
+  scope?: SessionScope
+): Promise<AttendanceDoc[]> {
+  const { ctx, year } = await resolveSessionScope(schoolId, scope);
+  return filterToSession(ctx, year, await fetchAttendanceRaw(schoolId, date, classId, studentId, fromDate));
+}
+
 /** Inclusive start date of the rolling analytics window used by the school-wide dashboards. */
 export const ANALYTICS_ATTENDANCE_WINDOW_DAYS = 30;
 
@@ -996,8 +1146,10 @@ export async function getStudentAttendanceServer(schoolId: string, studentId: st
 
 export async function saveAttendanceRecordServer(record: AttendanceDoc): Promise<string> {
   const id = record.id || `att-${record.studentId}-${record.date}`;
+  const academicYear = await sessionForWrite(record.schoolId, record);
   const data: AttendanceDoc = {
     ...record,
+    ...(academicYear ? { academicYear } : {}),
     id,
     updatedAt: new Date().toISOString(),
     createdAt: record.createdAt || new Date().toISOString()
@@ -1023,7 +1175,9 @@ export async function saveAttendanceBulkServer(
   records: AttendanceDoc[]
 ): Promise<{ count: number }> {
   let count = 0;
-  for (const doc of records) {
+  for (const record of records) {
+    const academicYear = await sessionForWrite(record.schoolId, record);
+    const doc: AttendanceDoc = { ...record, ...(academicYear ? { academicYear } : {}) };
     localStore.attendance.set(doc.id, doc);
     if (hasAdminCredentials) {
       try {
@@ -1040,7 +1194,7 @@ export async function saveAttendanceBulkServer(
 // ---------------------------------------------------------------------------
 // FEE CHALLANS & CASHIER PAYMENTS
 // ---------------------------------------------------------------------------
-export async function getFeeChallansServer(
+async function fetchFeeChallansRaw(
   schoolId: string,
   studentId?: string,
   month?: string,
@@ -1073,6 +1227,22 @@ export async function getFeeChallansServer(
   if (status && status.toUpperCase() !== "ALL") list = list.filter((f) => f.status === status);
   const sorted = list.sort((a, b) => b.dueDate.localeCompare(a.dueDate));
   return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
+}
+
+export async function getFeeChallansServer(
+  schoolId: string,
+  studentId?: string,
+  month?: string,
+  year?: number,
+  status?: string,
+  maxLimit?: number,
+  scope?: SessionScope
+): Promise<FeeChallanDoc[]> {
+  const { ctx, year: session } = await resolveSessionScope(schoolId, scope);
+  if (!session) return fetchFeeChallansRaw(schoolId, studentId, month, year, status, maxLimit);
+  // Limit after the session filter, as in getStudentsServer.
+  const scoped = filterToSession(ctx, session, await fetchFeeChallansRaw(schoolId, studentId, month, year, status));
+  return maxLimit && maxLimit > 0 ? scoped.slice(0, Math.min(maxLimit, 250)) : scoped;
 }
 
 export async function getStudentFeeChallansServer(schoolId: string, studentId: string): Promise<FeeChallanDoc[]> {
@@ -1108,8 +1278,10 @@ export async function getFeeChallanByIdServer(schoolId: string, challanId: strin
 export async function saveFeeChallanServer(challan: FeeChallanDoc): Promise<string> {
   assertProductionDbReady();
   const id = challan.id || `ch-${Date.now()}`;
+  const academicYear = await sessionForWrite(challan.schoolId, challan);
   const data: FeeChallanDoc = {
     ...challan,
+    ...(academicYear ? { academicYear } : {}),
     id,
     updatedAt: new Date().toISOString(),
     createdAt: challan.createdAt || new Date().toISOString()
@@ -1136,6 +1308,12 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
   const schoolId = payment.schoolId;
   const challanId = payment.challanId;
   const amount = Number(payment.amount);
+  const sessionCtx = await getAcademicSessionContextServer(schoolId);
+  // A payment belongs to the same session as the challan it settles.
+  const stampPaymentSession = (challan: FeeChallanDoc) => {
+    const academicYear = resolveRecordSession(sessionCtx, challan);
+    if (academicYear) payment.academicYear = academicYear;
+  };
 
   if (hasAdminCredentials) {
     try {
@@ -1155,6 +1333,7 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
         // Derive actual student identity from target challan (P0-2)
         payment.studentId = challanData.studentId;
         payment.studentName = challanData.studentName;
+        stampPaymentSession(challanData);
 
         const newPaid = (challanData.paidAmount || 0) + amount;
         const newBalance = Math.max(0, (challanData.totalExpected || 0) - newPaid);
@@ -1197,6 +1376,7 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
 
   payment.studentId = challan.studentId;
   payment.studentName = challan.studentName;
+  stampPaymentSession(challan);
   localStore.payments.set(payment.id, payment);
 
   const newPaid = (challan.paidAmount || 0) + amount;
@@ -1218,7 +1398,7 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
 
 export const recordPaymentServer = recordFeePaymentServer;
 
-export async function getPaymentsServer(schoolId: string, studentId?: string, maxLimit?: number): Promise<PaymentDoc[]> {
+async function fetchPaymentsRaw(schoolId: string, studentId?: string, maxLimit?: number): Promise<PaymentDoc[]> {
   assertProductionDbReady();
   // Bounded read — this collection accumulates every fee payment across every academic year
   // and was previously fetched in full on every dashboard load. Matches the same
@@ -1244,6 +1424,28 @@ export async function getPaymentsServer(schoolId: string, studentId?: string, ma
   return list.sort((a, b) => (b.paymentDate || "").localeCompare(a.paymentDate || "")).slice(0, effectiveLimit);
 }
 
+export async function getPaymentsServer(
+  schoolId: string,
+  studentId?: string,
+  maxLimit?: number,
+  scope?: SessionScope
+): Promise<PaymentDoc[]> {
+  const { ctx, year } = await resolveSessionScope(schoolId, scope);
+  if (!year) return fetchPaymentsRaw(schoolId, studentId, maxLimit);
+
+  const effectiveLimit = Math.min(maxLimit && maxLimit > 0 ? maxLimit : 200, 500);
+  const payments = await fetchPaymentsRaw(schoolId, studentId, 500);
+  // Payments recorded before they were session-stamped follow the challan they settled.
+  let challanSession = new Map<string, string | null>();
+  if (payments.some((p) => !p.academicYear)) {
+    const challans = await fetchFeeChallansRaw(schoolId, studentId);
+    challanSession = new Map(challans.map((c) => [c.id, resolveRecordSession(ctx, c)]));
+  }
+  return payments
+    .filter((p) => (p.academicYear || challanSession.get(p.challanId) || ctx.academicYear) === year)
+    .slice(0, effectiveLimit);
+}
+
 export async function getPaymentsByStudentServer(schoolId: string, studentId: string): Promise<PaymentDoc[]> {
   return getPaymentsServer(schoolId, studentId);
 }
@@ -1251,7 +1453,7 @@ export async function getPaymentsByStudentServer(schoolId: string, studentId: st
 // ---------------------------------------------------------------------------
 // EXAMS & RAPID GRADEBOOK
 // ---------------------------------------------------------------------------
-export async function getExamsServer(schoolId: string): Promise<ExamDoc[]> {
+async function fetchExamsRaw(schoolId: string): Promise<ExamDoc[]> {
   assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
@@ -1268,6 +1470,13 @@ export async function getExamsServer(schoolId: string): Promise<ExamDoc[]> {
 
   const list = Array.from(localStore.exams.values()).filter((e) => e.schoolId === schoolId);
   return list.sort((a, b) => b.startDate.localeCompare(a.startDate));
+}
+
+export async function getExamsServer(schoolId: string, scope?: SessionScope): Promise<ExamDoc[]> {
+  const { ctx, year } = await resolveSessionScope(schoolId, scope);
+  const exams = await fetchExamsRaw(schoolId);
+  if (!year) return exams;
+  return exams.filter((e) => (e.session || ctx.academicYear) === year);
 }
 
 // Only ever called with a single, fully-formed ExamDoc (/api/exams POST) — verified by grep.
@@ -1291,6 +1500,7 @@ export async function saveExamServer(examData: ExamDoc): Promise<string> {
     createdAt: examData.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
+  invalidateAcademicSessionCache(schoolId);
   localStore.exams.set(id, data);
 
   if (hasAdminCredentials) {
@@ -1340,7 +1550,7 @@ export async function saveExamScheduleServer(sched: ExamScheduleDoc): Promise<st
   return id;
 }
 
-export async function getExamResultsServer(
+async function fetchExamResultsRaw(
   schoolId: string,
   examId?: string,
   classId?: string,
@@ -1366,10 +1576,23 @@ export async function getExamResultsServer(
   return list;
 }
 
+export async function getExamResultsServer(
+  schoolId: string,
+  examId?: string,
+  classId?: string,
+  studentId?: string,
+  scope?: SessionScope
+): Promise<ExamResultDoc[]> {
+  const { ctx, year } = await resolveSessionScope(schoolId, scope);
+  return filterToSession(ctx, year, await fetchExamResultsRaw(schoolId, examId, classId, studentId));
+}
+
 export async function saveExamResultServer(result: ExamResultDoc): Promise<string> {
   const id = result.id || `${result.schoolId}_${result.examId}_${result.studentId}_${result.subjectId}`;
+  const academicYear = await sessionForWrite(result.schoolId, result);
   const data: ExamResultDoc = {
     ...result,
+    ...(academicYear ? { academicYear } : {}),
     id,
     updatedAt: new Date().toISOString(),
     createdAt: result.createdAt || new Date().toISOString()
@@ -1402,7 +1625,9 @@ export async function saveExamResultsBulkServer(
   results: ExamResultDoc[]
 ): Promise<{ count: number }> {
   let count = 0;
-  for (const doc of results) {
+  for (const result of results) {
+    const academicYear = await sessionForWrite(result.schoolId, result);
+    const doc: ExamResultDoc = { ...result, ...(academicYear ? { academicYear } : {}) };
     localStore.examResults.set(doc.id, doc);
     if (hasAdminCredentials) {
       try {
@@ -1419,7 +1644,7 @@ export async function saveExamResultsBulkServer(
 // ---------------------------------------------------------------------------
 // OBSERVATIONS & LOCKED RECORDS
 // ---------------------------------------------------------------------------
-export async function getStudentObservationsServer(
+async function fetchStudentObservationsRaw(
   schoolId: string,
   studentId: string
 ): Promise<StudentObservationDoc[]> {
@@ -1440,10 +1665,33 @@ export async function getStudentObservationsServer(
   );
 }
 
+/** Observations carry no classId; untagged ones follow the student's own session. */
+async function observationSession(schoolId: string, obs: StudentObservationDoc): Promise<string | undefined> {
+  if (obs.academicYear) return obs.academicYear;
+  const student = await getStudentByIdServer(schoolId, obs.studentId);
+  return sessionForWrite(schoolId, { academicYear: student?.academicYear, classId: student?.classId });
+}
+
+export async function getStudentObservationsServer(
+  schoolId: string,
+  studentId: string,
+  scope?: SessionScope
+): Promise<StudentObservationDoc[]> {
+  const { year } = await resolveSessionScope(schoolId, scope);
+  const observations = await fetchStudentObservationsRaw(schoolId, studentId);
+  if (!year || observations.length === 0) return observations;
+  const fallback = observations.some((o) => !o.academicYear)
+    ? await observationSession(schoolId, { studentId } as StudentObservationDoc)
+    : undefined;
+  return observations.filter((o) => (o.academicYear || fallback) === year);
+}
+
 export async function saveStudentObservationServer(obs: StudentObservationDoc): Promise<string> {
   const id = obs.id || `obs-${Date.now()}`;
+  const academicYear = await observationSession(obs.schoolId, obs);
   const data: StudentObservationDoc = {
     ...obs,
+    ...(academicYear ? { academicYear } : {}),
     id,
     createdAt: obs.createdAt || new Date().toISOString()
   };

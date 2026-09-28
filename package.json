@@ -13,6 +13,7 @@
     "test:p0": "tsx scripts/p0-verification-test.ts",
     "test:security": "tsx scripts/security-regression-test.ts",
     "test:phase3": "tsx scripts/phase3-verification-test.ts",
+    "test:session-lock": "tsx scripts/session-and-attendance-lock-test.ts",
     "postinstall": "patch-package"
   },
   "dependencies": {

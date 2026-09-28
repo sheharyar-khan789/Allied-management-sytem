@@ -47,7 +47,9 @@ export async function getLinkedChildrenForParent(
   }
 
   if (profile?.email) {
-    const schoolStudents = await getStudentsServer(schoolId);
+    // Parent↔child links are identity, not session data (the relation lookup above spans all
+    // sessions too); each child's attendance/fees/results are session-filtered when read.
+    const schoolStudents = await getStudentsServer(schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
     for (const student of schoolStudents) {
       if (student.schoolId !== schoolId) continue;
       if (parentLinkedToStudent(parentUid, profile.email, student)) {

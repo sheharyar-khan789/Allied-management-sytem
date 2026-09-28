@@ -118,7 +118,14 @@ export async function POST(req: NextRequest) {
     // write silently overwrote the first school's class (flipping its schoolId), and every
     // student in the first school still pointing at that classId was re-parented into another
     // tenant's class. Scoping the id by schoolId makes cross-tenant collision impossible.
-    const classId = `cls-${slug(authUser.schoolId)}-${slug(name)}-${slug(section)}`;
+    //
+    // The id is also scoped by academic session: the same name+section is a different class in
+    // every session, and without the session in the id, creating "10-A" in a new session would
+    // merge-overwrite the previous session's "10-A" document and pull its whole history
+    // (students, attendance, results, fees) into the new session.
+    const schoolSettings = await getSchoolSettingsServer(authUser.schoolId);
+    const academicYear = schoolSettings?.academicYear || new Date().getFullYear().toString();
+    const classId = `cls-${slug(authUser.schoolId)}-${slug(academicYear)}-${slug(name)}-${slug(section)}`;
 
     // A class is naturally keyed by name+section within a school. Without a duplicate check,
     // creating the same name+section twice would silently overwrite the existing class
@@ -138,8 +145,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const schoolSettings = await getSchoolSettingsServer(authUser.schoolId);
-
     const newClass: ClassDoc = {
       id: classId,
       schoolId: authUser.schoolId,
@@ -150,7 +155,7 @@ export async function POST(req: NextRequest) {
       roomNo: roomNumber || `Room ${name}`,
       classTeacherId: classTeacherId || null,
       classTeacherName,
-      academicYear: schoolSettings?.academicYear || new Date().getFullYear().toString(),
+      academicYear,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

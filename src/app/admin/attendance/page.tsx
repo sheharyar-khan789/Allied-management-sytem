@@ -10,6 +10,9 @@ export default function AttendanceManagementPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  // True when any record on this register is past the 24h teacher window (admin can still edit).
+  const [lockedForTeachers, setLockedForTeachers] = useState(false);
 
   useEffect(() => {
     fetch("/api/classes")
@@ -29,12 +32,14 @@ export default function AttendanceManagementPage() {
     if (!selectedClassId) return;
     setLoading(true);
     setSaveSuccess(false);
+    setSaveError("");
 
     try {
       const res = await fetch(`/api/attendance?classId=${selectedClassId}&date=${selectedDate}`);
       const json = await res.json();
       if (json.success) {
         setRoster(json.roster);
+        setLockedForTeachers(Boolean(json.lockedForTeachers));
       }
     } catch (err) {
       console.error(err);
@@ -68,6 +73,7 @@ export default function AttendanceManagementPage() {
 
   const handleSave = async () => {
     setSaving(true);
+    setSaveError("");
     try {
       const res = await fetch("/api/attendance", {
         method: "POST",
@@ -86,9 +92,13 @@ export default function AttendanceManagementPage() {
       if (res.ok) {
         setSaveSuccess(true);
         setTimeout(() => setSaveSuccess(false), 3000);
+      } else {
+        const json = await res.json().catch(() => ({}));
+        setSaveError(json.error || "Failed to save attendance.");
       }
     } catch (err) {
       console.error(err);
+      setSaveError("Failed to save attendance.");
     } finally {
       setSaving(false);
     }
@@ -143,6 +153,22 @@ export default function AttendanceManagementPage() {
         <div className="p-3 rounded-lg bg-tertiary-container/10 border border-on-tertiary-container/30 text-on-tertiary-container text-xs font-bold flex items-center gap-2">
           <span className="material-symbols-outlined text-[18px]">check_circle</span>
           <span>Attendance register saved and locked into database successfully.</span>
+        </div>
+      )}
+
+      {saveError && (
+        <div role="alert" className="p-3 rounded-lg bg-error-container text-on-error-container text-xs font-bold flex items-center gap-2">
+          <span className="material-symbols-outlined text-[18px]">error</span>
+          <span>{saveError}</span>
+        </div>
+      )}
+
+      {!loading && lockedForTeachers && (
+        <div className="p-3 rounded-lg bg-surface-container border border-outline-variant/40 text-on-surface text-xs font-semibold flex items-center gap-2">
+          <span className="material-symbols-outlined text-[18px]">lock</span>
+          <span>
+            Locked for teachers: records outside the 24-hour marking window (shown with a lock) are read-only for faculty. As an administrator you can still correct them; every change is audit-logged.
+          </span>
         </div>
       )}
 
@@ -232,7 +258,16 @@ export default function AttendanceManagementPage() {
                 {roster.map((item) => (
                   <tr key={item.studentId} className="hover:bg-surface-container-low/40 transition-colors">
                     <td className="py-3 px-4 font-mono font-bold text-on-surface">{item.rollNumber}</td>
-                    <td className="py-3 px-4 font-bold text-on-surface">{item.name}</td>
+                    <td className="py-3 px-4 font-bold text-on-surface">
+                      <span className="inline-flex items-center gap-1">
+                        {item.name}
+                        {item.lockedForTeachers && (
+                          <span className="material-symbols-outlined text-[14px] text-on-surface-variant" title="Locked for teachers (marked more than 24 hours ago)" aria-label="Locked for teachers">
+                            lock
+                          </span>
+                        )}
+                      </span>
+                    </td>
                     <td className="py-3 px-4 font-mono text-on-surface-variant">{item.admissionNumber}</td>
 
                     {/* Interactive Status Buttons */}

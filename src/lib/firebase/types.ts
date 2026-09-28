@@ -61,6 +61,9 @@ export interface StudentDoc {
   monthlyFee: number;
   discount: number;
   photoUrl?: string;
+  /** Academic session (YYYY-YYYY) this record belongs to. Legacy records without it are
+   *  attributed to their class/exam session — see src/lib/academic-session.ts. */
+  academicYear?: string;
   documents?: {
     id: string;
     name: string;
@@ -122,6 +125,7 @@ export interface SubjectDoc {
   teacherId?: string | null;
   teacherName?: string | null;
   credits: number;
+  academicYear?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -141,6 +145,7 @@ export interface TimetableDoc {
   endTime: string; // e.g. "08:45 AM"
   roomNo?: string;
   topic?: string;
+  academicYear?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -158,6 +163,9 @@ export interface AttendanceDoc {
   status: AttendanceStatus;
   remarks?: string;
   recordedBy: string;
+  /** uid of the last user who changed an existing record (admin overrides included). */
+  updatedBy?: string;
+  academicYear?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -187,6 +195,7 @@ export interface FeeChallanDoc {
   balanceAmount: number;
   status: FeeStatus;
   receiptUrl?: string;
+  academicYear?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -205,6 +214,7 @@ export interface PaymentDoc {
   receiptUrl?: string;
   notes?: string;
   collectedBy: string;
+  academicYear?: string;
   createdAt: string;
 }
 
@@ -258,6 +268,7 @@ export interface ExamResultDoc {
   cardUrl?: string;
   remarks?: string;
   evaluatedBy: string;
+  academicYear?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -272,6 +283,7 @@ export interface StudentObservationDoc {
   category: "ACADEMIC" | "BEHAVIORAL" | "LEADERSHIP" | "ATTENDANCE" | "SPORTS";
   note: string;
   sentiment: "POSITIVE" | "NEUTRAL" | "NEEDS_IMPROVEMENT";
+  academicYear?: string;
   createdAt: string;
 }
 

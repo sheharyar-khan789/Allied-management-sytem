@@ -115,7 +115,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const existingStudents = await getStudentsServer(authUser.schoolId);
+    // Enrolment is always into a class of the active academic session, so a new session's
+    // roster can never reference (or be mixed into) a previous session's classes.
+    const classes = await getClassesServer(authUser.schoolId);
+    const targetClass = classes.find((c) => c.id === classId);
+    if (!targetClass) {
+      return NextResponse.json(
+        { error: "Selected class was not found in the active academic session." },
+        { status: 400 }
+      );
+    }
+
+    // Admission numbers stay unique across all sessions, so sequence over every session.
+    const existingStudents = await getStudentsServer(authUser.schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
     const currentYear = new Date().getFullYear();
     // Derive the next admission number from the highest sequence already issued rather than
     // from the roster size. `existingStudents.length + 1` silently reissues a number that is
@@ -199,10 +211,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Look up class name
-    const classes = await getClassesServer(authUser.schoolId);
-    const targetClass = classes.find((c) => c.id === classId);
-    const className = targetClass ? `${targetClass.name}-${targetClass.section}` : "Class Cohort";
+    const className = `${targetClass.name}-${targetClass.section}`;
 
     const studentDoc: StudentDoc = {
       id: studentId,
@@ -218,7 +227,8 @@ export async function POST(req: NextRequest) {
       email: studentEmail,
       classId,
       className,
-      section: targetClass?.section || "A",
+      academicYear: targetClass.academicYear,
+      section: targetClass.section || "A",
       rollNo: rollNumber || count.toString(),
       status: "ACTIVE",
       guardianName,

@@ -55,11 +55,14 @@ export default function AdminHeader({
   const [isSaving, setIsSaving] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Initialize from localStorage or props
+  // Initialize from the server's active session. The server value decides which session's data
+  // every page shows, so a stale localStorage label must never override it; localStorage is
+  // only a fallback when the server couldn't provide a session.
   useEffect(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
+      const serverHasSession = /\d{4}-\d{4}/.test(sessionName || "");
+      if (!serverHasSession && stored) {
         setDisplaySession(stored);
         const parsed = parseSessionString(stored);
         setSessionInput(parsed.year);
@@ -141,8 +144,35 @@ export default function AdminHeader({
     const formatted = `Session ${year} | ${campus}`;
 
     setIsSaving(true);
-    setDisplaySession(formatted);
 
+    // Switching sessions changes which session's records every page reads, so persist it on the
+    // server first and only reflect it locally once the server has accepted it.
+    if (/^\d{4}-\d{4}$/.test(year)) {
+      try {
+        const res = await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ academicYear: year, campusName: campus }),
+        });
+        if (!res.ok) {
+          const json = await res.json().catch(() => ({}));
+          alert(json.error || "Could not switch the academic session.");
+          setIsSaving(false);
+          return;
+        }
+      } catch (err) {
+        console.warn("Could not sync session to server settings:", err);
+        alert("Could not switch the academic session. Please check your connection and try again.");
+        setIsSaving(false);
+        return;
+      }
+    } else {
+      alert("Academic session must be in the format YYYY-YYYY, e.g. 2026-2027.");
+      setIsSaving(false);
+      return;
+    }
+
+    setDisplaySession(formatted);
     try {
       localStorage.setItem(STORAGE_KEY, formatted);
       localStorage.setItem("admin_academic_year", year);
@@ -156,21 +186,10 @@ export default function AdminHeader({
       console.error("Failed to write session to localStorage:", err);
     }
 
-    if (/^\d{4}-\d{4}$/.test(year)) {
-      try {
-        await fetch("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ academicYear: year, campusName: campus }),
-        });
-        router.refresh();
-      } catch (err) {
-        console.warn("Could not sync session to server settings:", err);
-      }
-    }
-
     setIsSaving(false);
     setIsSessionOpen(false);
+    // Full reload so client pages that fetched data on mount refetch it for the new session.
+    window.location.reload();
   };
 
   const handleSearch = (e: React.FormEvent) => {

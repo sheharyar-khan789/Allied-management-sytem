@@ -161,6 +161,14 @@ export async function POST(req: NextRequest) {
     if (!student) {
       return NextResponse.json({ error: "Student not found for this school." }, { status: 404 });
     }
+    // Challans are issued only against the active session's roster.
+    const activeClasses = await getClassesServer(authUser.schoolId);
+    if (!activeClasses.some((c) => c.id === student.classId)) {
+      return NextResponse.json(
+        { error: "This student is not enrolled in the active academic session." },
+        { status: 400 }
+      );
+    }
     if (student.classId !== classId) {
       return NextResponse.json(
         { error: "The selected class does not match this student's actual class." },

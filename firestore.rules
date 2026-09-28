@@ -153,6 +153,10 @@ service cloud.firestore {
         (isStudent() && resource.data.studentId == getUserData().studentId) ||
         isParentOfStudentId(resource.data.studentId)
       );
+      // No client may write attendance directly — not even within the 24-hour teacher window.
+      // All writes go through /api/attendance, which enforces the lock: a TEACHER can create or
+      // change a record only within 24h of it first being marked (createdAt); after that only
+      // an ADMIN can change it (src/lib/attendance-lock.ts).
       allow write: if false;
     }
 

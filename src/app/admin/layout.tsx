@@ -33,7 +33,7 @@ export default async function AdminLayout({
     totalStudents = students.filter((s) => s.status === "ACTIVE").length;
     totalTeachers = teachers.filter((t) => t.status === "ACTIVE").length;
     if (settings?.academicYear) {
-      sessionName = `Session ${settings.academicYear} | Main Campus`;
+      sessionName = `Session ${settings.academicYear} | ${settings.campusName || "Main Campus"}`;
     }
   } catch (e) {
     // Previously this was a silent no-op ("Graceful fallback") that let 0/0 counts and a

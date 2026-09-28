@@ -9,6 +9,12 @@ import {
 } from "@/lib/firebase/server-db";
 import { AttendanceDoc } from "@/lib/firebase/types";
 import { assertTeacherOwnsClass } from "@/lib/academic-access";
+import {
+  attendanceLockTime,
+  canOverrideAttendanceLock,
+  isAttendanceDateOpenForTeacher,
+  isAttendanceLockedForTeacher,
+} from "@/lib/attendance-lock";
 
 export async function GET(req: NextRequest) {
   try {
@@ -32,9 +38,17 @@ export async function GET(req: NextRequest) {
     ]);
 
     const recordMap = new Map(existingRecords.map((r) => [r.studentId, r]));
+    const now = Date.now();
+    const canOverride = canOverrideAttendanceLock(authUser.role);
+    const dateOpenForTeacher = isAttendanceDateOpenForTeacher(dateStr, now);
 
     const roster = students.map((st) => {
       const existing = recordMap.get(st.id);
+      // Mirrors the POST rule: an existing record locks for teachers 24h after it was first
+      // marked; an unmarked one can only be created while the date is inside that window.
+      const lockedForTeachers = existing
+        ? isAttendanceLockedForTeacher(existing, now)
+        : !dateOpenForTeacher;
       return {
         studentId: st.id,
         admissionNumber: st.admissionNo,
@@ -44,6 +58,9 @@ export async function GET(req: NextRequest) {
         status: existing ? existing.status : "PRESENT",
         remarks: existing?.remarks || "",
         recordId: existing?.id || null,
+        lockedForTeachers,
+        lockedAt: existing ? attendanceLockTime(existing) : null,
+        editable: canOverride || !lockedForTeachers,
       };
     });
 
@@ -62,6 +79,10 @@ export async function GET(req: NextRequest) {
       roster,
       summary,
       isSaved: existingRecords.length > 0,
+      // Whole register is read-only for this caller (a teacher after the 24h window).
+      locked: roster.length > 0 && roster.every((r) => !r.editable),
+      lockedForTeachers: roster.some((r) => r.lockedForTeachers),
+      canOverrideLock: canOverride,
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
@@ -85,7 +106,7 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    if (isNaN(new Date(date).getTime())) {
+    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date).getTime())) {
       return NextResponse.json({ error: "date is not a valid date." }, { status: 400 });
     }
     const VALID_STATUSES = new Set(["PRESENT", "LATE", "ABSENT", "LEAVE"]);
@@ -122,18 +143,79 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const attendanceDocs: AttendanceDoc[] = records.map((r: any) => ({
-      id: `${authUser.schoolId}_${classId}_${r.studentId}_${date}`,
-      schoolId: authUser.schoolId,
-      classId,
-      studentId: r.studentId,
-      date,
-      status: r.status,
-      remarks: r.remarks || "",
-      recordedBy: authUser.uid,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }));
+    // 24-hour teacher lock, enforced here rather than trusted from the page. A record keeps its
+    // original createdAt/recordedBy on every later save (they were previously reset on each
+    // save, which would have let any re-save restart the lock window).
+    const existingRecords = await getAttendanceServer(authUser.schoolId, date, classId);
+    const existingByStudent = new Map(existingRecords.map((r) => [r.studentId, r]));
+    const canOverride = canOverrideAttendanceLock(authUser.role);
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const dateOpenForTeacher = isAttendanceDateOpenForTeacher(date, now);
+
+    const attendanceDocs: AttendanceDoc[] = [];
+    const lockedStudentIds: string[] = [];
+    let overriddenLocked = 0;
+
+    for (const r of records as { studentId: string; status: AttendanceDoc["status"]; remarks?: string }[]) {
+      const remarks = r.remarks || "";
+      const existing = existingByStudent.get(r.studentId);
+
+      if (existing) {
+        const changed = existing.status !== r.status || (existing.remarks || "") !== remarks;
+        if (!changed) continue;
+        const locked = isAttendanceLockedForTeacher(existing, now);
+        if (locked && !canOverride) {
+          lockedStudentIds.push(r.studentId);
+          continue;
+        }
+        if (locked) overriddenLocked++;
+        attendanceDocs.push({
+          ...existing,
+          status: r.status,
+          remarks,
+          updatedBy: authUser.uid,
+          updatedAt: nowIso,
+        });
+        continue;
+      }
+
+      if (!canOverride && !dateOpenForTeacher) {
+        lockedStudentIds.push(r.studentId);
+        continue;
+      }
+      attendanceDocs.push({
+        id: `${authUser.schoolId}_${classId}_${r.studentId}_${date}`,
+        schoolId: authUser.schoolId,
+        classId,
+        studentId: r.studentId,
+        date,
+        status: r.status,
+        remarks,
+        recordedBy: authUser.uid,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+    }
+
+    if (lockedStudentIds.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Attendance is locked: teachers can only mark or change attendance within 24 hours of it being recorded. Please contact an administrator to make this change.",
+          locked: true,
+          lockedStudentIds,
+        },
+        { status: 403 }
+      );
+    }
+
+    if (attendanceDocs.length === 0) {
+      return NextResponse.json({
+        success: true,
+        message: "No attendance changes to save.",
+      });
+    }
 
     await saveAttendanceBulkServer(attendanceDocs);
 
@@ -145,7 +227,9 @@ export async function POST(req: NextRequest) {
       "MARK_ATTENDANCE",
       "ATTENDANCE",
       classId,
-      `Recorded roll call for class on ${date} (${records.length} students processed).`
+      `Recorded roll call for class on ${date} (${attendanceDocs.length} of ${records.length} records changed` +
+        (overriddenLocked > 0 ? `, including ${overriddenLocked} locked record(s) edited by admin override` : "") +
+        ")."
     );
 
     return NextResponse.json({

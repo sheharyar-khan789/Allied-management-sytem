@@ -220,10 +220,16 @@ export async function PUT(
     if (body.classId && body.classId !== existing.classId) {
       const classes = await getClassesServer(authUser.schoolId);
       const targetClass = classes.find((c) => c.id === body.classId);
-      if (targetClass) {
-        updated.className = `${targetClass.name}-${targetClass.section}`;
-        updated.section = targetClass.section;
+      // Only classes of the student's own session are valid targets; moving a record into
+      // another session's class would mix the two sessions' rosters.
+      if (!targetClass || targetClass.academicYear !== (existing.academicYear || targetClass.academicYear)) {
+        return NextResponse.json(
+          { error: "Selected class was not found in this student's academic session." },
+          { status: 400 }
+        );
       }
+      updated.className = `${targetClass.name}-${targetClass.section}`;
+      updated.section = targetClass.section;
     }
 
     await saveStudentServer(updated);

@@ -10,6 +10,9 @@ export default function TeacherAttendanceRegisterPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  // Server-computed 24h lock state (enforced again by /api/attendance on save).
+  const [locked, setLocked] = useState(false);
 
   useEffect(() => {
     fetch("/api/classes")
@@ -27,12 +30,14 @@ export default function TeacherAttendanceRegisterPage() {
     if (!selectedClassId) return;
     setLoading(true);
     setSaveSuccess(false);
+    setSaveError("");
 
     try {
       const res = await fetch(`/api/attendance?classId=${selectedClassId}&date=${selectedDate}`);
       const json = await res.json();
       if (json.success) {
         setRoster(json.roster);
+        setLocked(Boolean(json.locked));
       }
     } catch (err) {
       console.error(err);
@@ -49,17 +54,18 @@ export default function TeacherAttendanceRegisterPage() {
 
   const handleStatusChange = (studentId: string, status: string) => {
     setRoster((prev) =>
-      prev.map((item) => (item.studentId === studentId ? { ...item, status } : item))
+      prev.map((item) => (item.studentId === studentId && item.editable ? { ...item, status } : item))
     );
     setSaveSuccess(false);
   };
 
   const handleMarkAllPresent = () => {
-    setRoster((prev) => prev.map((item) => ({ ...item, status: "PRESENT" })));
+    setRoster((prev) => prev.map((item) => (item.editable ? { ...item, status: "PRESENT" } : item)));
   };
 
   const handleSave = async () => {
     setSaving(true);
+    setSaveError("");
     try {
       const res = await fetch("/api/attendance", {
         method: "POST",
@@ -78,9 +84,14 @@ export default function TeacherAttendanceRegisterPage() {
       if (res.ok) {
         setSaveSuccess(true);
         setTimeout(() => setSaveSuccess(false), 3000);
+      } else {
+        const json = await res.json().catch(() => ({}));
+        setSaveError(json.error || "Failed to save attendance.");
+        if (json.locked) fetchAttendance();
       }
     } catch (err) {
       console.error(err);
+      setSaveError("Failed to save attendance.");
     } finally {
       setSaving(false);
     }
@@ -90,6 +101,7 @@ export default function TeacherAttendanceRegisterPage() {
   const absentCount = roster.filter((r) => r.status === "ABSENT").length;
   const lateCount = roster.filter((r) => r.status === "LATE").length;
   const leaveCount = roster.filter((r) => r.status === "LEAVE").length;
+  const someRowsLocked = !locked && roster.some((r) => !r.editable);
 
   return (
     <div className="flex flex-col w-full gap-space-lg">
@@ -113,18 +125,19 @@ export default function TeacherAttendanceRegisterPage() {
           <button
             type="button"
             onClick={handleMarkAllPresent}
-            className="px-3 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold"
+            disabled={locked}
+            className="px-3 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold disabled:opacity-50"
           >
             Mark All Present
           </button>
           <button
             type="button"
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || locked}
             className="px-4 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 shadow-sm flex items-center gap-1.5 disabled:opacity-50"
           >
-            <span className="material-symbols-outlined text-[18px]">save</span>
-            <span>{saving ? "Saving Register..." : "Submit Roll Call"}</span>
+            <span className="material-symbols-outlined text-[18px]">{locked ? "lock" : "save"}</span>
+            <span>{locked ? "Locked" : saving ? "Saving Register..." : "Submit Roll Call"}</span>
           </button>
         </div>
       </div>
@@ -133,6 +146,24 @@ export default function TeacherAttendanceRegisterPage() {
         <div className="p-3 rounded-lg bg-tertiary-container/10 border border-on-tertiary-container/30 text-on-tertiary-container text-xs font-bold flex items-center gap-2">
           <span className="material-symbols-outlined text-[18px]">check_circle</span>
           <span>Classroom attendance submitted successfully.</span>
+        </div>
+      )}
+
+      {saveError && (
+        <div role="alert" className="p-3 rounded-lg bg-error-container text-on-error-container text-xs font-bold flex items-center gap-2">
+          <span className="material-symbols-outlined text-[18px]">error</span>
+          <span>{saveError}</span>
+        </div>
+      )}
+
+      {!loading && (locked || someRowsLocked) && (
+        <div className="p-3 rounded-lg bg-surface-container border border-outline-variant/40 text-on-surface text-xs font-semibold flex items-center gap-2">
+          <span className="material-symbols-outlined text-[18px]">lock</span>
+          <span>
+            {locked
+              ? "This register is locked and read-only. Attendance can only be marked or changed within 24 hours of being recorded; contact an administrator for corrections."
+              : "Some records were marked more than 24 hours ago and are locked (read-only). Only an administrator can change them."}
+          </span>
         </div>
       )}
 
@@ -212,7 +243,14 @@ export default function TeacherAttendanceRegisterPage() {
                   {st.rollNumber}
                 </span>
                 <div>
-                  <h4 className="font-bold text-xs text-on-surface">{st.name}</h4>
+                  <h4 className="font-bold text-xs text-on-surface flex items-center gap-1">
+                    {st.name}
+                    {!st.editable && (
+                      <span className="material-symbols-outlined text-[14px] text-on-surface-variant" title="Locked: marked more than 24 hours ago" aria-label="Locked">
+                        lock
+                      </span>
+                    )}
+                  </h4>
                   <span className="text-[10px] text-on-surface-variant font-mono">{st.admissionNumber}</span>
                 </div>
               </div>
@@ -222,7 +260,8 @@ export default function TeacherAttendanceRegisterPage() {
                 <button
                   type="button"
                   onClick={() => handleStatusChange(st.studentId, "PRESENT")}
-                  className={`w-9 h-8 rounded text-xs font-bold transition-all ${
+                  disabled={!st.editable}
+                  className={`w-9 h-8 rounded text-xs font-bold transition-all disabled:cursor-not-allowed ${
                     st.status === "PRESENT"
                       ? "bg-on-tertiary-container text-white shadow-sm"
                       : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
@@ -233,7 +272,8 @@ export default function TeacherAttendanceRegisterPage() {
                 <button
                   type="button"
                   onClick={() => handleStatusChange(st.studentId, "LATE")}
-                  className={`w-9 h-8 rounded text-xs font-bold transition-all ${
+                  disabled={!st.editable}
+                  className={`w-9 h-8 rounded text-xs font-bold transition-all disabled:cursor-not-allowed ${
                     st.status === "LATE"
                       ? "bg-amber-600 text-white shadow-sm"
                       : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
@@ -244,7 +284,8 @@ export default function TeacherAttendanceRegisterPage() {
                 <button
                   type="button"
                   onClick={() => handleStatusChange(st.studentId, "ABSENT")}
-                  className={`w-9 h-8 rounded text-xs font-bold transition-all ${
+                  disabled={!st.editable}
+                  className={`w-9 h-8 rounded text-xs font-bold transition-all disabled:cursor-not-allowed ${
                     st.status === "ABSENT"
                       ? "bg-error text-white shadow-sm"
                       : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
@@ -255,7 +296,8 @@ export default function TeacherAttendanceRegisterPage() {
                 <button
                   type="button"
                   onClick={() => handleStatusChange(st.studentId, "LEAVE")}
-                  className={`w-9 h-8 rounded text-xs font-bold transition-all ${
+                  disabled={!st.editable}
+                  className={`w-9 h-8 rounded text-xs font-bold transition-all disabled:cursor-not-allowed ${
                     st.status === "LEAVE"
                       ? "bg-secondary text-white shadow-sm"
                       : "bg-surface-container text-on-surface-variant hover:bg-surface-container-high"
