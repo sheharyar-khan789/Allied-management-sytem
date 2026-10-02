@@ -5,7 +5,6 @@ import {
   getTeachersServer,
   saveTeacherServer,
   createUserServer,
-  getUserByEmailServer,
   createAuditLogServer,
   getClassesServer,
   getSubjectsServer
@@ -13,6 +12,11 @@ import {
 import { TeacherDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { validateDateString, isDateBefore } from "@/lib/date-utils";
+import {
+  ensureTeacherEmailAvailable,
+  nextEmployeeId,
+  releaseOrphanedTeacherAuthAccount,
+} from "@/lib/teacher-lifecycle";
 
 export async function GET(req: NextRequest) {
   try {
@@ -143,8 +147,9 @@ export async function POST(req: NextRequest) {
     }
 
     const existingTeachers = await getTeachersServer(authUser.schoolId);
-    const count = existingTeachers.length + 101;
-    const employeeId = `TCH-${count}`;
+    // Was `existingTeachers.length + 101`: after any deletion the count drops and the next
+    // teacher was issued an employee id that an existing teacher still holds.
+    const employeeId = nextEmployeeId(existingTeachers);
     const fullName = `${firstName.trim()} ${lastName.trim()}`;
     // Use a timestamp+random suffix (not a sequential count) for the internal ID so two
     // concurrent teacher registrations can never collide and silently overwrite one another.
@@ -159,9 +164,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Please enter a valid teacher email address." }, { status: 400 });
     }
 
-    const existingUser = await getUserByEmailServer(teacherEmail);
-    if (existingUser) {
-      return NextResponse.json({ error: "A user with this teacher email already exists." }, { status: 409 });
+    // Genuine duplicates (an existing teacher, or any live account using this email) stay
+    // blocked. A login left orphaned by an earlier teacher deletion is released instead of
+    // permanently blocking the email.
+    const identity = await ensureTeacherEmailAvailable(authUser.schoolId, teacherEmail);
+    if (!identity.ok) {
+      return NextResponse.json({ error: identity.error }, { status: 409 });
     }
 
     if (hasAdminCredentials) {
@@ -169,13 +177,27 @@ export async function POST(req: NextRequest) {
         // Cryptographically secure, high-entropy temporary password — see the identical fix
         // and rationale in src/app/api/students/route.ts and src/lib/link-parent.ts.
         const generatedPassword = `Teacher@${crypto.randomBytes(12).toString("base64url")}!1`;
-        const teacherAuthUser = await adminAuth.createUser({
-          email: teacherEmail,
-          emailVerified: true,
-          password: generatedPassword,
-          displayName: fullName,
-          disabled: false,
-        });
+        const createAuthUser = () =>
+          adminAuth.createUser({
+            email: teacherEmail,
+            emailVerified: true,
+            password: generatedPassword,
+            displayName: fullName,
+            disabled: false,
+          });
+        let teacherAuthUser;
+        try {
+          teacherAuthUser = await createAuthUser();
+        } catch (firstErr: any) {
+          if (
+            firstErr?.code === "auth/email-already-exists" &&
+            (await releaseOrphanedTeacherAuthAccount(authUser.schoolId, teacherEmail))
+          ) {
+            teacherAuthUser = await createAuthUser();
+          } else {
+            throw firstErr;
+          }
+        }
         userUid = teacherAuthUser.uid;
         createdAuthUid = teacherAuthUser.uid;
         temporaryPassword = generatedPassword;

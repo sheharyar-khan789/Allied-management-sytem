@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import StudentImportModal from "@/components/StudentImportModal";
 
 export default function StudentsManagementPage() {
   const router = useRouter();
@@ -12,6 +13,7 @@ export default function StudentsManagementPage() {
   const [search, setSearch] = useState("");
   const [selectedClass, setSelectedClass] = useState("all");
   const [selectedStatus, setSelectedStatus] = useState("all");
+  const [importOpen, setImportOpen] = useState(false);
 
   const fetchStudents = async () => {
     try {
@@ -164,14 +166,28 @@ export default function StudentsManagementPage() {
           </p>
         </div>
 
-        <Link
-          href="/admin/students/new"
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 shadow-sm transition-all self-start sm:self-auto"
-        >
-          <span className="material-symbols-outlined text-[18px]">person_add</span>
-          <span>Add New Student</span>
-        </Link>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-xs font-semibold shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">upload_file</span>
+            <span>Import Students</span>
+          </button>
+          <Link
+            href="/admin/students/new"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">person_add</span>
+            <span>Add New Student</span>
+          </Link>
+        </div>
       </div>
+
+      {importOpen && (
+        <StudentImportModal onClose={() => setImportOpen(false)} onImported={() => fetchStudents()} />
+      )}
 
       {/* Filter & Search Bar */}
       <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-col md:flex-row md:items-center justify-between gap-3">

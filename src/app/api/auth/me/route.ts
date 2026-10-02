@@ -15,10 +15,19 @@ export async function GET(req: NextRequest) {
 
     const profile = await getUserByIdServer(authUser.uid);
     const resolved = profile || authUser;
-    const { passwordHash: _omit, ...safeUser } = resolved as typeof resolved & {
+    const {
+      passwordHash: _omit,
+      resetTokenHash: _rth,
+      resetTokenExpires: _rte,
+      ...safeUser
+    } = resolved as typeof resolved & {
       passwordHash?: string;
+      resetTokenHash?: string;
+      resetTokenExpires?: string;
     };
     void _omit;
+    void _rth;
+    void _rte;
 
     const token = await createSessionCookieServer({
       uid: authUser.uid,
@@ -29,6 +38,7 @@ export async function GET(req: NextRequest) {
       teacherId: authUser.teacherId,
       studentId: authUser.studentId,
       studentIds: authUser.studentIds,
+      authAt: authUser.authAt,
     });
 
     const response = NextResponse.json({ user: safeUser, session: safeUser });

@@ -15,16 +15,21 @@ import {
   isAttendanceDateOpenForTeacher,
   isAttendanceLockedForTeacher,
 } from "@/lib/attendance-lock";
+import { validateDateString } from "@/lib/date-utils";
 
 export async function GET(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     const { searchParams } = new URL(req.url);
     const classId = searchParams.get("classId");
-    const dateStr = searchParams.get("date") || new Date().toISOString().split("T")[0];
+    const rawDate = searchParams.get("date");
+    const dateStr = rawDate ? validateDateString(rawDate) : new Date().toISOString().split("T")[0];
 
     if (!classId) {
       return NextResponse.json({ error: "classId is required" }, { status: 400 });
+    }
+    if (!dateStr) {
+      return NextResponse.json({ error: "date must be a valid YYYY-MM-DD calendar date." }, { status: 400 });
     }
 
     // A TEACHER may only view attendance for a class in their own assignedClassIds. This is
@@ -58,6 +63,7 @@ export async function GET(req: NextRequest) {
         status: existing ? existing.status : "PRESENT",
         remarks: existing?.remarks || "",
         recordId: existing?.id || null,
+        saved: Boolean(existing),
         lockedForTeachers,
         lockedAt: existing ? attendanceLockTime(existing) : null,
         editable: canOverride || !lockedForTeachers,
@@ -79,6 +85,7 @@ export async function GET(req: NextRequest) {
       roster,
       summary,
       isSaved: existingRecords.length > 0,
+      savedCount: roster.filter((r) => r.saved).length,
       // Whole register is read-only for this caller (a teacher after the 24h window).
       locked: roster.length > 0 && roster.every((r) => !r.editable),
       lockedForTeachers: roster.some((r) => r.lockedForTeachers),
@@ -106,7 +113,8 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(new Date(date).getTime())) {
+    // Strict calendar validation (rejects e.g. 2026-02-31, which `new Date()` silently rolls over).
+    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date) || validateDateString(date) !== date) {
       return NextResponse.json({ error: "date is not a valid date." }, { status: 400 });
     }
     const VALID_STATUSES = new Set(["PRESENT", "LATE", "ABSENT", "LEAVE"]);
@@ -234,6 +242,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      saved: attendanceDocs.length,
       message: "Attendance recorded and synced to Firestore successfully.",
     });
   } catch (error: any) {

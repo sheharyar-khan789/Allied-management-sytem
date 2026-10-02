@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, use } from "react";
+import { formatDisplayDate } from "@/lib/date-utils";
 import Link from "next/link";
 import FileUpload from "@/components/FileUpload";
 
@@ -239,11 +240,11 @@ export default function TeacherProfilePage({
                 {teacher.status}
               </span>
               <span className="px-2.5 py-0.5 rounded-full bg-surface-container font-label-sm text-xs font-semibold text-on-surface">
-                Joined: {teacher.joiningDate || "Not Specified"}
+                Joined: {teacher.joiningDate ? formatDisplayDate(teacher.joiningDate) : "Not Specified"}
               </span>
               {teacher.endingDate && (
                 <span className="px-2.5 py-0.5 rounded-full bg-error-container/20 text-error font-label-sm text-xs font-semibold">
-                  Left: {teacher.endingDate}
+                  Left: {formatDisplayDate(teacher.endingDate)}
                 </span>
               )}
               <span className="px-2.5 py-0.5 rounded-full bg-surface-container font-label-sm text-xs font-bold text-on-surface font-mono">
@@ -501,7 +502,7 @@ export default function TeacherProfilePage({
             <div className="p-3 rounded-lg bg-surface-container-low/60 border border-surface-container-high/40">
               <div className="text-[10px] text-on-surface-variant font-bold uppercase tracking-wider">Joining Date</div>
               <div className="font-semibold text-on-surface text-sm mt-1">
-                {teacher.joiningDate || "Not Specified"}
+                {teacher.joiningDate ? formatDisplayDate(teacher.joiningDate) : "Not Specified"}
               </div>
               <div className="text-[10px] text-on-surface-variant mt-0.5">Official appointment date</div>
             </div>

@@ -1,7 +1,8 @@
 import { cookies } from "next/headers";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { jwtVerify, SignJWT } from "jose";
 import { UserRole } from "./types";
+import { getUserByIdServer } from "./server-db";
 
 function getJwtSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -28,6 +29,14 @@ const SECRET_KEY = getJwtSecret();
 
 export const SESSION_IDLE_SECONDS = 5 * 60;
 
+export const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax" as const,
+  path: "/",
+  maxAge: SESSION_IDLE_SECONDS,
+};
+
 export interface AuthenticatedUser {
   uid: string;
   email: string;
@@ -37,40 +46,48 @@ export interface AuthenticatedUser {
   teacherId?: string;
   studentId?: string;
   studentIds?: string[];
+  /**
+   * Unix seconds of the original sign-in. Preserved across every sliding refresh (middleware,
+   * /api/auth/me), so a password reset/change can invalidate sessions that were signed in
+   * before it — `iat` alone can't do that because each refresh re-issues the token.
+   */
+  authAt?: number;
 }
 
 export async function createSessionCookieServer(payload: AuthenticatedUser): Promise<string> {
-  return new SignJWT({ ...payload })
+  const authAt = typeof payload.authAt === "number" ? payload.authAt : Math.floor(Date.now() / 1000);
+  return new SignJWT({
+    uid: payload.uid,
+    email: payload.email,
+    role: payload.role,
+    schoolId: payload.schoolId,
+    name: payload.name,
+    teacherId: payload.teacherId,
+    studentId: payload.studentId,
+    studentIds: payload.studentIds,
+    authAt,
+  })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${SESSION_IDLE_SECONDS}s`)
     .sign(SECRET_KEY);
 }
 
-export const RESET_TOKEN_EXPIRES_SECONDS = 15 * 60; // 15 minutes
-
-export interface PasswordResetTokenPayload {
-  uid: string;
-  email: string;
-  schoolId: string;
-  purpose: "pwd_reset";
-}
-
-export async function createPasswordResetTokenServer(payload: Omit<PasswordResetTokenPayload, "purpose">): Promise<string> {
-  return new SignJWT({ ...payload, purpose: "pwd_reset" })
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setExpirationTime(`${RESET_TOKEN_EXPIRES_SECONDS}s`)
-    .sign(SECRET_KEY);
-}
-
-export async function verifyPasswordResetTokenServer(token: string): Promise<PasswordResetTokenPayload | null> {
+/**
+ * True when the profile's `sessionsValidAfter` cutoff (set on password reset/change) is later
+ * than the session's original sign-in. Fails closed if the profile can't be read.
+ */
+async function isSessionRevoked(uid: string, authAtSeconds: number | undefined): Promise<boolean> {
   try {
-    const { payload } = await jwtVerify(token, SECRET_KEY);
-    if (payload.purpose !== "pwd_reset") return null;
-    return payload as unknown as PasswordResetTokenPayload;
-  } catch {
-    return null;
+    const profile = await getUserByIdServer(uid);
+    if (!profile?.sessionsValidAfter) return false;
+    const cutoff = Date.parse(profile.sessionsValidAfter);
+    if (Number.isNaN(cutoff)) return false;
+    if (typeof authAtSeconds !== "number") return true;
+    return authAtSeconds < Math.floor(cutoff / 1000);
+  } catch (e) {
+    console.error("Session revocation check failed:", e);
+    return true;
   }
 }
 
@@ -90,12 +107,18 @@ export async function getAuthenticatedUser(req?: NextRequest): Promise<Authentic
 
   if (!token) return null;
 
+  let user: AuthenticatedUser & { iat?: number };
   try {
     const { payload } = await jwtVerify(token, SECRET_KEY);
-    return payload as unknown as AuthenticatedUser;
-  } catch (e) {
+    user = payload as unknown as AuthenticatedUser & { iat?: number };
+  } catch {
     return null;
   }
+
+  if (!user.uid) return null;
+  const authAt = typeof user.authAt === "number" ? user.authAt : user.iat;
+  if (await isSessionRevoked(user.uid, authAt)) return null;
+  return { ...user, authAt };
 }
 
 export async function requireAuth(
@@ -106,7 +129,10 @@ export async function requireAuth(
 
   if (!user || !user.uid || !user.schoolId) {
     throw new Response(
-      JSON.stringify({ error: "Unauthorized: Active authenticated session required." }),
+      JSON.stringify({
+        error: "Unauthorized: your session has expired or you are not signed in. Please sign in again.",
+        sessionExpired: true,
+      }),
       { status: 401, headers: { "Content-Type": "application/json" } }
     );
   }

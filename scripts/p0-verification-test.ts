@@ -18,16 +18,15 @@ import {
   deleteSubjectServer,
   deleteClassServer,
   getUserByEmailServer,
-  updateUserServer,
+  savePasswordResetTokenServer,
+  getPasswordResetTokenServer,
+  consumePasswordResetTokenServer,
 } from "../src/lib/firebase/server-db";
 import { FeeChallanDoc, StudentDoc, PaymentDoc, AnnouncementDoc, UserProfile, TeacherDoc, ClassDoc, SubjectDoc } from "../src/lib/firebase/types";
 import { assertParentOwnsStudent, getLinkedChildrenForParent } from "../src/lib/parent-access";
 import { announcementVisibleToRole } from "../src/lib/announcements-visibility";
 import { validateDateString, isDateBefore } from "../src/lib/date-utils";
-import {
-  createPasswordResetTokenServer,
-  verifyPasswordResetTokenServer,
-} from "../src/lib/firebase/server-auth";
+import { generateResetToken, hashResetToken, looksLikeResetToken } from "../src/lib/password-reset";
 
 async function runVerification() {
   console.log("==================================================");
@@ -731,31 +730,23 @@ async function runVerification() {
   );
 
   // ----------------------------------------------------
-  // TEST 28: Password Reset Token Generation & Verification
+  // TEST 28: Password Reset Token Generation (random, hashed at rest)
   // ----------------------------------------------------
   const testUserEmail = "reset.test@schoola.edu";
-  const resetToken = await createPasswordResetTokenServer({
-    uid: "usr-reset-test-1",
-    email: testUserEmail,
-    schoolId: schoolA,
-  });
-  const verifiedPayload = await verifyPasswordResetTokenServer(resetToken);
+  const { token: resetToken, tokenHash } = generateResetToken();
+  const second = generateResetToken();
 
   assert(
-    typeof resetToken === "string" &&
-      resetToken.length > 20 &&
-      verifiedPayload !== null &&
-      verifiedPayload.uid === "usr-reset-test-1" &&
-      verifiedPayload.email === testUserEmail &&
-      verifiedPayload.purpose === "pwd_reset",
-    "Password reset token is cryptographically signed and verifies with expected payload"
+    looksLikeResetToken(resetToken) &&
+      resetToken !== second.token &&
+      tokenHash === hashResetToken(resetToken) &&
+      tokenHash !== resetToken,
+    "Password reset token is 256-bit random and only its SHA-256 hash is stored"
   );
 
   // ----------------------------------------------------
   // TEST 29: Single-Use Password Reset Token Lifecycle
   // ----------------------------------------------------
-  const crypto = await import("crypto");
-  const tokenHash = crypto.createHash("sha256").update(resetToken).digest("hex");
   const initialUser: UserProfile = {
     uid: "usr-reset-test-1",
     name: "Reset Tester",
@@ -764,43 +755,41 @@ async function runVerification() {
     schoolId: schoolA,
     status: "ACTIVE",
     passwordHash: "old-hashed-password",
-    resetTokenHash: tokenHash,
-    resetTokenExpires: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
   await createUserServer(initialUser);
-
-  const userBeforeReset = await getUserByEmailServer(testUserEmail);
-  const tokenMatches = userBeforeReset?.resetTokenHash === tokenHash;
-
-  // Simulate successful reset invalidation
-  const { resetTokenHash: _rth, resetTokenExpires: _rte, ...updatedUser } = userBeforeReset!;
-  void _rth;
-  void _rte;
-  await updateUserServer({
-    ...updatedUser,
-    passwordHash: "new-bcrypt-hash-12345",
+  await savePasswordResetTokenServer({
+    id: tokenHash,
+    uid: initialUser.uid,
+    email: testUserEmail,
+    schoolId: schoolA,
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    usedAt: null,
+    createdAt: new Date().toISOString(),
   });
 
+  const firstUse = await consumePasswordResetTokenServer(tokenHash, initialUser.uid, "new-bcrypt-hash-12345");
+  const secondUse = await consumePasswordResetTokenServer(tokenHash, initialUser.uid, "attacker-hash");
   const userAfterReset = await getUserByEmailServer(testUserEmail);
-  const tokenInvalidated = userAfterReset?.resetTokenHash === undefined;
 
   assert(
-    tokenMatches === true &&
-      tokenInvalidated === true &&
-      userAfterReset?.passwordHash === "new-bcrypt-hash-12345",
-    "Password reset token single-use lifecycle: token hash is verified and invalidated upon reset"
+    firstUse === "OK" &&
+      secondUse === "USED" &&
+      userAfterReset?.passwordHash === "new-bcrypt-hash-12345" &&
+      Boolean(userAfterReset?.sessionsValidAfter),
+    "Password reset token single-use lifecycle: first use succeeds, reuse is rejected"
   );
 
   // ----------------------------------------------------
   // TEST 30: Tampered / Invalid Password Reset Token Rejection
   // ----------------------------------------------------
   const tamperedToken = resetToken.slice(0, -6) + "xxxxxx";
-  const tamperedResult = await verifyPasswordResetTokenServer(tamperedToken);
+  const tamperedRecord = await getPasswordResetTokenServer(hashResetToken(tamperedToken));
 
   assert(
-    tamperedResult === null,
+    tamperedRecord === null &&
+      (await consumePasswordResetTokenServer(hashResetToken(tamperedToken), initialUser.uid, "x")) === "INVALID",
     "Tampered or invalid password reset tokens are strictly rejected"
   );
 

@@ -15,6 +15,7 @@ import { StudentDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { linkGuardianEmailToStudent } from "@/lib/link-parent";
 import { assertTeacherOwnsClass, resolveAuthenticatedTeacher } from "@/lib/academic-access";
+import { validateStudentDates } from "@/lib/date-utils";
 
 export async function GET(req: NextRequest) {
   try {
@@ -73,7 +74,7 @@ export async function GET(req: NextRequest) {
       className: st.className || "",
       attendanceRate: 0,
       feeStatus: "CLEAR",
-      admissionDate: st.createdAt,
+      admissionDate: st.admissionDate || st.createdAt,
       photoUrl: st.photoUrl || "",
       documents: st.documents || [],
     }));
@@ -113,6 +114,11 @@ export async function POST(req: NextRequest) {
         { error: "First Name, Last Name, Class, and Guardian details are required." },
         { status: 400 }
       );
+    }
+
+    const dates = validateStudentDates({ dob, admissionDate: body.admissionDate });
+    if (!dates.ok) {
+      return NextResponse.json({ error: dates.error }, { status: 400 });
     }
 
     // Enrolment is always into a class of the active academic session, so a new session's
@@ -221,7 +227,8 @@ export async function POST(req: NextRequest) {
       fullName,
       fatherName: guardianName,
       gender: gender === "Male" ? "MALE" : "FEMALE",
-      dob: dob || undefined,
+      dob: dates.dob || undefined,
+      admissionDate: dates.admissionDate || new Date().toISOString().split("T")[0],
       phone: contactNumber || guardianPhone,
       address: body.address?.trim() || "Not Provided",
       email: studentEmail,

@@ -1,11 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
-import { getUserByEmailServer, updateUserServer, getSchoolSettingsServer, createAuditLogServer } from "@/lib/firebase/server-db";
-import { createPasswordResetTokenServer } from "@/lib/firebase/server-auth";
+import {
+  getUserByEmailServer,
+  getSchoolSettingsServer,
+  createAuditLogServer,
+  savePasswordResetTokenServer,
+} from "@/lib/firebase/server-db";
 import { sendPasswordResetEmail } from "@/lib/email-service";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
+import {
+  buildResetUrl,
+  generateResetToken,
+  resolveAppBaseUrl,
+  RESET_TOKEN_TTL_MS,
+} from "@/lib/password-reset";
 
 export const dynamic = "force-dynamic";
+
+const GENERIC_SUCCESS_RESPONSE = {
+  success: true,
+  message: "If an account is associated with this email address, a password reset link has been dispatched.",
+};
 
 export async function POST(req: NextRequest) {
   // Extract client IP for rate limiting
@@ -52,75 +66,70 @@ export async function POST(req: NextRequest) {
   // Record this attempt against rate limiter
   recordAuthFailure(rateKey, 5, 900);
 
-  const GENERIC_SUCCESS_RESPONSE = {
-    success: true,
-    message: "If an account is associated with this email address, a password reset link has been dispatched.",
-  };
-
   try {
     const user = await getUserByEmailServer(rawEmail);
 
-    // Constant-time protection / prevent account enumeration:
-    // If user does not exist, return generic success without revealing existence
+    // Prevent account enumeration: unknown/inactive accounts get the same response.
     if (!user || user.status === "SUSPENDED" || user.status === "INACTIVE") {
       return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
     }
 
-    // 1. Generate cryptographically signed single-use JWT token (15-minute expiry)
-    const token = await createPasswordResetTokenServer({
+    const base = resolveAppBaseUrl({
+      origin: req.headers.get("origin"),
+      host: req.headers.get("host"),
+    });
+    if (!base.ok) {
+      console.error(`[PASSWORD RESET] Not sent — ${base.reason}`);
+      await createAuditLogServer(
+        user.schoolId, user.uid, user.email, user.role,
+        "PASSWORD_RESET_EMAIL_FAILED", "AUTH", user.uid,
+        `Password reset requested but not sent: ${base.reason}`
+      );
+      return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
+    }
+
+    // 256-bit random token; only its SHA-256 hash is stored. Issuing a new one deletes any
+    // earlier tokens for this user, so only the latest emailed link works.
+    const { token, tokenHash } = generateResetToken();
+    const nowMs = Date.now();
+    await savePasswordResetTokenServer({
+      id: tokenHash,
       uid: user.uid,
       email: user.email,
       schoolId: user.schoolId,
+      expiresAt: new Date(nowMs + RESET_TOKEN_TTL_MS).toISOString(),
+      usedAt: null,
+      createdAt: new Date(nowMs).toISOString(),
     });
 
-    // 2. Hash token for single-use database verification
-    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-
-    // 3. Store active token hash on user record
-    await updateUserServer({
-      ...user,
-      resetTokenHash: tokenHash,
-      resetTokenExpires: expiresAt,
-    });
-
-    // 4. Resolve production-ready reset URL
-    const origin =
-      req.headers.get("origin") ||
-      (req.headers.get("host") ? `https://${req.headers.get("host")}` : null) ||
-      process.env.NEXT_PUBLIC_APP_URL ||
-      "http://localhost:3000";
-
-    const resetUrl = `${origin.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
-
-    // 5. Fetch school details for branded email
     const schoolSettings = await getSchoolSettingsServer(user.schoolId);
     const schoolName = schoolSettings?.schoolName || "Allied School Management System";
 
-    // 6. Dispatch email via delivery abstraction
-    await sendPasswordResetEmail({
+    // Always sent to the email stored on the matched account profile.
+    const delivery = await sendPasswordResetEmail({
       to: user.email,
       recipientName: user.name || "User",
       schoolName,
-      resetUrl,
+      resetUrl: buildResetUrl(base.baseUrl, token),
     });
 
-    // 7. Audit log
     await createAuditLogServer(
       user.schoolId,
       user.uid,
       user.email,
       user.role,
-      "FORGOT_PASSWORD_REQUEST",
+      delivery.delivered ? "FORGOT_PASSWORD_REQUEST" : "PASSWORD_RESET_EMAIL_FAILED",
       "AUTH",
       user.uid,
-      `Password reset token generated and dispatched for ${user.email}.`
+      delivery.delivered
+        ? `Password reset link emailed to ${user.email} via ${delivery.mode}.`
+        : `Password reset email to ${user.email} was NOT delivered (${delivery.mode}): ${delivery.message}`
     );
 
     return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
   } catch (err: any) {
-    console.error("Forgot password handler error:", err);
-    // Return standard message even on unexpected internal error to prevent timing attacks
+    console.error("Forgot password handler error:", err?.message || err);
+    // Same response on internal errors to avoid revealing account existence.
     return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
   }
 }

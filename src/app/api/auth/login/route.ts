@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { getUserByEmailServer, createAuditLogServer } from "@/lib/firebase/server-db";
-import { createSessionCookieServer, AuthenticatedUser, SESSION_IDLE_SECONDS } from "@/lib/firebase/server-auth";
+import { createSessionCookieServer, AuthenticatedUser, SESSION_COOKIE_OPTIONS } from "@/lib/firebase/server-auth";
 import { dashboardPathForRole } from "@/lib/role-home";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
@@ -55,7 +55,9 @@ export async function POST(req: NextRequest) {
     // 1. If Firebase ID token is provided, verify using Firebase Admin SDK
     if (idToken && hasAdminCredentials) {
       try {
-        const decoded = await adminAuth.verifyIdToken(idToken);
+        // checkRevoked: an ID token minted before a password reset/change (which revokes refresh
+        // tokens) must not be able to open a new session.
+        const decoded = await adminAuth.verifyIdToken(idToken, true);
         if (decoded.email?.toLowerCase().trim() === identifier) {
           isAuthenticated = true;
         }
@@ -272,13 +274,7 @@ export async function POST(req: NextRequest) {
       redirectUrl,
     });
 
-    response.cookies.set("allied_session", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: SESSION_IDLE_SECONDS,
-    });
+    response.cookies.set("allied_session", token, SESSION_COOKIE_OPTIONS);
 
     return response;
   } catch (error: any) {

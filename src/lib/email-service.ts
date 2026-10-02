@@ -1,4 +1,5 @@
-import crypto from "crypto";
+import nodemailer from "nodemailer";
+import { RESET_TOKEN_TTL_MINUTES } from "./password-reset";
 
 export interface SendPasswordResetOptions {
   to: string;
@@ -7,10 +8,48 @@ export interface SendPasswordResetOptions {
   resetUrl: string;
 }
 
+export type EmailProvider = "resend" | "smtp";
+
 export interface EmailDeliveryResult {
+  /** True only when a real provider accepted the message. */
   delivered: boolean;
-  mode: "resend" | "smtp" | "console";
+  mode: EmailProvider | "dev-console" | "not-configured";
+  /** Safe for logs/audit: never contains the reset URL, token or credentials. */
   message: string;
+}
+
+type Env = Record<string, string | undefined>;
+
+function has(env: Env, name: string): boolean {
+  return Boolean(env[name] && env[name]!.trim());
+}
+
+/**
+ * Which email providers are fully configured. Names only — values are never returned.
+ *
+ * Resend:  RESEND_API_KEY + EMAIL_FROM (a sender on a domain verified in Resend)
+ * SMTP:    SMTP_HOST + SMTP_USER + SMTP_PASS (+ optional SMTP_PORT, SMTP_SECURE, EMAIL_FROM)
+ */
+export function getEmailConfigStatus(env: Env = process.env): {
+  providers: EmailProvider[];
+  missingForResend: string[];
+  missingForSmtp: string[];
+} {
+  const missingForResend = ["RESEND_API_KEY", "EMAIL_FROM"].filter((n) => !has(env, n));
+  const missingForSmtp = ["SMTP_HOST", "SMTP_USER", "SMTP_PASS"].filter((n) => !has(env, n));
+  const providers: EmailProvider[] = [];
+  if (missingForResend.length === 0) providers.push("resend");
+  if (missingForSmtp.length === 0) providers.push("smtp");
+  return { providers, missingForResend, missingForSmtp };
+}
+
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /**
@@ -25,6 +64,9 @@ export function buildPasswordResetHtml({
   schoolName?: string;
   resetUrl: string;
 }): string {
+  const name = escapeHtml(recipientName);
+  const school = escapeHtml(schoolName);
+  const url = escapeHtml(resetUrl);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -50,29 +92,29 @@ export function buildPasswordResetHtml({
 <body>
   <div class="container">
     <div class="header">
-      <h1>${schoolName}</h1>
-      <p>Management System & Academic Portal</p>
+      <h1>${school}</h1>
+      <p>Management System &amp; Academic Portal</p>
     </div>
     <div class="body">
       <h2>Password Reset Request</h2>
-      <p>Hello ${recipientName},</p>
-      <p>We received a request to reset the password for your account on the ${schoolName} portal. Click the button below to choose a new password:</p>
+      <p>Hello ${name},</p>
+      <p>We received a request to reset the password for your account on the ${school} portal. Click the button below to choose a new password:</p>
       <div class="button-container">
-        <a href="${resetUrl}" class="button" target="_blank" rel="noopener noreferrer">Reset Password</a>
+        <a href="${url}" class="button" target="_blank" rel="noopener noreferrer">Reset Password</a>
       </div>
       <div class="notice">
         <strong>Important Security Notice:</strong>
         <ul style="margin: 6px 0 0 0; padding-left: 20px;">
-          <li>This link is valid for <strong>15 minutes</strong>.</li>
+          <li>This link is valid for <strong>${RESET_TOKEN_TTL_MINUTES} minutes</strong>.</li>
           <li>For your security, it can be used <strong>only once</strong>.</li>
           <li>If you did not request this reset, you can safely ignore this email. Your password will not change.</li>
         </ul>
       </div>
       <p style="font-size: 12px; color: #64748b; margin-top: 24px;">If the button above does not work, copy and paste this link into your web browser:</p>
-      <div class="url-fallback">${resetUrl}</div>
+      <div class="url-fallback">${url}</div>
     </div>
     <div class="footer">
-      <p>&copy; ${new Date().getFullYear()} ${schoolName}. All rights reserved.</p>
+      <p>&copy; ${new Date().getFullYear()} ${school}. All rights reserved.</p>
       <p>This is an automated notification. Please do not reply to this email.</p>
     </div>
   </div>
@@ -80,61 +122,88 @@ export function buildPasswordResetHtml({
 </html>`;
 }
 
+async function sendViaResend(env: Env, msg: { to: string; subject: string; html: string; text: string }): Promise<string | null> {
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY!.trim()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ from: env.EMAIL_FROM!.trim(), to: [msg.to], subject: msg.subject, html: msg.html, text: msg.text }),
+    });
+    if (res.ok) return null;
+    const data = (await res.json().catch(() => ({}))) as { name?: string; message?: string };
+    // Resend's error body describes config problems (e.g. unverified sender domain); it never
+    // echoes the message body, so it is safe to log.
+    return `Resend rejected the message (HTTP ${res.status}${data.name ? `, ${data.name}` : ""}${data.message ? `: ${data.message}` : ""})`;
+  } catch (err) {
+    return `Could not reach Resend API: ${(err as Error)?.message || "network error"}`;
+  }
+}
+
+async function sendViaSmtp(env: Env, msg: { to: string; subject: string; html: string; text: string }): Promise<string | null> {
+  try {
+    const port = Number(env.SMTP_PORT) || 587;
+    const secure = env.SMTP_SECURE ? env.SMTP_SECURE.trim().toLowerCase() === "true" : port === 465;
+    const transport = nodemailer.createTransport({
+      host: env.SMTP_HOST!.trim(),
+      port,
+      secure,
+      auth: { user: env.SMTP_USER!.trim(), pass: env.SMTP_PASS! },
+    });
+    const from = has(env, "EMAIL_FROM") ? env.EMAIL_FROM!.trim() : env.SMTP_USER!.trim();
+    const info = await transport.sendMail({ from, to: msg.to, subject: msg.subject, html: msg.html, text: msg.text });
+    if (info.rejected && info.rejected.length > 0) return "SMTP server rejected the recipient.";
+    return null;
+  } catch (err) {
+    const e = err as { code?: string; responseCode?: number; message?: string };
+    return `SMTP delivery failed (${e.code || "error"}${e.responseCode ? ` ${e.responseCode}` : ""})`;
+  }
+}
+
 /**
- * Dispatches password reset email through configured transport (Resend REST API, SMTP, or secure fallback log).
+ * Sends the password reset email through the configured provider(s): Resend first, then SMTP.
+ * Reports `delivered: true` only when a provider actually accepted the message. Never logs the
+ * reset URL in production; with no provider configured in local development the link is printed
+ * to the dev console so the flow can still be exercised.
  */
-export async function sendPasswordResetEmail(options: SendPasswordResetOptions): Promise<EmailDeliveryResult> {
+export async function sendPasswordResetEmail(
+  options: SendPasswordResetOptions,
+  env: Env = process.env
+): Promise<EmailDeliveryResult> {
   const { to, recipientName = "User", schoolName = "Allied School", resetUrl } = options;
+  const subject = `Reset your ${schoolName} password`;
   const html = buildPasswordResetHtml({ recipientName, schoolName, resetUrl });
-  const text = `Password Reset Request - ${schoolName}\n\nHello ${recipientName},\n\nA password reset was requested for your account. Please use the following secure link to set your new password:\n\n${resetUrl}\n\nThis link is single-use and will expire in 15 minutes.\n\nIf you did not request this, please ignore this email.`;
+  const text = `Password Reset Request - ${schoolName}\n\nHello ${recipientName},\n\nA password reset was requested for your account. Please use the following secure link to set your new password:\n\n${resetUrl}\n\nThis link is single-use and will expire in ${RESET_TOKEN_TTL_MINUTES} minutes.\n\nIf you did not request this, please ignore this email.`;
+  const msg = { to, subject, html, text };
 
-  // 1. Check for Resend API Key
-  const resendApiKey = process.env.RESEND_API_KEY;
-  if (resendApiKey && resendApiKey.trim().length > 0) {
-    try {
-      const fromEmail = process.env.EMAIL_FROM || "Allied School <noreply@alliedschool.edu>";
-      const res = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${resendApiKey.trim()}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: fromEmail,
-          to: [to],
-          subject: `Reset your ${schoolName} password`,
-          html,
-          text,
-        }),
-      });
+  const { providers, missingForResend, missingForSmtp } = getEmailConfigStatus(env);
+  const failures: string[] = [];
 
-      if (res.ok) {
-        return {
-          delivered: true,
-          mode: "resend",
-          message: "Password reset email delivered successfully via Resend.",
-        };
-      } else {
-        const errorData = await res.json().catch(() => ({}));
-        console.error("Resend API delivery error:", errorData);
-      }
-    } catch (err) {
-      console.error("Failed to connect to Resend API:", err);
+  for (const provider of providers) {
+    const error = provider === "resend" ? await sendViaResend(env, msg) : await sendViaSmtp(env, msg);
+    if (!error) {
+      return { delivered: true, mode: provider, message: `Password reset email accepted by ${provider}.` };
     }
+    failures.push(error);
+    console.error(`[PASSWORD RESET EMAIL] ${error}`);
   }
 
-  // 2. Safe development fallback & audit log
-  // If no external provider is configured or when running locally, log link to console
-  console.log(`[PASSWORD RESET SERVICE] ========================================`);
-  console.log(`[PASSWORD RESET SERVICE] To: ${to}`);
-  console.log(`[PASSWORD RESET SERVICE] School: ${schoolName}`);
-  console.log(`[PASSWORD RESET SERVICE] Reset URL: ${resetUrl}`);
-  console.log(`[PASSWORD RESET SERVICE] Expires: 15 minutes`);
-  console.log(`[PASSWORD RESET SERVICE] ========================================`);
+  if (providers.length > 0) {
+    return { delivered: false, mode: providers[providers.length - 1], message: failures.join(" | ") };
+  }
 
-  return {
-    delivered: true,
-    mode: "console",
-    message: "Password reset link generated and logged to secure server console.",
-  };
+  const configHint =
+    `No email provider configured. Set either RESEND_API_KEY + EMAIL_FROM (missing: ${missingForResend.join(", ")}) ` +
+    `or SMTP_HOST + SMTP_USER + SMTP_PASS (missing: ${missingForSmtp.join(", ")}).`;
+
+  if (env.NODE_ENV !== "production") {
+    console.warn(`[PASSWORD RESET EMAIL] ${configHint}`);
+    console.warn(`[PASSWORD RESET EMAIL] DEV ONLY — reset link for ${to}: ${resetUrl}`);
+    return { delivered: false, mode: "dev-console", message: configHint };
+  }
+
+  console.error(`[PASSWORD RESET EMAIL] NOT SENT. ${configHint}`);
+  return { delivered: false, mode: "not-configured", message: configHint };
 }

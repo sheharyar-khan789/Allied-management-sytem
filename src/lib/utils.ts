@@ -22,7 +22,10 @@ export function calculateGrade(percentage: number): { grade: string; gpa: number
 
 export function formatDate(date: Date | string | null | undefined): string {
   if (!date) return "N/A";
-  const d = new Date(date);
+  // A plain calendar date ("2009-04-12") is parsed by `new Date` as UTC midnight, which displays
+  // as the previous day in timezones behind UTC. Build it as a local date instead.
+  const ymd = typeof date === "string" ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(date) : null;
+  const d = ymd ? new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])) : new Date(date);
   if (isNaN(d.getTime())) return "N/A";
   return d.toLocaleDateString("en-US", {
     year: "numeric",

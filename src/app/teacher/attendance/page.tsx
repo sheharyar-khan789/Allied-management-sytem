@@ -1,16 +1,23 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { todayLocalISO } from "@/lib/date-utils";
 
 export default function TeacherAttendanceRegisterPage() {
   const [classes, setClasses] = useState<any[]>([]);
   const [selectedClassId, setSelectedClassId] = useState("");
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split("T")[0]);
+  const [selectedDate, setSelectedDate] = useState(todayLocalISO());
   const [roster, setRoster] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState("");
+  // Load failures (403 not-your-class, 401 expired session, 500) used to be swallowed, leaving
+  // an empty "No students enrolled" roster that looked like real data.
+  const [loadError, setLoadError] = useState("");
+  // How many roster rows have a stored record for this date. Unmarked rows display the default
+  // "Present", so without this an unsaved register looked identical to a saved one.
+  const [savedCount, setSavedCount] = useState(0);
   // Server-computed 24h lock state (enforced again by /api/attendance on save).
   const [locked, setLocked] = useState(false);
 
@@ -26,21 +33,31 @@ export default function TeacherAttendanceRegisterPage() {
       .catch(console.error);
   }, []);
 
-  const fetchAttendance = async () => {
+  const fetchAttendance = async (keepMessages = false) => {
     if (!selectedClassId) return;
     setLoading(true);
-    setSaveSuccess(false);
-    setSaveError("");
+    if (!keepMessages) {
+      setSaveSuccess(false);
+      setSaveError("");
+    }
+    setLoadError("");
 
     try {
-      const res = await fetch(`/api/attendance?classId=${selectedClassId}&date=${selectedDate}`);
-      const json = await res.json();
-      if (json.success) {
+      const res = await fetch(`/api/attendance?classId=${encodeURIComponent(selectedClassId)}&date=${selectedDate}`);
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
         setRoster(json.roster);
+        setSavedCount(Number(json.savedCount) || 0);
         setLocked(Boolean(json.locked));
+      } else {
+        setRoster([]);
+        setSavedCount(0);
+        setLoadError(json.error || "Failed to load the attendance register.");
       }
     } catch (err) {
       console.error(err);
+      setRoster([]);
+      setLoadError("Failed to load the attendance register. Please check your connection.");
     } finally {
       setLoading(false);
     }
@@ -84,6 +101,7 @@ export default function TeacherAttendanceRegisterPage() {
       if (res.ok) {
         setSaveSuccess(true);
         setTimeout(() => setSaveSuccess(false), 3000);
+        await fetchAttendance(true);
       } else {
         const json = await res.json().catch(() => ({}));
         setSaveError(json.error || "Failed to save attendance.");
@@ -146,6 +164,31 @@ export default function TeacherAttendanceRegisterPage() {
         <div className="p-3 rounded-lg bg-tertiary-container/10 border border-on-tertiary-container/30 text-on-tertiary-container text-xs font-bold flex items-center gap-2">
           <span className="material-symbols-outlined text-[18px]">check_circle</span>
           <span>Classroom attendance submitted successfully.</span>
+        </div>
+      )}
+
+      {loadError && (
+        <div role="alert" className="p-3 rounded-lg bg-error-container text-on-error-container text-xs font-bold flex items-center gap-2">
+          <span className="material-symbols-outlined text-[18px]">error</span>
+          <span>{loadError}</span>
+        </div>
+      )}
+
+      {!loading && !loadError && roster.length > 0 && savedCount < roster.length && (
+        <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-xs font-semibold flex items-center gap-2">
+          <span className="material-symbols-outlined text-[18px]">pending_actions</span>
+          <span>
+            {savedCount === 0
+              ? "Attendance for this date has not been saved yet. The statuses below are defaults until you save."
+              : `${savedCount} of ${roster.length} students have saved attendance for this date. Save to record the rest.`}
+          </span>
+        </div>
+      )}
+
+      {!loading && !loadError && roster.length > 0 && savedCount === roster.length && (
+        <div className="p-3 rounded-lg bg-surface-container border border-outline-variant/40 text-on-surface text-xs font-semibold flex items-center gap-2">
+          <span className="material-symbols-outlined text-[18px]">cloud_done</span>
+          <span>Attendance for this date is saved.</span>
         </div>
       )}
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { validateStudentDates } from "@/lib/date-utils";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getStudentByIdServer,
@@ -88,7 +89,7 @@ export async function GET(
       guardianOccupation: "Not Specified",
       classId: student.classId,
       status: student.status,
-      admissionDate: student.createdAt,
+      admissionDate: student.admissionDate || student.createdAt,
       photoUrl: student.photoUrl || "",
       documents: student.documents || [],
       class: {
@@ -196,12 +197,22 @@ export async function PUT(
       return NextResponse.json({ error: "Student not found." }, { status: 404 });
     }
 
+    // Only validate fields actually sent; an omitted date keeps the stored value.
+    const dates = validateStudentDates({
+      dob: body.dob !== undefined ? body.dob : existing.dob,
+      admissionDate: body.admissionDate !== undefined ? body.admissionDate : existing.admissionDate,
+    });
+    if (!dates.ok) {
+      return NextResponse.json({ error: dates.error }, { status: 400 });
+    }
+
     const updated: typeof existing = {
       ...existing,
       fullName: body.fullName ? body.fullName.trim() : body.firstName ? `${body.firstName} ${body.lastName || ""}`.trim() : existing.fullName,
       rollNo: body.rollNumber || body.rollNo || existing.rollNo,
       gender: body.gender === "Male" || body.gender === "MALE" ? "MALE" : body.gender === "Female" || body.gender === "FEMALE" ? "FEMALE" : existing.gender,
-      dob: body.dob || existing.dob,
+      dob: dates.dob || existing.dob,
+      admissionDate: dates.admissionDate || existing.admissionDate,
       bloodGroup: body.bloodGroup || existing.bloodGroup,
       phone: body.contactNumber || body.phone || existing.phone,
       address: body.address !== undefined ? body.address : existing.address,

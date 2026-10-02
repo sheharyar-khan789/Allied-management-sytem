@@ -3,12 +3,12 @@ import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getTeacherByIdServer,
   saveTeacherServer,
-  deleteTeacherServer,
   createAuditLogServer,
   getClassesServer,
   getSubjectsServer
 } from "@/lib/firebase/server-db";
 import { validateDateString, isDateBefore } from "@/lib/date-utils";
+import { deleteTeacherCompletely } from "@/lib/teacher-lifecycle";
 
 export async function GET(
   req: NextRequest,
@@ -287,7 +287,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Teacher not found." }, { status: 404 });
     }
 
-    await deleteTeacherServer(authUser.schoolId, id);
+    const result = await deleteTeacherCompletely(authUser.schoolId, existing);
 
     await createAuditLogServer(
       authUser.schoolId,
@@ -297,10 +297,13 @@ export async function DELETE(
       "DELETE_TEACHER",
       "TEACHER",
       id,
-      `Deleted faculty member ${existing.fullName} (${existing.employeeId}).`
+      `Deleted faculty member ${existing.fullName} (${existing.employeeId}); ` +
+        `login ${result.loginRemoved ? "removed" : "not found"}, ` +
+        `cleared from ${result.classesCleared} class(es), ${result.subjectsCleared} subject(s), ` +
+        `${result.timetableSlotsCleared} timetable slot(s).`
     );
 
-    return NextResponse.json({ success: true, message: "Faculty member deleted successfully." });
+    return NextResponse.json({ success: true, message: "Faculty member deleted successfully.", ...result });
   } catch (error: any) {
     if (error instanceof Response) return error;
     console.error("Teacher delete error:", error);

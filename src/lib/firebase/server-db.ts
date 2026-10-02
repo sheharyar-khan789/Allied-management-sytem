@@ -1,3 +1,4 @@
+import { FieldValue } from "firebase-admin/firestore";
 import { adminDb, hasAdminCredentials } from "./admin";
 import { getDefaultAcademicYear } from "../school-display";
 import {
@@ -26,6 +27,7 @@ import {
   TimetableDoc,
   AnnouncementDoc,
   PayrollRecordDoc,
+  PasswordResetTokenDoc,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -49,6 +51,7 @@ const localStore: {
   timetables: Map<string, TimetableDoc>;
   announcements: Map<string, AnnouncementDoc>;
   payrollRecords: Map<string, PayrollRecordDoc>;
+  passwordResetTokens: Map<string, PasswordResetTokenDoc>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -69,6 +72,7 @@ const localStore: {
   timetables: new Map(),
   announcements: new Map(),
   payrollRecords: new Map(),
+  passwordResetTokens: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -90,6 +94,9 @@ export function onFirestoreError(operation: string, error: any): void {
  * Strips undefined fields from an object so Firestore writes never fail with
  * 'Cannot use "undefined" as a Firestore value' when optional properties are omitted.
  */
+/** Firestore allows 500 writes per batch; stay under it. */
+export const FIRESTORE_BATCH_LIMIT = 450;
+
 export function cleanUndefined<T extends Record<string, any>>(obj: T): T {
   const result: Record<string, any> = {};
   for (const [key, value] of Object.entries(obj)) {
@@ -572,6 +579,210 @@ export async function updateUserServer(user: UserProfile): Promise<void> {
   }
 }
 
+/**
+ * Removes fields from a user profile. updateUserServer writes with { merge: true }, which keeps
+ * any field that is merely omitted from the object — so leaving a field out does NOT delete it
+ * in Firestore. Fields that must really disappear (e.g. a spent reset token) go through here.
+ */
+export async function deleteUserFieldsServer(uid: string, fields: (keyof UserProfile)[]): Promise<void> {
+  for (const [key, existing] of localStore.users.entries()) {
+    if (existing.uid === uid) {
+      const next = { ...existing } as Record<string, unknown>;
+      for (const f of fields) delete next[f as string];
+      localStore.users.set(key, next as unknown as UserProfile);
+    }
+  }
+  if (hasAdminCredentials) {
+    try {
+      const patch: Record<string, unknown> = {};
+      for (const f of fields) patch[f as string] = FieldValue.delete();
+      await adminDb.collection("users").doc(uid).set(patch, { merge: true });
+    } catch (e) {
+      onFirestoreError(`deleteUserFieldsServer(${uid})`, e);
+    }
+  }
+}
+
+/** Hard-deletes a user profile document. Callers verify ownership/role before calling. */
+export async function deleteUserProfileServer(uid: string): Promise<void> {
+  for (const [key, existing] of localStore.users.entries()) {
+    if (existing.uid === uid) localStore.users.delete(key);
+  }
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("users").doc(uid).delete();
+    } catch (e) {
+      onFirestoreError(`deleteUserProfileServer(${uid})`, e);
+    }
+  }
+}
+
+/**
+ * Looks up several emails in one pass (Firestore `in` queries of up to 30 values) instead of
+ * one query per email. Returns a map keyed by normalized email.
+ */
+export async function getUsersByEmailsServer(emails: string[]): Promise<Map<string, UserProfile>> {
+  assertProductionDbReady();
+  const norm = Array.from(new Set(emails.map((e) => e.toLowerCase().trim()).filter(Boolean)));
+  const found = new Map<string, UserProfile>();
+  if (norm.length === 0) return found;
+
+  if (hasAdminCredentials) {
+    try {
+      for (let i = 0; i < norm.length; i += 30) {
+        const chunk = norm.slice(i, i + 30);
+        const snap = await adminDb.collection("users").where("email", "in", chunk).get();
+        for (const d of snap.docs) {
+          const u = { uid: d.id, ...d.data() } as UserProfile;
+          found.set(u.email.toLowerCase().trim(), u);
+        }
+      }
+      if (process.env.NODE_ENV === "production") return found;
+    } catch (e) {
+      onFirestoreError("getUsersByEmailsServer", e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+
+  const wanted = new Set(norm);
+  for (const u of localStore.users.values()) {
+    const e = u.email.toLowerCase().trim();
+    if (wanted.has(e) && !found.has(e)) found.set(e, u);
+  }
+  return found;
+}
+
+/**
+ * Sets the session cutoff on a profile: any session signed in before `atIso` is rejected by
+ * requireAuth from then on.
+ */
+export async function revokeUserSessionsServer(uid: string, atIso: string = new Date().toISOString()): Promise<void> {
+  syncLocalUser(uid, { sessionsValidAfter: atIso });
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("users").doc(uid).set({ sessionsValidAfter: atIso, updatedAt: atIso }, { merge: true });
+    } catch (e) {
+      onFirestoreError(`revokeUserSessionsServer(${uid})`, e);
+      throw e;
+    }
+  }
+}
+
+function syncLocalUser(uid: string, patch: Partial<UserProfile>): void {
+  for (const [key, existing] of localStore.users.entries()) {
+    if (existing.uid === uid) localStore.users.set(key, { ...existing, ...patch });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PASSWORD RESET TOKENS (server-only collection, document id = sha256(token))
+// ---------------------------------------------------------------------------
+/**
+ * Stores a new reset token and deletes any earlier tokens for the same user, so only the most
+ * recently emailed link can ever be used.
+ */
+export async function savePasswordResetTokenServer(rec: PasswordResetTokenDoc): Promise<void> {
+  assertProductionDbReady();
+  for (const [id, t] of localStore.passwordResetTokens.entries()) {
+    if (t.uid === rec.uid) localStore.passwordResetTokens.delete(id);
+  }
+  localStore.passwordResetTokens.set(rec.id, rec);
+
+  if (hasAdminCredentials) {
+    try {
+      const previous = await adminDb.collection("passwordResetTokens").where("uid", "==", rec.uid).get();
+      const batch = adminDb.batch();
+      previous.docs.forEach((d) => batch.delete(d.ref));
+      batch.set(adminDb.collection("passwordResetTokens").doc(rec.id), cleanUndefined(rec));
+      await batch.commit();
+    } catch (e) {
+      onFirestoreError(`savePasswordResetTokenServer(${rec.uid})`, e);
+      throw e;
+    }
+  }
+}
+
+export async function getPasswordResetTokenServer(tokenHash: string): Promise<PasswordResetTokenDoc | null> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("passwordResetTokens").doc(tokenHash).get();
+      if (doc.exists) return { id: doc.id, ...doc.data() } as PasswordResetTokenDoc;
+      if (process.env.NODE_ENV === "production") return null;
+    } catch (e) {
+      onFirestoreError("getPasswordResetTokenServer", e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  return localStore.passwordResetTokens.get(tokenHash) || null;
+}
+
+export type ConsumeResetTokenResult = "OK" | "INVALID" | "USED" | "EXPIRED";
+
+export function checkPasswordResetToken(
+  token: PasswordResetTokenDoc | null | undefined,
+  nowMs: number = Date.now()
+): ConsumeResetTokenResult {
+  if (!token) return "INVALID";
+  if (token.usedAt) return "USED";
+  const expires = Date.parse(token.expiresAt);
+  if (Number.isNaN(expires) || expires <= nowMs) return "EXPIRED";
+  return "OK";
+}
+
+/**
+ * Atomically marks a reset token as used and writes the new password hash + session cutoff to
+ * the user profile. The token check and the "used" mark happen in one Firestore transaction, so
+ * the same link can never succeed twice even if submitted concurrently.
+ */
+export async function consumePasswordResetTokenServer(
+  tokenHash: string,
+  uid: string,
+  passwordHash: string,
+  nowIso: string = new Date().toISOString()
+): Promise<ConsumeResetTokenResult> {
+  assertProductionDbReady();
+  const nowMs = Date.parse(nowIso);
+  const userPatch = { passwordHash, sessionsValidAfter: nowIso, updatedAt: nowIso };
+
+  if (hasAdminCredentials) {
+    try {
+      const tokenRef = adminDb.collection("passwordResetTokens").doc(tokenHash);
+      const userRef = adminDb.collection("users").doc(uid);
+      const result = await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(tokenRef);
+        const token = snap.exists ? ({ id: snap.id, ...snap.data() } as PasswordResetTokenDoc) : null;
+        const status = token && token.uid !== uid ? "INVALID" : checkPasswordResetToken(token, nowMs);
+        if (status !== "OK") return status;
+        tx.set(tokenRef, { usedAt: nowIso }, { merge: true });
+        tx.set(
+          userRef,
+          { ...userPatch, resetTokenHash: FieldValue.delete(), resetTokenExpires: FieldValue.delete() },
+          { merge: true }
+        );
+        return status;
+      });
+      if (result === "OK") {
+        const local = localStore.passwordResetTokens.get(tokenHash);
+        if (local) local.usedAt = nowIso;
+        syncLocalUser(uid, userPatch);
+      }
+      return result;
+    } catch (e) {
+      onFirestoreError(`consumePasswordResetTokenServer(${uid})`, e);
+      throw e;
+    }
+  }
+
+  const local = localStore.passwordResetTokens.get(tokenHash);
+  const status = local && local.uid !== uid ? "INVALID" : checkPasswordResetToken(local, nowMs);
+  if (status !== "OK") return status;
+  local!.usedAt = nowIso;
+  syncLocalUser(uid, userPatch);
+  await deleteUserFieldsServer(uid, ["resetTokenHash", "resetTokenExpires"]);
+  return status;
+}
+
 // ---------------------------------------------------------------------------
 // STUDENTS
 // ---------------------------------------------------------------------------
@@ -724,6 +935,48 @@ export async function saveStudentServer(student: StudentDoc): Promise<string> {
     }
   }
   return id;
+}
+
+/** Max students per import batch: each student is two writes (student + login profile). */
+export const STUDENT_IMPORT_BATCH_SIZE = Math.floor(FIRESTORE_BATCH_LIMIT / 2);
+
+/**
+ * Writes imported students and their login profiles in one atomic batch (all or nothing).
+ * Callers chunk by STUDENT_IMPORT_BATCH_SIZE. Every record must already carry the importing
+ * admin's schoolId — this is re-checked here so a mixed batch can never be written.
+ */
+export async function commitStudentImportBatchServer(
+  schoolId: string,
+  records: { student: StudentDoc; user: UserProfile }[]
+): Promise<void> {
+  assertProductionDbReady();
+  if (records.length > STUDENT_IMPORT_BATCH_SIZE) {
+    throw new Error(`Import batch too large (${records.length} > ${STUDENT_IMPORT_BATCH_SIZE}).`);
+  }
+  for (const { student, user } of records) {
+    if (student.schoolId !== schoolId || user.schoolId !== schoolId) {
+      throw new Error("Import batch contains a record for a different school.");
+    }
+  }
+
+  if (hasAdminCredentials) {
+    const batch = adminDb.batch();
+    for (const { student, user } of records) {
+      batch.set(adminDb.collection("students").doc(student.id), cleanUndefined(student));
+      batch.set(adminDb.collection("users").doc(user.uid), cleanUndefined(user));
+    }
+    try {
+      await batch.commit();
+    } catch (e) {
+      onFirestoreError(`commitStudentImportBatchServer(${records.length})`, e);
+      throw e;
+    }
+  }
+
+  for (const { student, user } of records) {
+    localStore.students.set(student.id, student);
+    localStore.users.set(user.email.toLowerCase().trim(), user);
+  }
 }
 
 export async function deleteStudentServer(schoolId: string, studentId: string): Promise<boolean> {
@@ -1174,21 +1427,29 @@ export async function saveAttendanceRecordServer(record: AttendanceDoc): Promise
 export async function saveAttendanceBulkServer(
   records: AttendanceDoc[]
 ): Promise<{ count: number }> {
-  let count = 0;
+  const docs: AttendanceDoc[] = [];
   for (const record of records) {
     const academicYear = await sessionForWrite(record.schoolId, record);
-    const doc: AttendanceDoc = { ...record, ...(academicYear ? { academicYear } : {}) };
-    localStore.attendance.set(doc.id, doc);
-    if (hasAdminCredentials) {
-      try {
-        await adminDb.collection("attendance").doc(doc.id).set(doc, { merge: true });
-      } catch (e) {
-        onFirestoreError(`saveAttendanceBulkServer(${doc.id})`, e);
-      }
-    }
-    count++;
+    docs.push({ ...record, ...(academicYear ? { academicYear } : {}) });
   }
-  return { count };
+
+  // One batched commit per chunk instead of one sequential write per student: a class register
+  // is saved in a single round trip, and a failure can no longer leave half the class written.
+  if (hasAdminCredentials) {
+    try {
+      for (let i = 0; i < docs.length; i += FIRESTORE_BATCH_LIMIT) {
+        const batch = adminDb.batch();
+        for (const doc of docs.slice(i, i + FIRESTORE_BATCH_LIMIT)) {
+          batch.set(adminDb.collection("attendance").doc(doc.id), cleanUndefined(doc), { merge: true });
+        }
+        await batch.commit();
+      }
+    } catch (e) {
+      onFirestoreError(`saveAttendanceBulkServer(${docs.length} records)`, e);
+    }
+  }
+  for (const doc of docs) localStore.attendance.set(doc.id, doc);
+  return { count: docs.length };
 }
 
 // ---------------------------------------------------------------------------

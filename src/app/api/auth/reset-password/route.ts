@@ -1,14 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import { getUserByIdServer, updateUserServer, createAuditLogServer } from "@/lib/firebase/server-db";
-import { verifyPasswordResetTokenServer } from "@/lib/firebase/server-auth";
-import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
+import {
+  getUserByIdServer,
+  createAuditLogServer,
+  getPasswordResetTokenServer,
+  checkPasswordResetToken,
+  consumePasswordResetTokenServer,
+  ConsumeResetTokenResult,
+} from "@/lib/firebase/server-db";
+import { setAuthPasswordServer } from "@/lib/firebase/auth-password";
+import { hashResetToken, isValidPassword, looksLikeResetToken } from "@/lib/password-reset";
 
 export const dynamic = "force-dynamic";
 
-function isValidPassword(password: string): boolean {
-  return typeof password === "string" && password.length >= 8 && password.length <= 128;
+const TOKEN_ERRORS: Record<Exclude<ConsumeResetTokenResult, "OK">, string> = {
+  INVALID: "This password reset link is invalid. Please request a new link.",
+  USED: "This password reset link has already been used. Please request a new link.",
+  EXPIRED: "This password reset link has expired. Please request a new link.",
+};
+
+function tokenError(status: Exclude<ConsumeResetTokenResult, "OK">) {
+  return NextResponse.json({ error: TOKEN_ERRORS[status], code: status }, { status: 400 });
 }
 
 export async function POST(req: NextRequest) {
@@ -16,86 +28,43 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json(
-      { error: "Invalid JSON request payload." },
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
+    return NextResponse.json({ error: "Invalid JSON request payload." }, { status: 400 });
   }
 
   const token = (body.token || "").toString().trim();
   const newPassword = (body.newPassword || body.password || "").toString();
 
   if (!token) {
-    return NextResponse.json(
-      { error: "Password reset token is required." },
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
+    return NextResponse.json({ error: "Password reset token is required." }, { status: 400 });
   }
 
-  if (!newPassword || !isValidPassword(newPassword)) {
+  if (!isValidPassword(newPassword)) {
     return NextResponse.json(
       { error: "New password must be between 8 and 128 characters in length." },
-      { status: 400, headers: { "Content-Type": "application/json" } }
+      { status: 400 }
     );
   }
 
+  if (!looksLikeResetToken(token)) return tokenError("INVALID");
+
   try {
-    // 1. Verify token signature, purpose, and expiration
-    const payload = await verifyPasswordResetTokenServer(token);
-    if (!payload || !payload.uid) {
-      return NextResponse.json(
-        { error: "Invalid or expired password reset link. Please request a new link." },
-        { status: 400, headers: { "Content-Type": "application/json" } }
-      );
-    }
+    const tokenHash = hashResetToken(token);
+    const record = await getPasswordResetTokenServer(tokenHash);
+    const status = checkPasswordResetToken(record);
+    if (status !== "OK") return tokenError(status);
 
-    // 2. Fetch user profile
-    const user = await getUserByIdServer(payload.uid);
-    if (!user) {
-      return NextResponse.json(
-        { error: "Account associated with this reset link was not found." },
-        { status: 404, headers: { "Content-Type": "application/json" } }
-      );
-    }
+    const user = await getUserByIdServer(record!.uid);
+    // The link is bound to the account and the email it was sent to.
+    if (!user || user.email.toLowerCase() !== record!.email.toLowerCase()) return tokenError("INVALID");
+    if (user.status === "SUSPENDED" || user.status === "INACTIVE") return tokenError("INVALID");
 
-    // 3. Verify single-use token hash against stored active hash
-    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
-    if (
-      !user.resetTokenHash ||
-      user.resetTokenHash !== tokenHash ||
-      !user.resetTokenExpires ||
-      new Date(user.resetTokenExpires).getTime() < Date.now()
-    ) {
-      return NextResponse.json(
-        { error: "This password reset link has already been used or has expired. Please request a new link." },
-        { status: 400, headers: { "Content-Type": "application/json" } }
-      );
-    }
+    // Firebase Auth first: if it fails, nothing is consumed and the link stays usable.
+    await setAuthPasswordServer(user, newPassword);
 
-    // 4. Hash new password for Firestore local auth fallback
     const passwordHash = bcrypt.hashSync(newPassword, 10);
+    const consumed = await consumePasswordResetTokenServer(tokenHash, user.uid, passwordHash);
+    if (consumed !== "OK") return tokenError(consumed);
 
-    // 5. Update Firebase Auth if live admin credentials exist
-    if (hasAdminCredentials) {
-      try {
-        await adminAuth.updateUser(user.uid, { password: newPassword });
-      } catch (authErr) {
-        console.error("Firebase Admin updateUser failed during password reset:", authErr);
-        // Continue to update local hash so the user can still authenticate via bcrypt fallback
-      }
-    }
-
-    // 6. Invalidate reset token and save updated password hash to Firestore
-    const { resetTokenHash: _rth, resetTokenExpires: _rte, ...cleanProfile } = user;
-    void _rth;
-    void _rte;
-
-    await updateUserServer({
-      ...cleanProfile,
-      passwordHash,
-    });
-
-    // 7. Audit log
     await createAuditLogServer(
       user.schoolId,
       user.uid,
@@ -104,7 +73,7 @@ export async function POST(req: NextRequest) {
       "PASSWORD_RESET_COMPLETED",
       "AUTH",
       user.uid,
-      `Password successfully reset for ${user.email}.`
+      `Password reset completed for ${user.email}; existing sessions revoked.`
     );
 
     return NextResponse.json({
@@ -112,10 +81,10 @@ export async function POST(req: NextRequest) {
       message: "Your password has been reset successfully. You can now log in with your new password.",
     });
   } catch (error: any) {
-    console.error("Reset password error:", error);
+    console.error("Reset password error:", error?.code || error?.message || error);
     return NextResponse.json(
       { error: "Failed to reset password. Please try again." },
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      { status: 500 }
     );
   }
 }

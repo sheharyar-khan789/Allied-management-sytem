@@ -23,8 +23,14 @@ export interface UserProfile {
   schoolId: string;
   status: UserStatus;
   passwordHash?: string;
+  /** Legacy single-token fields from the previous reset flow; cleared on every successful reset. */
   resetTokenHash?: string;
   resetTokenExpires?: string;
+  /**
+   * ISO timestamp. Sessions whose original sign-in (`authAt`) is earlier than this are rejected
+   * server-side — set on password reset/change so other signed-in sessions stop working.
+   */
+  sessionsValidAfter?: string;
   teacherId?: string;
   studentId?: string;
   studentIds?: string[];
@@ -42,6 +48,8 @@ export interface StudentDoc {
   fatherName: string;
   gender: "MALE" | "FEMALE";
   dob?: string;
+  /** Admission / enrollment date (YYYY-MM-DD). Legacy records fall back to createdAt. */
+  admissionDate?: string;
   phone?: string;
   address?: string;
   classId: string;
@@ -372,4 +380,19 @@ export interface PayrollRecordDoc {
   notes?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Password reset token. The document id is the SHA-256 hash of the raw token, so the raw token
+ * (which only ever exists in the emailed link) is never stored. Server-only collection: no
+ * client Firestore rule grants access to it.
+ */
+export interface PasswordResetTokenDoc {
+  id: string; // sha256(token)
+  uid: string;
+  email: string;
+  schoolId: string;
+  expiresAt: string;
+  usedAt?: string | null;
+  createdAt: string;
 }

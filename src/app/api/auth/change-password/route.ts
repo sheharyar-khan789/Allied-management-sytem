@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { requireAuth } from "@/lib/firebase/server-auth";
+import {
+  requireAuth,
+  createSessionCookieServer,
+  SESSION_COOKIE_OPTIONS,
+} from "@/lib/firebase/server-auth";
 import { getUserByIdServer, updateUserServer } from "@/lib/firebase/server-db";
-import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
-
-function isValidNewPassword(password: string): boolean {
-  return password.length >= 8 && password.length <= 128;
-}
+import { setAuthPasswordServer } from "@/lib/firebase/auth-password";
+import { isValidPassword } from "@/lib/password-reset";
 
 export async function POST(req: NextRequest) {
   try {
@@ -28,7 +29,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!isValidNewPassword(newPassword)) {
+    if (!isValidPassword(newPassword)) {
       return NextResponse.json(
         { error: "New password must be between 8 and 128 characters." },
         { status: 400 }
@@ -82,23 +83,38 @@ export async function POST(req: NextRequest) {
 
     const passwordHash = bcrypt.hashSync(newPassword, 10);
 
-    if (hasAdminCredentials) {
-      try {
-        await adminAuth.updateUser(authUser.uid, { password: newPassword });
-      } catch (authErr) {
-        console.error("Failed to update authentication password:", authErr);
-        return NextResponse.json({ error: "Failed to update password." }, { status: 500 });
-      }
+    try {
+      await setAuthPasswordServer(profile, newPassword);
+    } catch (authErr: any) {
+      console.error("Failed to update authentication password:", authErr?.code || authErr?.message);
+      return NextResponse.json({ error: "Failed to update password." }, { status: 500 });
     }
 
+    // Every session signed in before this moment (other devices/browsers) stops working;
+    // the caller's own session is re-issued below with a fresh sign-in time.
+    const changedAt = new Date();
     const { passwordHash: _omit, ...safeProfile } = profile;
     void _omit;
     await updateUserServer({
       ...safeProfile,
       passwordHash,
+      sessionsValidAfter: changedAt.toISOString(),
     });
 
-    return NextResponse.json({ success: true });
+    const token = await createSessionCookieServer({
+      uid: authUser.uid,
+      email: authUser.email,
+      role: authUser.role,
+      schoolId: authUser.schoolId,
+      name: authUser.name,
+      teacherId: authUser.teacherId,
+      studentId: authUser.studentId,
+      studentIds: authUser.studentIds,
+      authAt: Math.floor(changedAt.getTime() / 1000),
+    });
+    const response = NextResponse.json({ success: true });
+    response.cookies.set("allied_session", token, SESSION_COOKIE_OPTIONS);
+    return response;
   } catch (error: unknown) {
     if (error instanceof Response) return error;
     console.error("Change password error:", error);

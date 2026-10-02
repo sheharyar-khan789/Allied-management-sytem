@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { todayLocalISO } from "@/lib/date-utils";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import FileUpload from "@/components/FileUpload";
@@ -28,6 +29,7 @@ export default function AddNewStudentPage() {
     lastName: "",
     gender: "Female",
     dob: "",
+    admissionDate: todayLocalISO(),
     bloodGroup: "",
     cnicBForm: "",
     contactNumber: "",
@@ -264,6 +266,19 @@ export default function AddNewStudentPage() {
                 type="date"
                 name="dob"
                 value={formData.dob}
+                max={todayLocalISO()}
+                onChange={handleChange}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="new-admission-date" className="block font-semibold text-on-surface mb-1">Admission Date</label>
+              <input id="new-admission-date"
+                type="date"
+                name="admissionDate"
+                value={formData.admissionDate}
+                min={formData.dob || undefined}
                 onChange={handleChange}
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
               />

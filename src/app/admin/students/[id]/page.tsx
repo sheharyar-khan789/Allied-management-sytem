@@ -49,6 +49,7 @@ export default function StudentDossierPage({
     lastName: "",
     gender: "Female",
     dob: "",
+    admissionDate: "",
     bloodGroup: "",
     rollNumber: "",
     classId: "",
@@ -95,6 +96,7 @@ export default function StudentDossierPage({
       lastName: st.lastName || "",
       gender: st.gender || "Female",
       dob: st.dob || "",
+      admissionDate: st.admissionDate ? String(st.admissionDate).slice(0, 10) : "",
       bloodGroup: st.bloodGroup !== "Not Specified" ? st.bloodGroup : "",
       rollNumber: st.rollNumber || "",
       classId: st.classId || "",
@@ -1192,6 +1194,16 @@ export default function StudentDossierPage({
                       type="date"
                       value={studentFormData.dob}
                       onChange={(e) => setStudentFormData({ ...studentFormData, dob: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-admission-date" className="block font-semibold text-on-surface mb-1">Admission Date</label>
+                    <input
+                      id="edit-st-admission-date"
+                      type="date"
+                      value={studentFormData.admissionDate}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, admissionDate: e.target.value })}
                       className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                     />
                   </div>

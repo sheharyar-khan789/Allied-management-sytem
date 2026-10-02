@@ -35,6 +35,18 @@ interface SessionPayload {
   teacherId?: string;
   studentId?: string;
   studentIds?: string[];
+  /** Original sign-in time (unix seconds); preserved across refreshes. See server-auth.ts. */
+  authAt?: number;
+  iat?: number;
+}
+
+/**
+ * /api/auth/* routes manage the cookie themselves (login sets it, logout deletes it,
+ * change-password re-issues it); a middleware refresh on those would race the route's own
+ * Set-Cookie. /api/auth/me is the keep-alive ping and is refreshed by its own handler.
+ */
+function isApiRouteEligibleForSlidingRefresh(pathname: string): boolean {
+  return !pathname.startsWith("/api/auth/");
 }
 
 /**
@@ -131,6 +143,7 @@ export async function middleware(req: NextRequest) {
       teacherId: sess.teacherId,
       studentId: sess.studentId,
       studentIds: sess.studentIds,
+      authAt: typeof sess.authAt === "number" ? sess.authAt : sess.iat,
     })
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt()
@@ -152,8 +165,7 @@ export async function middleware(req: NextRequest) {
   if (
     pathname.startsWith("/_next") ||
     pathname.startsWith("/images") ||
-    pathname.startsWith("/favicon.ico") ||
-    pathname.startsWith("/api")
+    pathname.startsWith("/favicon.ico")
   ) {
     return attachCsp(nextWithNonce());
   }
@@ -168,6 +180,19 @@ export async function middleware(req: NextRequest) {
     } catch {
       session = null;
     }
+  }
+
+  if (pathname.startsWith("/api")) {
+    // The session is a 5-minute *idle* timeout. It used to be extended only by full page
+    // navigations, never by API calls — so an admin working inside one page (e.g. filling the
+    // Add Subject form on /admin/classes) lost the cookie 5 minutes after loading the page and
+    // the next save failed with 401 "Unauthorized". Every authenticated API call now counts as
+    // activity. This only extends an already-valid token; authorization is still enforced by
+    // each route handler (requireAuth), including the password-change revocation check.
+    if (session && session.uid && isApiRouteEligibleForSlidingRefresh(pathname)) {
+      return attachSlidingSession(nextWithNonce(), session);
+    }
+    return attachCsp(nextWithNonce());
   }
 
   if (pathname === "/login" || pathname === "/register-institution-x7k2p" || pathname === "/reset-password") {
@@ -215,6 +240,7 @@ export async function middleware(req: NextRequest) {
 
 export const config = {
   matcher: [
+    "/api/:path*",
     "/admin/:path*",
     "/teacher/:path*",
     "/student/:path*",

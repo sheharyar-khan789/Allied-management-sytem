@@ -15,6 +15,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { ExamDoc, ExamResultDoc, ExamScheduleDoc, SchoolSettingsDoc } from "@/lib/firebase/types";
 import { assertTeacherOwnsClass, resolveAuthenticatedTeacher } from "@/lib/academic-access";
+import { validateDateString } from "@/lib/date-utils";
 
 // Grade/GPA are derived from the school's own configured grading scale (Settings), falling
 // back to a sane default scale for schools that have not customized one yet. This replaces a
@@ -178,10 +179,13 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    if (isNaN(new Date(startDate).getTime()) || isNaN(new Date(endDate).getTime())) {
+    // Strict calendar validation: `new Date()` silently rolls 2026-02-31 over to March 3rd.
+    const examStart = validateDateString(startDate);
+    const examEnd = validateDateString(endDate);
+    if (!examStart || !examEnd) {
       return NextResponse.json({ error: "startDate/endDate must be valid dates." }, { status: 400 });
     }
-    if (new Date(endDate).getTime() < new Date(startDate).getTime()) {
+    if (examEnd < examStart) {
       return NextResponse.json({ error: "endDate cannot be before startDate." }, { status: 400 });
     }
 
@@ -194,8 +198,8 @@ export async function POST(req: NextRequest) {
       name: title,
       term: term || "Mid-Term",
       session: settings?.academicYear || new Date().getFullYear().toString(),
-      startDate,
-      endDate,
+      startDate: examStart,
+      endDate: examEnd,
       status: "UPCOMING",
       resultSheetUrl: resultSheetUrl ? String(resultSheetUrl) : undefined,
       createdAt: new Date().toISOString(),
@@ -214,6 +218,8 @@ export async function POST(req: NextRequest) {
       ]);
       for (const s of schedules) {
         if (!s?.classId || !s?.subjectId || !s?.examDate || !s?.startTime || !s?.endTime) continue;
+        const scheduleDate = validateDateString(s.examDate);
+        if (!scheduleDate) continue;
         const classOk = classes.some((c) => c.id === s.classId);
         const subjectOk = subjects.some((sub) => sub.id === s.subjectId && sub.classId === s.classId);
         if (!classOk || !subjectOk) continue; // never trust client-supplied class/subject ownership blindly
@@ -223,7 +229,7 @@ export async function POST(req: NextRequest) {
           examId,
           classId: s.classId,
           subjectId: s.subjectId,
-          examDate: s.examDate,
+          examDate: scheduleDate,
           startTime: s.startTime,
           endTime: s.endTime,
           totalMarks: Number(s.totalMarks) > 0 ? Number(s.totalMarks) : 100,
@@ -267,7 +273,8 @@ export async function PATCH(req: NextRequest) {
         { status: 400 }
       );
     }
-    if (isNaN(new Date(examDate).getTime())) {
+    const cleanExamDate = validateDateString(examDate);
+    if (!cleanExamDate) {
       return NextResponse.json({ error: "examDate is not a valid date." }, { status: 400 });
     }
     if (endTime <= startTime) {
@@ -303,7 +310,7 @@ export async function PATCH(req: NextRequest) {
       examId,
       classId,
       subjectId,
-      examDate,
+      examDate: cleanExamDate,
       startTime,
       endTime,
       totalMarks: resolvedTotalMarks,

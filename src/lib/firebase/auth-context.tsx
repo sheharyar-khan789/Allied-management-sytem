@@ -13,7 +13,7 @@ import {
 import { auth, db } from "./config";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { UserProfile, UserRole } from "./types";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 interface AuthContextType {
   user: User | null;
@@ -35,6 +35,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const router = useRouter();
+  const pathname = usePathname();
+  const onPortalPage = /^\/(admin|teacher|student|parent|print)(\/|$)/.test(pathname || "");
 
   // Sync auth state
   useEffect(() => {
@@ -134,11 +136,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await fbUpdatePassword(auth.currentUser, newPass);
   };
 
+  // Keeps the server session (allied_session cookie, 5-minute idle timeout) alive while the
+  // user is active, and signs out after 5 idle minutes. This used to run only when the Firebase
+  // *client* SDK had a signed-in user — but the server session is established by
+  // /api/auth/login and works without one (the login page explicitly falls back to it), so for
+  // those sessions nothing ever refreshed the cookie and the next save after 5 minutes on one
+  // page failed with 401. It now runs on every portal page.
   useEffect(() => {
-    if (!profile && !user) return;
+    if (!onPortalPage) return;
 
     const IDLE_MS = 5 * 60 * 1000;
-    const REFRESH_MS = 4 * 60 * 1000;
+    const REFRESH_MS = 2 * 60 * 1000;
     let lastActivity = Date.now();
     let lastRefresh = Date.now();
     let timer: ReturnType<typeof setTimeout>;
@@ -162,7 +170,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       timer = setTimeout(idleLogout, IDLE_MS);
       if (now - lastRefresh >= REFRESH_MS) {
         lastRefresh = now;
-        void fetch("/api/auth/me", { credentials: "same-origin" });
+        fetch("/api/auth/me", { credentials: "same-origin" })
+          .then((res) => {
+            if (res.status === 401) idleLogout();
+          })
+          .catch(() => {
+            // Network blip: the next activity retries.
+          });
       }
     };
 
@@ -183,7 +197,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       events.forEach((eventName) => window.removeEventListener(eventName, onActivity));
       document.removeEventListener("visibilitychange", onActivity);
     };
-  }, [profile, user, logout]);
+  }, [onPortalPage, logout]);
 
   return (
     <AuthContext.Provider

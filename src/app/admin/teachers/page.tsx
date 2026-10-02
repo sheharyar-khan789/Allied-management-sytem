@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { formatDisplayDate } from "@/lib/date-utils";
 import Link from "next/link";
 import FileUpload from "@/components/FileUpload";
 
@@ -339,11 +340,11 @@ export default function TeachersManagementPage() {
                           {t.status}
                         </span>
                         <span className="text-[10px] text-on-surface-variant">
-                          Joined: {t.joiningDate || "—"}
+                          Joined: {formatDisplayDate(t.joiningDate)}
                         </span>
                         {t.endingDate && (
                           <span className="text-[10px] text-error font-medium">
-                            Left: {t.endingDate}
+                            Left: {formatDisplayDate(t.endingDate)}
                           </span>
                         )}
                       </div>

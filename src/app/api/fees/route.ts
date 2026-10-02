@@ -11,6 +11,7 @@ import {
   getStudentByIdServer
 } from "@/lib/firebase/server-db";
 import { FeeChallanDoc, PaymentDoc } from "@/lib/firebase/types";
+import { validateDateString } from "@/lib/date-utils";
 
 export async function GET(req: NextRequest) {
   try {
@@ -135,7 +136,8 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    if (isNaN(new Date(dueDate).getTime())) {
+    const cleanDueDate = validateDateString(dueDate);
+    if (!cleanDueDate) {
       return NextResponse.json({ error: "dueDate is not a valid date." }, { status: 400 });
     }
     const feeFields = { tuitionFee, admissionFee, examFee, otherFee, discount };
@@ -196,7 +198,7 @@ export async function POST(req: NextRequest) {
       month,
       year: Number(year),
       issueDate: new Date().toISOString().split("T")[0],
-      dueDate,
+      dueDate: cleanDueDate,
       tuitionFee: Number(tuitionFee),
       admissionFee: Number(admissionFee),
       examFee: Number(examFee),
