@@ -2,13 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import {
   getUserByIdServer,
+  getUserByEmailServer,
+  updateUserServer,
+  revokeUserSessionsServer,
   createAuditLogServer,
   getPasswordResetTokenServer,
   checkPasswordResetToken,
   consumePasswordResetTokenServer,
   ConsumeResetTokenResult,
 } from "@/lib/firebase/server-db";
-import { setAuthPasswordServer } from "@/lib/firebase/auth-password";
+import { confirmFirebasePasswordResetServer, setAuthPasswordServer } from "@/lib/firebase/auth-password";
 import { hashResetToken, isValidPassword, looksLikeResetToken } from "@/lib/password-reset";
 
 export const dynamic = "force-dynamic";
@@ -32,9 +35,10 @@ export async function POST(req: NextRequest) {
   }
 
   const token = (body.token || "").toString().trim();
+  const oobCode = (body.oobCode || "").toString().trim();
   const newPassword = (body.newPassword || body.password || "").toString();
 
-  if (!token) {
+  if (!token && !oobCode) {
     return NextResponse.json({ error: "Password reset token is required." }, { status: 400 });
   }
 
@@ -43,6 +47,34 @@ export async function POST(req: NextRequest) {
       { error: "New password must be between 8 and 128 characters in length." },
       { status: 400 }
     );
+  }
+
+  // A Firebase Authentication action code (the link from Firebase's own password email, when the
+  // project's email action URL points at this page). Firebase verifies the single-use code and
+  // sets the password; this app then mirrors it and signs out existing sessions.
+  if (!token) {
+    try {
+      const confirmed = await confirmFirebasePasswordResetServer(oobCode, newPassword);
+      if (!confirmed.ok) return tokenError(confirmed.status);
+      const user = await getUserByEmailServer(confirmed.email);
+      if (user) {
+        const nowIso = new Date().toISOString();
+        await updateUserServer({ ...user, passwordHash: bcrypt.hashSync(newPassword, 10) });
+        await revokeUserSessionsServer(user.uid, nowIso);
+        await createAuditLogServer(
+          user.schoolId, user.uid, user.email, user.role,
+          "PASSWORD_RESET_COMPLETED", "AUTH", user.uid,
+          `Password set for ${user.email} via Firebase action link; existing sessions revoked.`
+        );
+      }
+      return NextResponse.json({
+        success: true,
+        message: "Your password has been set successfully. You can now log in with your new password.",
+      });
+    } catch (error: any) {
+      console.error("Reset password (action code) error:", error?.code || error?.message || error);
+      return NextResponse.json({ error: "Failed to reset password. Please try again." }, { status: 500 });
+    }
   }
 
   if (!looksLikeResetToken(token)) return tokenError("INVALID");
@@ -65,20 +97,25 @@ export async function POST(req: NextRequest) {
     const consumed = await consumePasswordResetTokenServer(tokenHash, user.uid, passwordHash);
     if (consumed !== "OK") return tokenError(consumed);
 
+    const activation = record!.purpose === "ACTIVATION";
     await createAuditLogServer(
       user.schoolId,
       user.uid,
       user.email,
       user.role,
-      "PASSWORD_RESET_COMPLETED",
+      activation ? "ACCOUNT_ACTIVATED" : "PASSWORD_RESET_COMPLETED",
       "AUTH",
       user.uid,
-      `Password reset completed for ${user.email}; existing sessions revoked.`
+      activation
+        ? `Account activated: ${user.email} set their own password.`
+        : `Password reset completed for ${user.email}; existing sessions revoked.`
     );
 
     return NextResponse.json({
       success: true,
-      message: "Your password has been reset successfully. You can now log in with your new password.",
+      message: activation
+        ? "Your password has been set and your account is active. You can now log in."
+        : "Your password has been reset successfully. You can now log in with your new password.",
     });
   } catch (error: any) {
     console.error("Reset password error:", error?.code || error?.message || error);

@@ -28,7 +28,8 @@ export default function TeacherNav({
   };
 
   const navLinks = [
-    { label: "Timetable / Schedule", href: "/teacher", icon: "calendar_month" },
+    { label: "My Subjects", href: "/teacher", icon: "dashboard" },
+    { label: "Timetable", href: "/teacher/timetable", icon: "calendar_month" },
     { label: "Roll Call Register", href: "/teacher/attendance", icon: "how_to_reg" },
     { label: "Rapid Gradebook", href: "/teacher/gradebook", icon: "edit_note" },
     { label: "Students & Notes", href: "/teacher/students", icon: "assignment_ind" },

@@ -66,6 +66,27 @@ service cloud.firestore {
         );
     }
 
+    // The teacher record id linked to the caller's login profile ('' when none).
+    function callerTeacherId() {
+      return getUserData().get('teacherId', '');
+    }
+
+    // A teacher may read an attendance record only for their own register: a subject register
+    // of a subject allocated to them (subjects.teacherId), or the daily register (no subjectId)
+    // of a class they are incharge of (classes.classTeacherId). Mirrors /api/attendance.
+    function teacherOwnsAttendanceRegister() {
+      return callerTeacherId() != '' && (
+        (
+          resource.data.get('subjectId', '') != ''
+          && get(/databases/$(database)/documents/subjects/$(resource.data.subjectId)).data.get('teacherId', '') == callerTeacherId()
+          && get(/databases/$(database)/documents/subjects/$(resource.data.subjectId)).data.classId == resource.data.classId
+        ) || (
+          resource.data.get('subjectId', '') == ''
+          && get(/databases/$(database)/documents/classes/$(resource.data.classId)).data.get('classTeacherId', '') == callerTeacherId()
+        )
+      );
+    }
+
     function isSameSchool(schoolId) {
       return isAuthenticated() && (getUserSchoolId() == schoolId || isAdmin());
     }
@@ -131,7 +152,9 @@ service cloud.firestore {
     // Subjects Collection
     // -------------------------------------------------------------
     match /subjects/{subjectId} {
-      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      // Teachers only see the subjects allocated to them.
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId
+        && (!isTeacher() || (callerTeacherId() != '' && resource.data.get('teacherId', '') == callerTeacherId()));
       allow write: if false;
     }
 
@@ -139,7 +162,9 @@ service cloud.firestore {
     // Timetables Collection
     // -------------------------------------------------------------
     match /timetables/{entryId} {
-      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      // Admins read their school's timetable; a teacher only their own slots.
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId
+        && (isAdmin() || (isTeacher() && callerTeacherId() != '' && resource.data.teacherId == callerTeacherId()));
       allow write: if false;
     }
 
@@ -149,7 +174,7 @@ service cloud.firestore {
     match /attendance/{attendanceId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId && teacherOwnsAttendanceRegister()) ||
         (isStudent() && resource.data.studentId == getUserData().studentId) ||
         isParentOfStudentId(resource.data.studentId)
       );
@@ -206,7 +231,7 @@ service cloud.firestore {
     match /examResults/{resultId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId && teacherOwnsAttendanceRegister()) ||
         (isStudent() && resource.data.studentId == getUserData().studentId) ||
         isParentOfStudentId(resource.data.studentId)
       );

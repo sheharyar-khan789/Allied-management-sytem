@@ -1300,6 +1300,41 @@ export async function getTimetableServer(
   return filterToSession(ctx, year, await fetchTimetableRaw(schoolId, teacherId, classId, dayOfWeek));
 }
 
+export async function getTimetableEntryByIdServer(schoolId: string, entryId: string): Promise<TimetableDoc | null> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("timetables").doc(entryId).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as TimetableDoc;
+        return data.schoolId === schoolId ? data : null;
+      }
+      if (process.env.NODE_ENV === "production") return null;
+    } catch (e) {
+      onFirestoreError(`getTimetableEntryByIdServer(${entryId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  const local = localStore.timetables.get(entryId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/** Deletes one slot, only if it belongs to `schoolId`. Returns false when it doesn't exist there. */
+export async function deleteTimetableEntryServer(schoolId: string, entryId: string): Promise<boolean> {
+  const existing = await getTimetableEntryByIdServer(schoolId, entryId);
+  if (!existing) return false;
+  localStore.timetables.delete(entryId);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("timetables").doc(entryId).delete();
+    } catch (e) {
+      onFirestoreError(`deleteTimetableEntryServer(${entryId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  return true;
+}
+
 export async function saveTimetableEntryServer(entry: TimetableDoc): Promise<string> {
   const id = entry.id || `tt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const academicYear = await sessionForWrite(entry.schoolId, entry);
@@ -1343,16 +1378,22 @@ async function fetchAttendanceRaw(
   date?: string,
   classId?: string,
   studentId?: string,
-  fromDate?: string
+  fromDate?: string,
+  register: AttendanceRegister = DAILY_REGISTER
 ): Promise<AttendanceDoc[]> {
+  const subjectId = register === "ALL" ? undefined : register.subjectId;
+  const inRegister = (a: AttendanceDoc) =>
+    register === "ALL" || (subjectId ? a.subjectId === subjectId : !a.subjectId);
+
   if (hasAdminCredentials) {
     try {
       let ref = adminDb.collection("attendance").where("schoolId", "==", schoolId);
       if (date) ref = ref.where("date", "==", date);
       if (classId && classId !== "ALL") ref = ref.where("classId", "==", classId);
       if (studentId) ref = ref.where("studentId", "==", studentId);
+      if (subjectId) ref = ref.where("subjectId", "==", subjectId);
       const snap = await ref.get();
-      let records = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceDoc));
+      let records = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceDoc)).filter(inRegister);
       if (fromDate) {
         records = records.filter((a) => a.date >= fromDate);
       }
@@ -1364,7 +1405,7 @@ async function fetchAttendanceRaw(
     }
   }
 
-  let list = Array.from(localStore.attendance.values()).filter((a) => a.schoolId === schoolId);
+  let list = Array.from(localStore.attendance.values()).filter((a) => a.schoolId === schoolId && inRegister(a));
   if (date) list = list.filter((a) => a.date === date);
   else if (fromDate) list = list.filter((a) => a.date >= fromDate);
   if (classId && classId !== "ALL") list = list.filter((a) => a.classId === classId);
@@ -1372,16 +1413,26 @@ async function fetchAttendanceRaw(
   return list;
 }
 
+/**
+ * Which attendance register a read covers. The default is the class's daily register (records
+ * without a subjectId) — the one every student/parent/report/dashboard figure is computed from,
+ * so subject registers never double-count a student's day. `{ subjectId }` selects one subject
+ * register; "ALL" ignores the distinction (e.g. dependency checks before deleting a class).
+ */
+export type AttendanceRegister = { subjectId: string | null } | "ALL";
+export const DAILY_REGISTER: AttendanceRegister = { subjectId: null };
+
 export async function getAttendanceServer(
   schoolId: string,
   date?: string,
   classId?: string,
   studentId?: string,
   fromDate?: string,
-  scope?: SessionScope
+  scope?: SessionScope,
+  register: AttendanceRegister = DAILY_REGISTER
 ): Promise<AttendanceDoc[]> {
   const { ctx, year } = await resolveSessionScope(schoolId, scope);
-  return filterToSession(ctx, year, await fetchAttendanceRaw(schoolId, date, classId, studentId, fromDate));
+  return filterToSession(ctx, year, await fetchAttendanceRaw(schoolId, date, classId, studentId, fromDate, register));
 }
 
 /** Inclusive start date of the rolling analytics window used by the school-wide dashboards. */

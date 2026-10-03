@@ -1,11 +1,14 @@
 import { AuthenticatedUser } from "@/lib/firebase/server-auth";
 import {
+  getClassesServer,
   getFeeChallanByIdServer,
   getStudentByIdServer,
+  getSubjectByIdServer,
+  getSubjectsServer,
   getTeacherByIdServer,
   getUserByIdServer,
 } from "@/lib/firebase/server-db";
-import { FeeChallanDoc, StudentDoc, TeacherDoc } from "@/lib/firebase/types";
+import { FeeChallanDoc, StudentDoc, SubjectDoc, TeacherDoc } from "@/lib/firebase/types";
 import { assertParentOwnsStudent } from "@/lib/parent-access";
 
 function forbidden(message: string): never {
@@ -31,14 +34,57 @@ export async function resolveAuthenticatedTeacher(
 }
 
 /**
- * Authorization gate for teacher-scoped academic actions (attendance, exams, observations,
- * timetable). ADMIN callers are always allowed through unchanged. A TEACHER caller is only
- * allowed through for a classId contained in their own assignedClassIds — never a
- * client-supplied teacherId/classId taken at face value. Matches the existing convention in
- * assertCanViewStudent below: a teacher with no assignedClassIds configured yet (empty
- * array) is treated as not-yet-restricted rather than locked out of every class, since an
- * admin may not have finished configuring class assignments. Once assignedClassIds is
- * non-empty, only those classes are permitted.
+ * Everything a teacher has actually been allocated by an admin, resolved server-side from the
+ * caller's own records in their own school (active academic session):
+ *  - `subjects`: subjects whose `teacherId` is this teacher. `SubjectDoc.teacherId` is the
+ *    canonical subject→teacher link (the subjects API mirrors it into
+ *    `TeacherDoc.assignedSubjectIds`, which is not trusted on its own).
+ *  - `inchargeClassIds`: classes whose `classTeacherId` is this teacher (the daily register).
+ *  - `classIds`: every class the teacher may open — subject classes, incharge classes, and the
+ *    classes an admin granted explicitly on the teacher's page (`assignedClassIds`).
+ */
+export interface TeacherAllocation {
+  teacher: TeacherDoc;
+  subjects: SubjectDoc[];
+  subjectIds: Set<string>;
+  inchargeClassIds: Set<string>;
+  classIds: Set<string>;
+}
+
+export async function resolveTeacherAllocation(authUser: AuthenticatedUser): Promise<TeacherAllocation | null> {
+  const teacher = await resolveAuthenticatedTeacher(authUser);
+  if (!teacher) return null;
+  const [subjects, classes] = await Promise.all([
+    getSubjectsServer(authUser.schoolId),
+    getClassesServer(authUser.schoolId),
+  ]);
+  const schoolClassIds = new Set(classes.map((c) => c.id));
+  const own = subjects.filter((s) => s.teacherId === teacher.id && s.schoolId === authUser.schoolId);
+  const inchargeClassIds = new Set(classes.filter((c) => c.classTeacherId === teacher.id).map((c) => c.id));
+  const classIds = new Set<string>([
+    ...own.map((s) => s.classId),
+    ...inchargeClassIds,
+    ...(teacher.assignedClassIds || []).filter((id) => schoolClassIds.has(id)),
+  ]);
+  return { teacher, subjects: own, subjectIds: new Set(own.map((s) => s.id)), inchargeClassIds, classIds };
+}
+
+/**
+ * The allocation of a TEACHER caller, or a 403 if their session can't be tied to a teacher
+ * record of their school. Fails closed: a teacher with nothing allocated gets an empty
+ * allocation (and sees nothing), never the whole school.
+ */
+export async function requireTeacherAllocation(authUser: AuthenticatedUser): Promise<TeacherAllocation> {
+  const allocation = await resolveTeacherAllocation(authUser);
+  if (!allocation) forbidden("Forbidden: your account is not linked to a teacher profile in this school.");
+  return allocation;
+}
+
+/**
+ * Authorization gate for class-level teacher actions (student roster, observations, exam
+ * marks). ADMIN callers pass through. A TEACHER may only act on a class in their allocation
+ * (see resolveTeacherAllocation). This previously let a teacher with no class assignments — or
+ * with no resolvable teacher record — through for every class in the school.
  */
 export async function assertTeacherOwnsClass(
   authUser: AuthenticatedUser,
@@ -46,12 +92,48 @@ export async function assertTeacherOwnsClass(
 ): Promise<TeacherDoc | null> {
   if (authUser.role !== "TEACHER") return null;
 
-  const teacher = await resolveAuthenticatedTeacher(authUser);
-  const assigned = teacher?.assignedClassIds || [];
-  if (assigned.length > 0 && !assigned.includes(classId)) {
+  const allocation = await requireTeacherAllocation(authUser);
+  if (!allocation.classIds.has(classId)) {
     forbidden("Forbidden: this class is not in your assigned classes.");
   }
-  return teacher;
+  return allocation.teacher;
+}
+
+/**
+ * Authorization gate for one attendance register. `subjectId` selects a subject register; null
+ * selects the class's daily register. ADMIN passes for any register of their school. A TEACHER
+ * may open a subject register only for a subject allocated to them in that same class, and the
+ * daily register only for a class they are incharge of.
+ */
+export async function assertTeacherCanAccessAttendance(
+  authUser: AuthenticatedUser,
+  classId: string,
+  subjectId: string | null
+): Promise<{ subject: SubjectDoc | null }> {
+  if (authUser.role !== "TEACHER") {
+    if (!subjectId) return { subject: null };
+    const subject = await getSubjectByIdServer(authUser.schoolId, subjectId);
+    if (!subject || subject.classId !== classId) {
+      throw new Response(JSON.stringify({ error: "Subject not found for this class." }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return { subject };
+  }
+
+  const allocation = await requireTeacherAllocation(authUser);
+  if (!subjectId) {
+    if (!allocation.inchargeClassIds.has(classId)) {
+      forbidden("Forbidden: only the class incharge can open this class's daily register.");
+    }
+    return { subject: null };
+  }
+  const subject = allocation.subjects.find((s) => s.id === subjectId);
+  if (!subject || subject.classId !== classId) {
+    forbidden("Forbidden: this subject is not allocated to you for this class.");
+  }
+  return { subject };
 }
 
 export async function assertCanViewStudent(

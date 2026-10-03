@@ -3,9 +3,24 @@
 import React, { useEffect, useState } from "react";
 import { todayLocalISO } from "@/lib/date-utils";
 
+const DAILY_REGISTER = "__daily__";
+
+/**
+ * The registers this teacher may open for a class (the server enforces the same rule): one per
+ * subject allocated to them there, plus the daily register if they are the class incharge.
+ */
+function registersFor(cls: any): { value: string; label: string }[] {
+  if (!cls) return [];
+  const list = (cls.subjects || []).map((s: any) => ({ value: s.id, label: `${s.name} (${s.code})` }));
+  if (cls.isIncharge) list.push({ value: DAILY_REGISTER, label: "Daily Register (Class Incharge)" });
+  return list;
+}
+
 export default function TeacherAttendanceRegisterPage() {
   const [classes, setClasses] = useState<any[]>([]);
+  const [classesLoaded, setClassesLoaded] = useState(false);
   const [selectedClassId, setSelectedClassId] = useState("");
+  const [selectedRegister, setSelectedRegister] = useState("");
   const [selectedDate, setSelectedDate] = useState(todayLocalISO());
   const [roster, setRoster] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -22,19 +37,47 @@ export default function TeacherAttendanceRegisterPage() {
   const [locked, setLocked] = useState(false);
 
   useEffect(() => {
+    // Only this teacher's allocated classes (with only their own subjects) come back.
     fetch("/api/classes")
-      .then((res) => res.json())
-      .then((json) => {
-        if (json.success && json.classes.length > 0) {
-          setClasses(json.classes);
-          setSelectedClassId(json.classes[0].id);
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.success) {
+          setLoadError(json.error || "Failed to load your allocated classes.");
+          return;
         }
+        const list = (json.classes || []).filter((c: any) => registersFor(c).length > 0);
+        setClasses(list);
+        if (list.length === 0) return;
+        // Preselect a class/subject when arriving from a timetable period's "Roll Call" link.
+        const params = new URLSearchParams(window.location.search);
+        const wanted = list.find((c: any) => c.id === params.get("classId")) || list[0];
+        const registers = registersFor(wanted);
+        const wantedRegister = registers.find((r) => r.value === params.get("subjectId")) || registers[0];
+        setSelectedClassId(wanted.id);
+        setSelectedRegister(wantedRegister.value);
       })
-      .catch(console.error);
+      .catch((err) => {
+        console.error(err);
+        setLoadError("Failed to load your allocated classes. Please check your connection.");
+      })
+      .finally(() => {
+        setClassesLoaded(true);
+        setLoading(false);
+      });
   }, []);
 
+  const selectedClass = classes.find((c) => c.id === selectedClassId);
+  const registerOptions = registersFor(selectedClass);
+  const subjectQuery = selectedRegister && selectedRegister !== DAILY_REGISTER ? selectedRegister : "";
+
+  const handleClassChange = (classId: string) => {
+    setSelectedClassId(classId);
+    const first = registersFor(classes.find((c) => c.id === classId))[0];
+    setSelectedRegister(first ? first.value : "");
+  };
+
   const fetchAttendance = async (keepMessages = false) => {
-    if (!selectedClassId) return;
+    if (!selectedClassId || !selectedRegister) return;
     setLoading(true);
     if (!keepMessages) {
       setSaveSuccess(false);
@@ -43,7 +86,10 @@ export default function TeacherAttendanceRegisterPage() {
     setLoadError("");
 
     try {
-      const res = await fetch(`/api/attendance?classId=${encodeURIComponent(selectedClassId)}&date=${selectedDate}`);
+      const res = await fetch(
+        `/api/attendance?classId=${encodeURIComponent(selectedClassId)}&date=${selectedDate}` +
+          (subjectQuery ? `&subjectId=${encodeURIComponent(subjectQuery)}` : "")
+      );
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
         setRoster(json.roster);
@@ -64,10 +110,10 @@ export default function TeacherAttendanceRegisterPage() {
   };
 
   useEffect(() => {
-    if (selectedClassId) {
+    if (selectedClassId && selectedRegister) {
       fetchAttendance();
     }
-  }, [selectedClassId, selectedDate]);
+  }, [selectedClassId, selectedRegister, selectedDate]);
 
   const handleStatusChange = (studentId: string, status: string) => {
     setRoster((prev) =>
@@ -89,6 +135,7 @@ export default function TeacherAttendanceRegisterPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           classId: selectedClassId,
+          ...(subjectQuery ? { subjectId: subjectQuery } : {}),
           date: selectedDate,
           records: roster.map((r) => ({
             studentId: r.studentId,
@@ -219,12 +266,29 @@ export default function TeacherAttendanceRegisterPage() {
             </label>
             <select id="attendance-select-class-1"
               value={selectedClassId}
-              onChange={(e) => setSelectedClassId(e.target.value)}
+              onChange={(e) => handleClassChange(e.target.value)}
               className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
             >
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.displayName}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="attendance-select-register" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">
+              Subject / Register
+            </label>
+            <select id="attendance-select-register"
+              value={selectedRegister}
+              onChange={(e) => setSelectedRegister(e.target.value)}
+              className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
+            >
+              {registerOptions.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
                 </option>
               ))}
             </select>
@@ -267,9 +331,9 @@ export default function TeacherAttendanceRegisterPage() {
             <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
             <p className="text-xs text-on-surface-variant">Loading roster...</p>
           </div>
-        ) : classes.length === 0 ? (
+        ) : classesLoaded && classes.length === 0 ? (
           <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">
-            No classes assigned or available to take attendance.
+            No subject or class register has been allocated to you yet. Please contact the school admin.
           </div>
         ) : roster.length === 0 ? (
           <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">

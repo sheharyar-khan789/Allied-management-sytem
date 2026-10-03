@@ -8,6 +8,11 @@ function ResetPasswordForm() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const token = searchParams.get("token");
+  // Firebase Authentication action links (when the project's email action URL points here).
+  const oobCode = searchParams.get("mode") === "resetPassword" ? searchParams.get("oobCode") : null;
+  const credential = token || oobCode;
+  // Wording only — the server decides what the link is from its own token record.
+  const activation = searchParams.get("purpose") === "activate";
 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -20,7 +25,7 @@ function ResetPasswordForm() {
     e.preventDefault();
     setError("");
 
-    if (!token) {
+    if (!credential) {
       setError("Password reset token is missing from the URL. Please use the complete link provided in your email.");
       return;
     }
@@ -41,7 +46,7 @@ function ResetPasswordForm() {
       const res = await fetch("/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, newPassword: password }),
+        body: JSON.stringify(token ? { token, newPassword: password } : { oobCode, newPassword: password }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -74,7 +79,7 @@ function ResetPasswordForm() {
         </div>
         <div>
           <h1 className="font-headline-lg text-2xl text-on-surface font-bold tracking-tight">
-            Create New Password
+            {activation ? "Set Your Password" : "Create New Password"}
           </h1>
           <p className="font-body-md text-xs text-on-surface-variant mt-1">
             Allied School Management System
@@ -82,7 +87,7 @@ function ResetPasswordForm() {
         </div>
       </div>
 
-      {!token && (
+      {!credential && (
         <div className="p-4 rounded-xl bg-error-container text-on-error-container text-xs border border-error/20 mb-6">
           <div className="flex items-center gap-2 font-semibold mb-1">
             <span className="material-symbols-outlined text-[18px]">error</span>
@@ -102,7 +107,7 @@ function ResetPasswordForm() {
         </div>
       )}
 
-      {token && !success && (
+      {credential && !success && (
         <>
           {error && (
             <div className="mb-4 p-3 rounded-lg bg-error-container text-on-error-container text-xs flex items-center gap-2 border border-error/20">
@@ -174,7 +179,7 @@ function ResetPasswordForm() {
                   <span>Updating Password...</span>
                 </>
               ) : (
-                <span>Reset Password</span>
+                <span>{activation ? "Activate Account" : "Reset Password"}</span>
               )}
             </button>
           </form>
@@ -197,9 +202,13 @@ function ResetPasswordForm() {
             <span className="material-symbols-outlined text-2xl font-bold">check_circle</span>
           </div>
           <div>
-            <h2 className="font-headline-md text-lg font-bold text-on-surface">Password Updated</h2>
+            <h2 className="font-headline-md text-lg font-bold text-on-surface">
+              {activation ? "Account Activated" : "Password Updated"}
+            </h2>
             <p className="font-body-sm text-xs text-on-surface-variant mt-1">
-              Your password has been changed successfully. You can now use your new password to sign in.
+              {activation
+                ? "Your password has been set. You can now sign in with your email and new password."
+                : "Your password has been changed successfully. You can now use your new password to sign in."}
             </p>
           </div>
           <button

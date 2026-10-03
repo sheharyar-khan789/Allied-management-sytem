@@ -1,11 +1,15 @@
 import nodemailer from "nodemailer";
-import { RESET_TOKEN_TTL_MINUTES } from "./password-reset";
+import { ACTIVATION_TOKEN_TTL_HOURS, RESET_TOKEN_TTL_MINUTES } from "./password-reset";
+
+/** RESET: user-requested password reset. ACTIVATION: first password for an admin-created account. */
+export type PasswordLinkPurpose = "RESET" | "ACTIVATION";
 
 export interface SendPasswordResetOptions {
   to: string;
   recipientName?: string;
   schoolName?: string;
   resetUrl: string;
+  purpose?: PasswordLinkPurpose;
 }
 
 export type EmailProvider = "resend" | "smtp";
@@ -13,7 +17,7 @@ export type EmailProvider = "resend" | "smtp";
 export interface EmailDeliveryResult {
   /** True only when a real provider accepted the message. */
   delivered: boolean;
-  mode: EmailProvider | "dev-console" | "not-configured";
+  mode: EmailProvider | "firebase" | "dev-console" | "not-configured";
   /** Safe for logs/audit: never contains the reset URL, token or credentials. */
   message: string;
 }
@@ -55,24 +59,39 @@ export function escapeHtml(value: string): string {
 /**
  * Builds standard, clean HTML template for the password reset email.
  */
+function linkLifetimeText(purpose: PasswordLinkPurpose): string {
+  return purpose === "ACTIVATION" ? `${ACTIVATION_TOKEN_TTL_HOURS} hours` : `${RESET_TOKEN_TTL_MINUTES} minutes`;
+}
+
 export function buildPasswordResetHtml({
   recipientName = "Allied School User",
   schoolName = "Allied School",
   resetUrl,
+  purpose = "RESET",
 }: {
   recipientName?: string;
   schoolName?: string;
   resetUrl: string;
+  purpose?: PasswordLinkPurpose;
 }): string {
   const name = escapeHtml(recipientName);
   const school = escapeHtml(schoolName);
   const url = escapeHtml(resetUrl);
+  const activation = purpose === "ACTIVATION";
+  const heading = activation ? "Activate Your Account" : "Password Reset Request";
+  const intro = activation
+    ? `An account has been created for you on the ${school} portal. Click the button below to choose your password and activate your account:`
+    : `We received a request to reset the password for your account on the ${school} portal. Click the button below to choose a new password:`;
+  const button = activation ? "Set Your Password" : "Reset Password";
+  const ignore = activation
+    ? "If you were not expecting this account, you can ignore this email; no password will be set."
+    : "If you did not request this reset, you can safely ignore this email. Your password will not change.";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Password Reset Request</title>
+  <title>${heading}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f6f8; margin: 0; padding: 24px; color: #1e293b; }
     .container { max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
@@ -96,18 +115,18 @@ export function buildPasswordResetHtml({
       <p>Management System &amp; Academic Portal</p>
     </div>
     <div class="body">
-      <h2>Password Reset Request</h2>
+      <h2>${heading}</h2>
       <p>Hello ${name},</p>
-      <p>We received a request to reset the password for your account on the ${school} portal. Click the button below to choose a new password:</p>
+      <p>${intro}</p>
       <div class="button-container">
-        <a href="${url}" class="button" target="_blank" rel="noopener noreferrer">Reset Password</a>
+        <a href="${url}" class="button" target="_blank" rel="noopener noreferrer">${button}</a>
       </div>
       <div class="notice">
         <strong>Important Security Notice:</strong>
         <ul style="margin: 6px 0 0 0; padding-left: 20px;">
-          <li>This link is valid for <strong>${RESET_TOKEN_TTL_MINUTES} minutes</strong>.</li>
+          <li>This link is valid for <strong>${linkLifetimeText(purpose)}</strong>.</li>
           <li>For your security, it can be used <strong>only once</strong>.</li>
-          <li>If you did not request this reset, you can safely ignore this email. Your password will not change.</li>
+          <li>${ignore}</li>
         </ul>
       </div>
       <p style="font-size: 12px; color: #64748b; margin-top: 24px;">If the button above does not work, copy and paste this link into your web browser:</p>
@@ -163,19 +182,61 @@ async function sendViaSmtp(env: Env, msg: { to: string; subject: string; html: s
 }
 
 /**
- * Sends the password reset email through the configured provider(s): Resend first, then SMTP.
- * Reports `delivered: true` only when a provider actually accepted the message. Never logs the
- * reset URL in production; with no provider configured in local development the link is printed
- * to the dev console so the flow can still be exercised.
+ * Sends Firebase Authentication's own password email (accounts:sendOobCode, PASSWORD_RESET) for
+ * an existing Firebase Auth account. Firebase delivers it from its built-in mailer, so it works
+ * with no Resend/SMTP configured; the link opens Firebase's password action page (or this app's
+ * /reset-password if the project's email template action URL points there) and `continueUrl`
+ * brings the user back to the login page. Returns null on success, otherwise a log-safe reason.
+ */
+export async function sendViaFirebaseAuth(email: string, continueUrl: string | null, env: Env = process.env): Promise<string | null> {
+  const apiKey = (env.NEXT_PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || "").trim();
+  if (!apiKey || apiKey.includes("Dummy")) return "Firebase Web API key is not configured.";
+
+  const send = async (withContinueUrl: boolean) => {
+    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(apiKey)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestType: "PASSWORD_RESET",
+        email,
+        ...(withContinueUrl && continueUrl ? { continueUrl } : {}),
+      }),
+    });
+    if (res.ok) return null;
+    const data = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    return String(data?.error?.message || `HTTP ${res.status}`);
+  };
+
+  try {
+    let error = await send(true);
+    // The app domain may not be in the project's Authorized domains yet; the email itself
+    // still works without a continue URL.
+    if (error && continueUrl && /UNAUTHORIZED_DOMAIN|INVALID_CONTINUE_URI|MISSING_CONTINUE_URI/.test(error)) {
+      error = await send(false);
+    }
+    return error ? `Firebase Auth did not send the email (${error})` : null;
+  } catch (err) {
+    return `Could not reach Firebase Auth: ${(err as Error)?.message || "network error"}`;
+  }
+}
+
+/**
+ * Sends the password reset / account activation email through the configured provider(s):
+ * Resend first, then SMTP. Reports `delivered: true` only when a provider actually accepted the
+ * message. Never logs the link in production; with no provider configured in local development
+ * the link is printed to the dev console so the flow can still be exercised.
  */
 export async function sendPasswordResetEmail(
   options: SendPasswordResetOptions,
   env: Env = process.env
 ): Promise<EmailDeliveryResult> {
-  const { to, recipientName = "User", schoolName = "Allied School", resetUrl } = options;
-  const subject = `Reset your ${schoolName} password`;
-  const html = buildPasswordResetHtml({ recipientName, schoolName, resetUrl });
-  const text = `Password Reset Request - ${schoolName}\n\nHello ${recipientName},\n\nA password reset was requested for your account. Please use the following secure link to set your new password:\n\n${resetUrl}\n\nThis link is single-use and will expire in ${RESET_TOKEN_TTL_MINUTES} minutes.\n\nIf you did not request this, please ignore this email.`;
+  const { to, recipientName = "User", schoolName = "Allied School", resetUrl, purpose = "RESET" } = options;
+  const activation = purpose === "ACTIVATION";
+  const subject = activation ? `Activate your ${schoolName} account` : `Reset your ${schoolName} password`;
+  const html = buildPasswordResetHtml({ recipientName, schoolName, resetUrl, purpose });
+  const text = activation
+    ? `Account Activation - ${schoolName}\n\nHello ${recipientName},\n\nAn account has been created for you. Use the following secure link to choose your password and activate it:\n\n${resetUrl}\n\nThis link is single-use and will expire in ${linkLifetimeText(purpose)}.\n\nIf you were not expecting this account, please ignore this email.`
+    : `Password Reset Request - ${schoolName}\n\nHello ${recipientName},\n\nA password reset was requested for your account. Please use the following secure link to set your new password:\n\n${resetUrl}\n\nThis link is single-use and will expire in ${linkLifetimeText(purpose)}.\n\nIf you did not request this, please ignore this email.`;
   const msg = { to, subject, html, text };
 
   const { providers, missingForResend, missingForSmtp } = getEmailConfigStatus(env);
@@ -184,7 +245,7 @@ export async function sendPasswordResetEmail(
   for (const provider of providers) {
     const error = provider === "resend" ? await sendViaResend(env, msg) : await sendViaSmtp(env, msg);
     if (!error) {
-      return { delivered: true, mode: provider, message: `Password reset email accepted by ${provider}.` };
+      return { delivered: true, mode: provider, message: `${activation ? "Account activation" : "Password reset"} email accepted by ${provider}.` };
     }
     failures.push(error);
     console.error(`[PASSWORD RESET EMAIL] ${error}`);
@@ -200,7 +261,7 @@ export async function sendPasswordResetEmail(
 
   if (env.NODE_ENV !== "production") {
     console.warn(`[PASSWORD RESET EMAIL] ${configHint}`);
-    console.warn(`[PASSWORD RESET EMAIL] DEV ONLY — reset link for ${to}: ${resetUrl}`);
+    console.warn(`[PASSWORD RESET EMAIL] DEV ONLY — ${activation ? "activation" : "reset"} link for ${to}: ${resetUrl}`);
     return { delivered: false, mode: "dev-console", message: configHint };
   }
 

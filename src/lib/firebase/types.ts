@@ -161,9 +161,16 @@ export interface TimetableDoc {
 export type AttendanceStatus = "PRESENT" | "LATE" | "ABSENT" | "LEAVE";
 
 export interface AttendanceDoc {
-  id: string; // schoolId_classId_studentId_date
+  id: string; // schoolId_classId_studentId_date (daily) or schoolId_classId_subjectId_studentId_date
   schoolId: string;
   classId: string;
+  /**
+   * Set only on a subject register (marked by that subject's allocated teacher). Records
+   * without it form the class's daily register, which is the one student/parent/report
+   * attendance figures are computed from.
+   */
+  subjectId?: string;
+  subjectName?: string;
   studentId: string;
   studentName?: string;
   rollNo?: string;
@@ -389,6 +396,8 @@ export interface PayrollRecordDoc {
  */
 export interface PasswordResetTokenDoc {
   id: string; // sha256(token)
+  /** ACTIVATION: first-time password setup for an admin-created account. Absent = RESET. */
+  purpose?: "RESET" | "ACTIVATION";
   uid: string;
   email: string;
   schoolId: string;

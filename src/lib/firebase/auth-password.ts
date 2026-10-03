@@ -16,7 +16,8 @@ export async function setAuthPasswordServer(user: UserProfile, newPassword: stri
   if (!hasAdminCredentials) return;
 
   try {
-    await adminAuth.updateUser(user.uid, { password: newPassword });
+    // Only reachable through a link sent to this address, so it also proves the email.
+    await adminAuth.updateUser(user.uid, { password: newPassword, emailVerified: true });
   } catch (err: any) {
     if (err?.code !== "auth/user-not-found") throw err;
     await adminAuth.createUser({
@@ -36,4 +37,36 @@ export async function setAuthPasswordServer(user: UserProfile, newPassword: stri
   }
 
   await adminAuth.revokeRefreshTokens(user.uid);
+}
+
+export type ConfirmFirebaseResetResult =
+  | { ok: true; email: string }
+  | { ok: false; status: "INVALID" | "EXPIRED" };
+
+/**
+ * Completes a reset started by Firebase Authentication's own password email: Firebase checks the
+ * single-use action code (`oobCode`) and sets the new password (accounts:resetPassword).
+ */
+export async function confirmFirebasePasswordResetServer(
+  oobCode: string,
+  newPassword: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<ConfirmFirebaseResetResult> {
+  const apiKey = (env.NEXT_PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || "").trim();
+  if (!apiKey || !/^[A-Za-z0-9_-]{10,}$/.test(oobCode)) return { ok: false, status: "INVALID" };
+
+  const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key=${encodeURIComponent(apiKey)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ oobCode, newPassword }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { email?: string; error?: { message?: string } };
+  if (res.ok && data.email) return { ok: true, email: data.email.toLowerCase().trim() };
+
+  const message = String(data?.error?.message || "");
+  if (message.startsWith("EXPIRED_OOB_CODE")) return { ok: false, status: "EXPIRED" };
+  if (message.startsWith("INVALID_OOB_CODE") || message.startsWith("USER_DISABLED") || message.startsWith("EMAIL_NOT_FOUND")) {
+    return { ok: false, status: "INVALID" };
+  }
+  throw new Error(`Firebase resetPassword failed: ${message || `HTTP ${res.status}`}`);
 }

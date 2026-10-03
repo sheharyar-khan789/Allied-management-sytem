@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx scripts/p0-verification-test.ts && tsx scripts/production-fix-phase-test.ts",
+    "test": "tsx scripts/p0-verification-test.ts && tsx scripts/production-fix-phase-test.ts && tsx scripts/teacher-allocation-timetable-auth-test.ts",
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed-firebase.ts",
     "test:p0": "tsx scripts/p0-verification-test.ts",
@@ -15,6 +15,8 @@
     "test:phase3": "tsx scripts/phase3-verification-test.ts",
     "test:session-lock": "tsx scripts/session-and-attendance-lock-test.ts",
     "test:fix-phase": "tsx scripts/production-fix-phase-test.ts",
+    "test:teacher-scoping": "tsx scripts/teacher-scoping-test.ts",
+    "test:teacher-access": "tsx scripts/teacher-allocation-timetable-auth-test.ts",
     "postinstall": "patch-package"
   },
   "dependencies": {

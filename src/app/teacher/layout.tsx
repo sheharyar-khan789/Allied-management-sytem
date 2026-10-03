@@ -1,7 +1,7 @@
 ﻿import React from "react";
 import TeacherNav from "@/components/TeacherNav";
 import { getAuthenticatedUser } from "@/lib/firebase/server-auth";
-import { getTeacherByIdServer } from "@/lib/firebase/server-db";
+import { resolveAuthenticatedTeacher } from "@/lib/academic-access";
 
 export default async function TeacherLayout({
   children,
@@ -18,8 +18,9 @@ export default async function TeacherLayout({
   // designation on file, nothing is shown.
   let designation = "";
 
-  if (session?.teacherId && session?.schoolId) {
-    const t = await getTeacherByIdServer(session.schoolId, session.teacherId);
+  // Falls back to the login profile's teacherId when the session token doesn't carry one.
+  if (session?.schoolId) {
+    const t = await resolveAuthenticatedTeacher(session);
     if (t) {
       teacherName = t.fullName;
       designation = [t.designation, t.department].filter(Boolean).join(" • ");

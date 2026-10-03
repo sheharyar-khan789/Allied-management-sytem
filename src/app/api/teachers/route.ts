@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getTeachersServer,
@@ -17,6 +16,7 @@ import {
   nextEmployeeId,
   releaseOrphanedTeacherAuthAccount,
 } from "@/lib/teacher-lifecycle";
+import { sendPasswordSetupLink } from "@/lib/account-email";
 
 export async function GET(req: NextRequest) {
   try {
@@ -158,7 +158,6 @@ export async function POST(req: NextRequest) {
     const teacherEmail = email.trim().toLowerCase();
     let userUid = `user_tch_${uniqueSuffix}`;
     let createdAuthUid: string | null = null;
-    let temporaryPassword: string | null = null;
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(teacherEmail)) {
       return NextResponse.json({ error: "Please enter a valid teacher email address." }, { status: 400 });
@@ -174,14 +173,13 @@ export async function POST(req: NextRequest) {
 
     if (hasAdminCredentials) {
       try {
-        // Cryptographically secure, high-entropy temporary password — see the identical fix
-        // and rationale in src/app/api/students/route.ts and src/lib/link-parent.ts.
-        const generatedPassword = `Teacher@${crypto.randomBytes(12).toString("base64url")}!1`;
+        // No password is generated, shown or stored: the account is created without one and the
+        // teacher chooses their own through the activation email sent below. (Previously a
+        // random password was returned once to the admin and never reached the teacher.)
         const createAuthUser = () =>
           adminAuth.createUser({
             email: teacherEmail,
-            emailVerified: true,
-            password: generatedPassword,
+            emailVerified: false,
             displayName: fullName,
             disabled: false,
           });
@@ -200,7 +198,6 @@ export async function POST(req: NextRequest) {
         }
         userUid = teacherAuthUser.uid;
         createdAuthUid = teacherAuthUser.uid;
-        temporaryPassword = generatedPassword;
 
         await adminAuth.setCustomUserClaims(teacherAuthUser.uid, {
           role: "TEACHER",
@@ -278,6 +275,15 @@ export async function POST(req: NextRequest) {
       throw dbErr;
     }
 
+    // An inactive (already ended) teacher gets no activation link.
+    const activation = cleanEndingDate
+      ? null
+      : await sendPasswordSetupLink(
+          { uid: userUid, email: teacherEmail, name: fullName, schoolId: authUser.schoolId },
+          "ACTIVATION",
+          { origin: req.headers.get("origin"), host: req.headers.get("host") }
+        );
+
     await createAuditLogServer(
       authUser.schoolId,
       authUser.uid,
@@ -286,16 +292,21 @@ export async function POST(req: NextRequest) {
       "CREATE_TEACHER",
       "TEACHER",
       teacherId,
-      `Registered faculty member ${fullName} (${employeeId}).`
+      `Registered faculty member ${fullName} (${employeeId}).` +
+        (activation
+          ? activation.delivered
+            ? ` Account activation email sent to ${teacherEmail} via ${activation.mode}.`
+            : ` Account activation email to ${teacherEmail} was NOT delivered (${activation.mode}): ${activation.message}`
+          : "")
     );
 
     return NextResponse.json(
       {
         success: true,
         teacher: teacherDoc,
-        // Only present when a real Firebase Auth account was provisioned. Surfaced once so
-        // the admin can hand it to the teacher; it is never stored or logged.
-        temporaryPassword: temporaryPassword || undefined,
+        activation: activation
+          ? { sent: activation.delivered, channel: activation.mode, email: teacherEmail }
+          : null,
       },
       { status: 201 }
     );

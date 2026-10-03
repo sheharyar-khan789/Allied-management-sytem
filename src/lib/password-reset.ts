@@ -4,6 +4,10 @@ import crypto from "crypto";
 export const RESET_TOKEN_TTL_MINUTES = 15;
 export const RESET_TOKEN_TTL_MS = RESET_TOKEN_TTL_MINUTES * 60 * 1000;
 
+/** Lifetime of an account activation (first password) link sent when an admin creates an account. */
+export const ACTIVATION_TOKEN_TTL_HOURS = 72;
+export const ACTIVATION_TOKEN_TTL_MS = ACTIVATION_TOKEN_TTL_HOURS * 60 * 60 * 1000;
+
 export const MIN_PASSWORD_LENGTH = 8;
 export const MAX_PASSWORD_LENGTH = 128;
 
@@ -101,6 +105,8 @@ export function resolveAppBaseUrl(
   return { ok: true, baseUrl: fromRequest ? fromRequest.origin : "http://localhost:3000" };
 }
 
-export function buildResetUrl(baseUrl: string, token: string): string {
-  return `${baseUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
+export function buildResetUrl(baseUrl: string, token: string, purpose: "RESET" | "ACTIVATION" = "RESET"): string {
+  const url = `${baseUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
+  // Only picks the page wording; the server reads the real purpose from the stored token record.
+  return purpose === "ACTIVATION" ? `${url}&purpose=activate` : url;
 }

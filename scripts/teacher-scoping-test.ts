@@ -14,8 +14,9 @@ import {
   saveExamServer,
   saveExamScheduleServer,
   saveTimetableEntryServer,
+  saveSubjectServer,
 } from "../src/lib/firebase/server-db";
-import { ClassDoc, ExamDoc, ExamScheduleDoc, StudentDoc, TeacherDoc, TimetableDoc, UserProfile } from "../src/lib/firebase/types";
+import { ClassDoc, ExamDoc, ExamScheduleDoc, StudentDoc, SubjectDoc, TeacherDoc, TimetableDoc, UserProfile } from "../src/lib/firebase/types";
 
 async function run() {
   console.log("==================================================");
@@ -94,6 +95,14 @@ async function run() {
     startDate: now, endDate: now, status: "UPCOMING", createdAt: now, updatedAt: now,
   };
   await saveExamServer(exam);
+
+  // The subjects the exam schedules below refer to, each allocated to its class's teacher.
+  const subjectFor = (id: string, classId: string, teacherId: string): SubjectDoc => ({
+    id, schoolId, classId, name: `Math ${id}`, code: id.toUpperCase(), teacherId, credits: 3,
+    createdAt: now, updatedAt: now,
+  });
+  await saveSubjectServer(subjectFor("sub-a", classA.id, teacherA.id));
+  await saveSubjectServer(subjectFor("sub-b", classB.id, teacherB.id));
 
   const schedA: ExamScheduleDoc = {
     id: "sch-scope-a", schoolId, examId: exam.id, classId: classA.id, subjectId: "sub-a",

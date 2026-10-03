@@ -76,6 +76,8 @@ async function run() {
   // ---------------------------------------------------------------------------
   const oldClass: ClassDoc = {
     id: "cls-lock-10a", schoolId, name: "Grade 10", section: "A", numericLevel: 10, capacity: 30,
+    // The teacher below is this class's incharge, which is what grants the daily register.
+    classTeacherId: "tch-lock-1",
     academicYear: OLD_SESSION, createdAt: now, updatedAt: now,
   };
   await saveClassServer(oldClass);

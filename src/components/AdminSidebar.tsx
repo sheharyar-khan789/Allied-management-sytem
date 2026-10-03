@@ -40,6 +40,7 @@ export default function AdminSidebar({
     { label: "Students", href: "/admin/students", icon: "school", badge: totalStudents },
     { label: "Teachers", href: "/admin/teachers", icon: "person_apron", badge: totalTeachers },
     { label: "Classes & Subjects", href: "/admin/classes", icon: "menu_book" },
+    { label: "Timetable", href: "/admin/timetable", icon: "calendar_month" },
     { label: "Attendance", href: "/admin/attendance", icon: "event_available" },
     { label: "Fees & Payments", href: "/admin/fees", icon: "payments" },
     { label: "Payroll", href: "/admin/payroll", icon: "account_balance_wallet" },

@@ -1,18 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  getUserByEmailServer,
-  getSchoolSettingsServer,
-  createAuditLogServer,
-  savePasswordResetTokenServer,
-} from "@/lib/firebase/server-db";
-import { sendPasswordResetEmail } from "@/lib/email-service";
+import { getUserByEmailServer, createAuditLogServer } from "@/lib/firebase/server-db";
+import { sendPasswordSetupLink } from "@/lib/account-email";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
-import {
-  buildResetUrl,
-  generateResetToken,
-  resolveAppBaseUrl,
-  RESET_TOKEN_TTL_MS,
-} from "@/lib/password-reset";
 
 export const dynamic = "force-dynamic";
 
@@ -74,43 +63,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
     }
 
-    const base = resolveAppBaseUrl({
+    const delivery = await sendPasswordSetupLink(user, "RESET", {
       origin: req.headers.get("origin"),
       host: req.headers.get("host"),
-    });
-    if (!base.ok) {
-      console.error(`[PASSWORD RESET] Not sent — ${base.reason}`);
-      await createAuditLogServer(
-        user.schoolId, user.uid, user.email, user.role,
-        "PASSWORD_RESET_EMAIL_FAILED", "AUTH", user.uid,
-        `Password reset requested but not sent: ${base.reason}`
-      );
-      return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
-    }
-
-    // 256-bit random token; only its SHA-256 hash is stored. Issuing a new one deletes any
-    // earlier tokens for this user, so only the latest emailed link works.
-    const { token, tokenHash } = generateResetToken();
-    const nowMs = Date.now();
-    await savePasswordResetTokenServer({
-      id: tokenHash,
-      uid: user.uid,
-      email: user.email,
-      schoolId: user.schoolId,
-      expiresAt: new Date(nowMs + RESET_TOKEN_TTL_MS).toISOString(),
-      usedAt: null,
-      createdAt: new Date(nowMs).toISOString(),
-    });
-
-    const schoolSettings = await getSchoolSettingsServer(user.schoolId);
-    const schoolName = schoolSettings?.schoolName || "Allied School Management System";
-
-    // Always sent to the email stored on the matched account profile.
-    const delivery = await sendPasswordResetEmail({
-      to: user.email,
-      recipientName: user.name || "User",
-      schoolName,
-      resetUrl: buildResetUrl(base.baseUrl, token),
     });
 
     await createAuditLogServer(

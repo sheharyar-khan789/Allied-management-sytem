@@ -14,7 +14,7 @@ import {
 import { StudentDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { linkGuardianEmailToStudent } from "@/lib/link-parent";
-import { assertTeacherOwnsClass, resolveAuthenticatedTeacher } from "@/lib/academic-access";
+import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic-access";
 import { validateStudentDates } from "@/lib/date-utils";
 
 export async function GET(req: NextRequest) {
@@ -42,12 +42,10 @@ export async function GET(req: NextRequest) {
     // Without a specific classId filter, a TEACHER must still only see students in their own
     // assigned classes (containing full guardian/contact PII) rather than the whole school's
     // roster — matches the same assignedClassIds convention used for attendance/exams.
+    // Fails closed: a teacher with no allocated classes sees no students.
     if (authUser.role === "TEACHER" && !classId) {
-      const teacher = await resolveAuthenticatedTeacher(authUser);
-      const assigned = teacher?.assignedClassIds?.length ? new Set(teacher.assignedClassIds) : null;
-      if (assigned) {
-        students = students.filter((s) => assigned.has(s.classId));
-      }
+      const allocation = await requireTeacherAllocation(authUser);
+      students = students.filter((s) => allocation.classIds.has(s.classId));
     }
 
     const mapped = students.map((st) => ({
