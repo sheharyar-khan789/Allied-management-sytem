@@ -220,7 +220,7 @@ export async function sendViaFirebaseAuth(email: string, continueUrl: string | n
   }
 }
 
-function headerSafe(value: string): string {
+export function headerSafe(value: string): string {
   return String(value).replace(/[\r\n\u2028\u2029]+/g, " ").trim();
 }
 

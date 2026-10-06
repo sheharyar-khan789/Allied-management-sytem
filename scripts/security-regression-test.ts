@@ -33,6 +33,12 @@ import { sniffMimeType } from "../src/lib/storage";
 import { neutralizeSpreadsheetFormula } from "../src/lib/spreadsheet-parser";
 import { currentStep, generateTotpSecret, totpAt, verifyTotp } from "../src/lib/totp";
 import { getUserByEmailServer, updateUserServer } from "../src/lib/firebase/server-db";
+import bcrypt from "bcryptjs";
+import { POST as classesPost } from "../src/app/api/classes/route";
+import { POST as subjectsPost } from "../src/app/api/subjects/route";
+import { POST as mfaPost } from "../src/app/api/auth/mfa/route";
+import { requirePageRole } from "../src/lib/page-auth";
+import { headerSafe } from "../src/lib/email-service";
 
 async function runSecurityTests() {
   console.log("=================================================");
@@ -802,6 +808,114 @@ async function runSecurityTests() {
     const r = await loginHandler(new NextRequest("http://localhost:3000/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json", ...nextIp() }, body: "{not json" }));
     const text = await r.text();
     assert(!/at \w+ \(|node_modules|src\/|FIREBASE_|Error:/.test(text), "39. Errors: API error bodies contain no stack traces, paths or env names");
+  }
+
+  // =====================================================================
+  // 40–46. RESUMED HARDENING (layout guards, strict schemas, auth-route CSRF, 2FA enrolment,
+  //        email headers, no client profile reads)
+  // =====================================================================
+
+  // 40. Role layouts re-check the session server-side (middleware is not the only check)
+  {
+    const layouts: Array<[string, string]> = [["admin", "ADMIN"], ["teacher", "TEACHER"], ["student", "STUDENT"], ["parent", "PARENT"]];
+    const allGuarded = layouts.every(([dir, role]) => {
+      const src = fs.readFileSync(path.resolve(__dirname, `../src/app/${dir}/layout.tsx`), "utf-8");
+      return src.includes(`requirePageRole("${role}")`) && !src.includes("getAuthenticatedUser(");
+    });
+    assert(allGuarded, "40a. Layouts: /admin, /teacher, /student, /parent each enforce their own role server-side");
+    let redirectedTo = "";
+    try {
+      await requirePageRole("ADMIN");
+    } catch (e) {
+      redirectedTo = String((e as { digest?: string })?.digest || "");
+    }
+    assert(redirectedTo.includes("/login"), "40b. Layouts: no session -> redirect to /login (never renders school data)", redirectedTo);
+  }
+
+  // 41. Strict body schemas on attendance / classes / subjects
+  {
+    const okRecord = { studentId: "std-1", status: "PRESENT" };
+    const a1 = await attendancePost(authed(adminA, "http://localhost:3000/api/attendance", "POST", { classId: "cls-10a", date: "2026-09-17", records: [okRecord], isLocked: false }));
+    assert(a1.status === 400, "41a. Attendance: server-controlled lock field cannot be submitted (400)");
+    const a2 = await attendancePost(authed(adminA, "http://localhost:3000/api/attendance", "POST", { classId: "cls-10a", date: "2026-09-17", records: [okRecord], surprise: 1 }));
+    assert(a2.status === 400, "41b. Attendance: unknown top-level field rejected (strict schema)");
+    const a3 = await attendancePost(authed(adminA, "http://localhost:3000/api/attendance", "POST", { classId: "cls-10a", date: "2026-09-17", records: [{ ...okRecord, remarks: { $gt: "" } }] }));
+    assert(a3.status === 400, "41c. Attendance: non-string remarks rejected");
+    const many = Array.from({ length: 501 }, () => okRecord);
+    const a4 = await attendancePost(authed(adminA, "http://localhost:3000/api/attendance", "POST", { classId: "cls-10a", date: "2026-09-17", records: many }));
+    assert(a4.status === 400, "41d. Attendance: oversized roster (501 records) rejected");
+    const c1 = await classesPost(authed(adminA, "http://localhost:3000/api/classes", "POST", { name: "Sec 9", section: "Z", schoolId: "school-b-campus" }));
+    assert(c1.status === 400, "41e. Classes: schoolId cannot be set by the client (400)");
+    const c2 = await classesPost(authed(adminA, "http://localhost:3000/api/classes", "POST", { name: { toString: "x" }, section: "Z" }));
+    assert(c2.status === 400, "41f. Classes: non-string name rejected");
+    const s1 = await subjectsPost(authed(adminA, "http://localhost:3000/api/subjects", "POST", { name: "x".repeat(500), code: "LONG", classId: "cls-10a" }));
+    assert(s1.status === 400, "41g. Subjects: oversized name rejected");
+    const s2 = await subjectsPost(authed(adminA, "http://localhost:3000/api/subjects", "POST", { name: "Bio", code: "BIO", classId: "cls-10a", teacherId: { $ne: "" } }));
+    assert(s2.status === 400, "41h. Subjects: object-valued teacherId rejected");
+  }
+
+  // 42. CSRF enforced inside the unauthenticated auth routes too (not only in middleware)
+  {
+    const evil = (url: string, body: unknown) =>
+      new NextRequest(url, { method: "POST", headers: { "Content-Type": "application/json", origin: "https://evil.example", ...nextIp() }, body: JSON.stringify(body) });
+    const results = await Promise.all([
+      loginHandler(evil("http://localhost:3000/api/auth/login", { identifier: "admin@alliedschool.edu", password: "AdminSecure2025#" })),
+      registerHandler(evil("http://localhost:3000/api/auth/register", { fullName: "X Y", email: "x@y.example", password: "LongEnough#2026x", schoolName: "Z" })),
+      forgotPasswordHandler(evil("http://localhost:3000/api/auth/forgot-password", { email: "admin@alliedschool.edu" })),
+      resetPasswordHandler(evil("http://localhost:3000/api/auth/reset-password", { token: "x", newPassword: "LongEnough#2026x" })),
+      logoutHandler(evil("http://localhost:3000/api/auth/logout", {})),
+    ]);
+    assert(results.every((r) => r.status === 403), "42. CSRF: login/register/forgot/reset/logout reject cross-site POSTs in the route itself (403)", results.map((r) => r.status).join(","));
+  }
+
+  // 43. CSRF_TRUSTED_ORIGINS adds to NEXT_PUBLIC_APP_URL instead of replacing it
+  {
+    const env = { NODE_ENV: "production", NEXT_PUBLIC_APP_URL: "https://school.example.com", CSRF_TRUSTED_ORIGINS: "https://admin.example.com" };
+    const check = (origin: string) =>
+      isCrossSiteStateChange({ method: "POST", url: "https://internal.example.net/api/fees", headers: new Headers({ origin }) }, env);
+    assert(
+      check("https://school.example.com") === false && check("https://admin.example.com") === false && check("https://evil.example") === true,
+      "43. CSRF: both the app URL and the extra trusted origins are accepted; others rejected"
+    );
+  }
+
+  // 44. Enrolling an admin authenticator needs the current password (a stolen session alone can't)
+  {
+    const prevFlag = process.env.ADMIN_MFA_ENABLED;
+    process.env.ADMIN_MFA_ENABLED = "true";
+    const original = await getUserByEmailServer("admin@alliedschool.edu");
+    const testPassword = "Enrol-Check#2026-local";
+    await updateUserServer({ ...original!, passwordHash: bcrypt.hashSync(testPassword, 4), mfaEnabled: false, mfaSecret: undefined, mfaPendingSecret: undefined, mfaLastUsedStep: undefined });
+    try {
+      const setup = await mfaPost(authed(adminA, "http://localhost:3000/api/auth/mfa", "POST", { action: "setup" }));
+      const { secret } = await setup.json();
+      const code = () => totpAt(secret, currentStep());
+      const noPw = await mfaPost(authed(adminA, "http://localhost:3000/api/auth/mfa", "POST", { action: "enable", code: code() }));
+      const badPw = await mfaPost(authed(adminA, "http://localhost:3000/api/auth/mfa", "POST", { action: "enable", code: code(), password: "wrong-password-123" }));
+      const afterFail = await getUserByEmailServer("admin@alliedschool.edu");
+      const good = await mfaPost(authed(adminA, "http://localhost:3000/api/auth/mfa", "POST", { action: "enable", code: code(), password: testPassword }));
+      const goodJson = await good.json();
+      assert(
+        setup.status === 200 && noPw.status === 400 && badPw.status === 400 && !afterFail?.mfaEnabled && good.status === 200 && goodJson.enrolled === true,
+        "44. 2FA enrolment: code alone or a wrong password is refused; code + current password enrols",
+        [setup.status, noPw.status, badPw.status, good.status].join(",")
+      );
+    } finally {
+      await updateUserServer({ ...original!, mfaEnabled: false, mfaSecret: undefined, mfaPendingSecret: undefined, mfaLastUsedStep: undefined });
+      process.env.ADMIN_MFA_ENABLED = prevFlag;
+    }
+  }
+
+  // 45. Email header values cannot carry CR/LF (header injection)
+  {
+    const v = headerSafe("Reset your School\r\nBcc: attacker@evil.example password");
+    assert(!/[\r\n]/.test(v), "45. Email: CR/LF stripped from header values (subject/recipient)");
+  }
+
+  // 46. The browser never reads user profiles (password hash, 2FA secret) from Firestore
+  {
+    const ctx = fs.readFileSync(path.resolve(__dirname, "../src/lib/firebase/auth-context.tsx"), "utf-8");
+    assert(!/doc\(\s*db\s*,\s*["']users["']/.test(ctx) && ctx.includes("/api/auth/me"), "46. Client: profile comes from the sanitised /api/auth/me, never a Firestore users/ read");
   }
 
   console.log("\n=================================================");
