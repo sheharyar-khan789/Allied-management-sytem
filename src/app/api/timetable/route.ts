@@ -110,6 +110,9 @@ async function buildSlot(authUser: AuthenticatedUser, body: any, editingId?: str
   if (!classId || !subjectId || !dayOfWeek || !periodName || !startTime || !endTime) {
     return { ok: false, status: 400, error: "Class, Subject, Day, Period, Start Time, and End Time are required." };
   }
+  if ([classId, subjectId, requestedTeacherId].some((v) => v.length > 128) || periodName.length > 60 || roomNo.length > 40 || topic.length > 200) {
+    return { ok: false, status: 400, error: "One or more fields are too long (period max 60, room max 40, topic max 200 characters)." };
+  }
   if (!DAYS.includes(dayOfWeek)) return { ok: false, status: 400, error: "Day must be a weekday name (Monday–Sunday)." };
   const start = toMinutes(startTime);
   const end = toMinutes(endTime);

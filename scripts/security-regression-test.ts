@@ -37,6 +37,7 @@ import bcrypt from "bcryptjs";
 import { POST as classesPost } from "../src/app/api/classes/route";
 import { POST as subjectsPost } from "../src/app/api/subjects/route";
 import { POST as mfaPost } from "../src/app/api/auth/mfa/route";
+import { POST as timetablePost } from "../src/app/api/timetable/route";
 import { requirePageRole } from "../src/lib/page-auth";
 import { headerSafe } from "../src/lib/email-service";
 
@@ -852,6 +853,8 @@ async function runSecurityTests() {
     assert(s1.status === 400, "41g. Subjects: oversized name rejected");
     const s2 = await subjectsPost(authed(adminA, "http://localhost:3000/api/subjects", "POST", { name: "Bio", code: "BIO", classId: "cls-10a", teacherId: { $ne: "" } }));
     assert(s2.status === 400, "41h. Subjects: object-valued teacherId rejected");
+    const t1 = await timetablePost(authed(adminA, "http://localhost:3000/api/timetable", "POST", { classId: "cls-10a", subjectId: "x", dayOfWeek: "Monday", periodName: "P".repeat(61), startTime: "08:00", endTime: "08:40" }));
+    assert(t1.status === 400, "41i. Timetable: oversized free-text fields rejected");
   }
 
   // 42. CSRF enforced inside the unauthenticated auth routes too (not only in middleware)
