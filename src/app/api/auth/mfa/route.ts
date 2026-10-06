@@ -15,7 +15,9 @@ const MFA_LOCK_SECONDS = 900;
  * Admin TOTP two-factor enrollment. Available only when ADMIN_MFA_ENABLED=true.
  *   GET                              -> { featureEnabled, enrolled }
  *   POST { action: "setup" }         -> new pending secret + otpauth:// URI (not active yet)
- *   POST { action: "enable", code }  -> activates the pending secret after one valid code
+ *   POST { action: "enable", code, password } -> activates the pending secret after one valid code
+ *                                       and the current password (a stolen session alone can't
+ *                                       enrol an attacker's authenticator and lock the admin out)
  *   POST { action: "disable", code, password } -> turns it off (needs a current code AND password)
  */
 export async function GET(req: NextRequest) {
@@ -60,10 +62,14 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Start setup first." }, { status: 400 });
       }
       const step = verifyTotp(profile.mfaPendingSecret, body?.code);
-      if (step === null) {
+      const passwordOk = typeof body?.password === "string" && (await verifyAccountPasswordServer(profile, body.password));
+      if (step === null || !passwordOk) {
         recordAuthFailure(rateKey, MFA_MAX_FAILURES, MFA_LOCK_SECONDS);
         securityLog("auth.mfa_failed", { subject: authUser.uid, role: authUser.role, schoolId: authUser.schoolId, reason: "enable" });
-        return NextResponse.json({ error: "That code is not valid. Check the time on your phone and try again." }, { status: 400 });
+        return NextResponse.json(
+          { error: step === null ? "That code is not valid. Check the time on your phone and try again." : "Your current password is required." },
+          { status: 400 }
+        );
       }
       resetAuthRateLimit(rateKey);
       const { mfaPendingSecret, ...rest } = profile;

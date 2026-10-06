@@ -87,15 +87,24 @@ export default function AdminTwoFactorCard() {
             placeholder="123456"
             className="w-40 h-10 px-3 rounded-lg border border-outline-variant text-sm tracking-widest"
           />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Current password"
+            autoComplete="current-password"
+            className="w-48 h-10 px-3 rounded-lg border border-outline-variant text-sm"
+          />
           <button
             type="button"
-            disabled={busy || code.length !== 6}
+            disabled={busy || code.length !== 6 || !password}
             onClick={async () => {
-              const j = await call({ action: "enable", code });
+              const j = await call({ action: "enable", code, password });
               if (j?.enrolled) {
                 setEnrolled(true);
                 setSecret(null);
                 setCode("");
+                setPassword("");
                 setMessage("Two-factor authentication is now enabled.");
               }
             }}

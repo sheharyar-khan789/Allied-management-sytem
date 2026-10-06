@@ -108,11 +108,12 @@ service cloud.firestore {
     // Users Collection
     // -------------------------------------------------------------
     match /users/{userId} {
-      // Profiles hold bcrypt password hashes, 2FA secrets and session-revocation state. The
-      // browser only ever reads its own profile (src/lib/firebase/auth-context.tsx); everything
-      // else goes through the API. Teachers and admins previously could read every profile in
-      // the school, including other users' password hashes.
-      allow read: if isAuthenticated() && request.auth.uid == userId;
+      // Profiles hold bcrypt password hashes, TOTP 2FA secrets and session-revocation state, so
+      // no client may read any profile — not even its own: reading one's own mfaSecret with just
+      // the password (Firebase client sign-in) would defeat admin two-factor. The browser gets a
+      // sanitised profile from /api/auth/me instead. The helper functions above still work:
+      // get() inside rules is not subject to this read rule.
+      allow read: if false;
       allow write: if false;
     }
 

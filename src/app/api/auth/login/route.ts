@@ -5,7 +5,7 @@ import { createSessionCookieServer, AuthenticatedUser, SESSION_COOKIE_OPTIONS } 
 import { dashboardPathForRole } from "@/lib/role-home";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
-import { getClientIp } from "@/lib/request-security";
+import { getClientIp, rejectCrossSite } from "@/lib/request-security";
 import { isRealDeployment } from "@/lib/session-token";
 import { securityLog } from "@/lib/security-log";
 import { isAdminMfaEnabled, verifyTotp } from "@/lib/totp";
@@ -45,6 +45,8 @@ const json = (body: Record<string, unknown>, status = 200, headers: Record<strin
 const INVALID_CREDENTIALS = "Invalid email or password.";
 
 export async function POST(req: NextRequest) {
+  const csrfBlocked = rejectCrossSite(req);
+  if (csrfBlocked) return csrfBlocked;
   const clientIp = getClientIp(req.headers);
   const ipKey = clientIp;
 

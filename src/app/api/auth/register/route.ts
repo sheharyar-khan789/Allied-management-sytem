@@ -15,7 +15,7 @@ import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { School, SchoolSettingsDoc, UserProfile } from "@/lib/firebase/types";
 import { getDefaultAcademicYear } from "@/lib/school-display";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
-import { getClientIp } from "@/lib/request-security";
+import { getClientIp, rejectCrossSite } from "@/lib/request-security";
 import { checkPasswordPolicy } from "@/lib/password-reset";
 import { securityLog } from "@/lib/security-log";
 
@@ -29,6 +29,8 @@ function secretMatches(submitted: string, expected: string): boolean {
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  const csrfBlocked = rejectCrossSite(req);
+  if (csrfBlocked) return csrfBlocked;
   try {
     // School registration creates a brand-new tenant plus a privileged ADMIN account, and was
     // previously the only unauthenticated write endpoint with no rate limiting at all — a

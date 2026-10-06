@@ -42,12 +42,10 @@ export default function LoginPage() {
 
       // 1. Attempt client Firebase Auth if live credentials exist
       try {
-        const prof = await login(identifier, password);
-        if (prof) {
-          const { auth } = await import("@/lib/firebase/config");
-          if (auth.currentUser) {
-            idToken = await auth.currentUser.getIdToken();
-          }
+        await login(identifier, password);
+        const { auth } = await import("@/lib/firebase/config");
+        if (auth.currentUser) {
+          idToken = await auth.currentUser.getIdToken();
         }
       } catch (clientErr: any) {
         // Fallback to server auth bridge (handles server-side REST auth or dev fallback)

@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rejectCrossSite } from "@/lib/request-security";
 import { verifySessionToken } from "@/lib/session-token";
 import { revokeSessionIdServer } from "@/lib/firebase/server-db";
 import { securityLog } from "@/lib/security-log";
 
 export async function POST(req: NextRequest) {
+  const csrfBlocked = rejectCrossSite(req);
+  if (csrfBlocked) return csrfBlocked;
   // Server-side revocation: the session id is recorded as revoked on the user's profile, so the
   // token stops working everywhere immediately (requireAuth checks it), not just in this browser.
   try {

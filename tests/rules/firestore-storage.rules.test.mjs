@@ -61,8 +61,9 @@ test("default deny: unauthenticated users read nothing", async () => {
   await assertFails(getDoc(doc(db, "users", "adminA")));
 });
 
-test("users: only the owner can read a profile (no other user's password hash)", async () => {
-  await assertSucceeds(getDoc(doc(as("teacherA"), "users", "teacherA")));
+test("users: no client can read any profile, not even its own (password hash, 2FA secret)", async () => {
+  await assertFails(getDoc(doc(as("teacherA"), "users", "teacherA")));
+  await assertFails(getDoc(doc(as("adminA"), "users", "adminA")));
   await assertFails(getDoc(doc(as("teacherA"), "users", "adminA")));
   await assertFails(getDoc(doc(as("adminA"), "users", "teacherA")));
   await assertFails(getDoc(doc(as("adminB"), "users", "adminA")));

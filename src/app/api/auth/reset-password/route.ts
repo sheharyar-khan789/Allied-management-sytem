@@ -14,7 +14,7 @@ import {
 import { confirmFirebasePasswordResetServer, setAuthPasswordServer } from "@/lib/firebase/auth-password";
 import { BCRYPT_COST, checkPasswordPolicy, hashResetToken, looksLikeResetToken } from "@/lib/password-reset";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
-import { getClientIp } from "@/lib/request-security";
+import { getClientIp, rejectCrossSite } from "@/lib/request-security";
 import { securityLog } from "@/lib/security-log";
 
 /** Reset submissions per IP per 15 minutes (tokens are 256-bit; this caps abuse and noise). */
@@ -34,6 +34,8 @@ function tokenError(status: Exclude<ConsumeResetTokenResult, "OK">) {
 }
 
 export async function POST(req: NextRequest) {
+  const csrfBlocked = rejectCrossSite(req);
+  if (csrfBlocked) return csrfBlocked;
   const clientIp = getClientIp(req.headers);
   const rateKey = `reset-pwd:${clientIp}`;
   const rate = checkAuthRateLimit(rateKey, RESET_MAX_ATTEMPTS, RESET_WINDOW_SECONDS);

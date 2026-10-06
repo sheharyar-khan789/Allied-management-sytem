@@ -791,7 +791,9 @@ async function runSecurityTests() {
     const rules = fs.readFileSync(path.resolve(__dirname, "../firestore.rules"), "utf-8");
     const usersBlock = rules.slice(rules.indexOf("match /users/{userId}"), rules.indexOf("match /students/{studentId}"));
     const teachersBlock = rules.slice(rules.indexOf("match /teachers/{teacherId}"), rules.indexOf("match /classes/{classId}"));
-    assert(usersBlock.includes("request.auth.uid == userId") && !usersBlock.includes("isTeacher()") && !usersBlock.includes("isAdmin()"), "38a. Firestore rules: a profile (password hash) is readable only by its owner");
+    // Stricter than the earlier owner-only rule: a profile holds the TOTP secret, and an owner
+    // read with just the password would defeat admin 2FA. No client reads profiles at all.
+    assert(/allow read:\s*if false;/.test(usersBlock) && !/allow read:\s*if (?!false)/.test(usersBlock) && !usersBlock.includes("isTeacher()") && !usersBlock.includes("isAdmin()"), "38a. Firestore rules: no client can read any profile (password hash, 2FA secret), not even its own");
     assert(teachersBlock.includes("isAdmin()") && teachersBlock.includes("callerTeacherId() == teacherId"), "38b. Firestore rules: teacher records (salary) readable by admins or the teacher only");
   }
 

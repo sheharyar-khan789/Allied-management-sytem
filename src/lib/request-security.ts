@@ -46,7 +46,7 @@ export function isCrossSiteStateChange(req: RequestLike, env: Record<string, str
       }
     })();
     if (host) allowed.add(`${proto}://${host}`);
-    for (const extra of (env.CSRF_TRUSTED_ORIGINS || env.NEXT_PUBLIC_APP_URL || "").split(",")) {
+    for (const extra of `${env.NEXT_PUBLIC_APP_URL || ""},${env.CSRF_TRUSTED_ORIGINS || ""}`.split(",")) {
       const v = extra.trim();
       if (!v) continue;
       try {
@@ -71,6 +71,19 @@ export function isCrossSiteStateChange(req: RequestLike, env: Record<string, str
 
   const fetchSite = (req.headers.get("sec-fetch-site") || "").toLowerCase();
   return fetchSite === "cross-site" || fetchSite === "same-site";
+}
+
+/**
+ * In-route CSRF guard for the unauthenticated auth endpoints (login, register, password reset,
+ * logout), which don't go through requireAuth. Middleware applies the same check first; this
+ * keeps it in force if middleware is ever bypassed. Returns a 403 response, or null to proceed.
+ */
+export function rejectCrossSite(req: RequestLike, env: Record<string, string | undefined> = process.env): Response | null {
+  if (!isCrossSiteStateChange(req, env)) return null;
+  return new Response(JSON.stringify({ error: "Forbidden: cross-site request blocked." }), {
+    status: 403,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 /**

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserByEmailServer, createAuditLogServer } from "@/lib/firebase/server-db";
 import { sendPasswordSetupLink } from "@/lib/account-email";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
-import { getClientIp } from "@/lib/request-security";
+import { getClientIp, rejectCrossSite } from "@/lib/request-security";
 import { securityLog } from "@/lib/security-log";
 
 /** Reset emails per address per hour; beyond this the request is silently dropped (same response). */
@@ -17,6 +17,8 @@ const GENERIC_SUCCESS_RESPONSE = {
 };
 
 export async function POST(req: NextRequest) {
+  const csrfBlocked = rejectCrossSite(req);
+  if (csrfBlocked) return csrfBlocked;
   // Extract client IP for rate limiting
   const clientIp = getClientIp(req.headers);
 
