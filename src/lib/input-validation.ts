@@ -132,3 +132,53 @@ export const documentsArray = z
     })
   )
   .max(50);
+
+/** Optional reference to another record: an id, or empty/null for "none". */
+const optionalRef = z.union([idString, z.literal(""), z.null()]).optional();
+
+/**
+ * Body schemas for routes that pick their fields explicitly. Required-field checks stay in the
+ * handlers (with their existing messages); these reject unknown fields, wrong types and
+ * oversized values before anything reaches the database.
+ */
+export const classBodySchema = z
+  .object({
+    id: idString.optional(),
+    name: shortText(80).optional(),
+    section: shortText(40).optional(),
+    roomNumber: shortText(40).optional(),
+    capacity: z.union([z.number().finite().min(0).max(10_000), z.string().trim().max(10), z.null()]).optional(),
+    classTeacherId: optionalRef,
+  })
+  .strict();
+
+export const subjectBodySchema = z
+  .object({
+    id: idString.optional(),
+    name: shortText(120).optional(),
+    code: shortText(40).optional(),
+    classId: optionalRef,
+    teacherId: optionalRef,
+    credits: z.union([z.number().finite().min(0).max(100), z.string().trim().max(10), z.null()]).optional(),
+  })
+  .strict();
+
+export const attendanceBodySchema = z
+  .object({
+    classId: idString.optional(),
+    subjectId: optionalRef,
+    date: z.string().max(20).optional(),
+    records: z
+      .array(
+        z
+          .object({
+            studentId: idString,
+            status: z.string().max(20),
+            remarks: z.union([z.string().max(500), z.null()]).optional(),
+          })
+          .strict()
+      )
+      .max(500)
+      .optional(),
+  })
+  .strict();

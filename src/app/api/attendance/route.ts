@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
+import { attendanceBodySchema, parseJsonBody } from "@/lib/input-validation";
 import {
   getStudentsServer,
   getAttendanceServer,
@@ -108,7 +109,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
-    const body = await req.json();
+    const parsedBody = await parseJsonBody(req, attendanceBodySchema);
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.data;
     const { classId, date, records } = body;
     const subjectId: string | null =
       typeof body.subjectId === "string" && body.subjectId.trim() ? body.subjectId.trim() : null;

@@ -1,6 +1,6 @@
 ﻿import React from "react";
 import AdminShell from "@/components/AdminShell";
-import { getAuthenticatedUser } from "@/lib/firebase/server-auth";
+import { requirePageRole } from "@/lib/page-auth";
 import { getStudentsServer, getTeachersServer, getSchoolSettingsServer } from "@/lib/firebase/server-db";
 export const dynamic = 'force-dynamic';
 export default async function AdminLayout({
@@ -8,7 +8,7 @@ export default async function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getAuthenticatedUser();
+  const session = await requirePageRole("ADMIN");
   // No hardcoded tenant fallback. This previously defaulted to the literal schoolId
   // "allied-school-main", so any request that reached this layout without a resolvable session
   // would have read (and displayed) a different tenant's real student and teacher counts.

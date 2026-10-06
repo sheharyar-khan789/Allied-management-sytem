@@ -1,9 +1,9 @@
 import React, { Suspense } from "react";
-import { getAuthenticatedUser } from "@/lib/firebase/server-auth";
+import { requirePageRole } from "@/lib/page-auth";
 import ParentNav from "@/components/ParentNav";
 
 export default async function ParentLayout({ children }: { children: React.ReactNode }) {
-  const session = await getAuthenticatedUser();
+  const session = await requirePageRole("PARENT");
 
   return (
     <div className="min-h-screen bg-background flex flex-col">

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
+import { classBodySchema, parseJsonBody } from "@/lib/input-validation";
 import {
   getClassesServer,
   getClassByIdServer,
@@ -94,7 +95,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsedBody = await parseJsonBody(req, classBodySchema);
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.data;
     const { name, section, roomNumber, capacity, classTeacherId } = body;
 
     if (!name || !section) {
@@ -198,7 +201,9 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsedBody = await parseJsonBody(req, classBodySchema);
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.data;
     const { id, name, section, roomNumber, capacity, classTeacherId } = body;
 
     if (!id || !name || !section) {

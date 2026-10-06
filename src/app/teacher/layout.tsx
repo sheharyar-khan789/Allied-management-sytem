@@ -1,6 +1,6 @@
 ﻿import React from "react";
 import TeacherNav from "@/components/TeacherNav";
-import { getAuthenticatedUser } from "@/lib/firebase/server-auth";
+import { requirePageRole } from "@/lib/page-auth";
 import { resolveAuthenticatedTeacher } from "@/lib/academic-access";
 
 export default async function TeacherLayout({
@@ -8,7 +8,7 @@ export default async function TeacherLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getAuthenticatedUser();
+  const session = await requirePageRole("TEACHER");
 
   let teacherName = session?.name || "Faculty Member";
   // No fabricated professional title. This previously defaulted to
