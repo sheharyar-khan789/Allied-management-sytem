@@ -18,7 +18,7 @@
     "test:teacher-scoping": "tsx scripts/teacher-scoping-test.ts",
     "test:teacher-access": "tsx scripts/teacher-allocation-timetable-auth-test.ts",
     "postinstall": "patch-package",
-    "test:rules": "firebase emulators:exec --project demo-allied-rules-test --only firestore,storage \"node --test tests/rules/\""
+    "test:rules": "firebase emulators:exec --project demo-allied-rules-test --only firestore,storage \"node --test tests/rules/firestore-storage.rules.test.mjs\""
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

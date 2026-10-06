@@ -46,4 +46,4 @@ jobs:
       - run: npm ci
       - run: npm i --no-save firebase-tools@14 @firebase/rules-unit-testing@5
       # demo-* project id: the emulator refuses to talk to any real project.
-      - run: npx firebase emulators:exec --project demo-allied-rules-test --only firestore,storage "node --test tests/rules/"
+      - run: npx firebase emulators:exec --project demo-allied-rules-test --only firestore,storage "node --test tests/rules/firestore-storage.rules.test.mjs"
