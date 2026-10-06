@@ -220,6 +220,10 @@ export async function sendViaFirebaseAuth(email: string, continueUrl: string | n
   }
 }
 
+function headerSafe(value: string): string {
+  return String(value).replace(/[\r\n\u2028\u2029]+/g, " ").trim();
+}
+
 /**
  * Sends the password reset / account activation email through the configured provider(s):
  * Resend first, then SMTP. Reports `delivered: true` only when a provider actually accepted the
@@ -232,12 +236,14 @@ export async function sendPasswordResetEmail(
 ): Promise<EmailDeliveryResult> {
   const { to, recipientName = "User", schoolName = "Allied School", resetUrl, purpose = "RESET" } = options;
   const activation = purpose === "ACTIVATION";
-  const subject = activation ? `Activate your ${schoolName} account` : `Reset your ${schoolName} password`;
+  // Header values never carry CR/LF (school names are admin-entered), so no header can be injected
+  // whatever the transport does with them.
+  const subject = headerSafe(activation ? `Activate your ${schoolName} account` : `Reset your ${schoolName} password`);
   const html = buildPasswordResetHtml({ recipientName, schoolName, resetUrl, purpose });
   const text = activation
     ? `Account Activation - ${schoolName}\n\nHello ${recipientName},\n\nAn account has been created for you. Use the following secure link to choose your password and activate it:\n\n${resetUrl}\n\nThis link is single-use and will expire in ${linkLifetimeText(purpose)}.\n\nIf you were not expecting this account, please ignore this email.`
     : `Password Reset Request - ${schoolName}\n\nHello ${recipientName},\n\nA password reset was requested for your account. Please use the following secure link to set your new password:\n\n${resetUrl}\n\nThis link is single-use and will expire in ${linkLifetimeText(purpose)}.\n\nIf you did not request this, please ignore this email.`;
-  const msg = { to, subject, html, text };
+  const msg = { to: headerSafe(to), subject, html, text };
 
   const { providers, missingForResend, missingForSmtp } = getEmailConfigStatus(env);
   const failures: string[] = [];
