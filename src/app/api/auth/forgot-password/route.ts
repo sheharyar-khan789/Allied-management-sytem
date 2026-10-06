@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserByEmailServer, createAuditLogServer } from "@/lib/firebase/server-db";
 import { sendPasswordSetupLink } from "@/lib/account-email";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
+import { getClientIp } from "@/lib/request-security";
+import { securityLog } from "@/lib/security-log";
+
+/** Reset emails per address per hour; beyond this the request is silently dropped (same response). */
+const PER_EMAIL_MAX = 5;
+const PER_EMAIL_WINDOW_SECONDS = 3600;
 
 export const dynamic = "force-dynamic";
 
@@ -12,8 +18,7 @@ const GENERIC_SUCCESS_RESPONSE = {
 
 export async function POST(req: NextRequest) {
   // Extract client IP for rate limiting
-  const forwarded = req.headers.get("x-forwarded-for");
-  const clientIp = forwarded ? forwarded.split(",")[0].trim() : (req.headers.get("x-real-ip") || "127.0.0.1");
+  const clientIp = getClientIp(req.headers);
 
   // Rate limit: max 5 forgot-password requests per 15 minutes per IP
   const rateKey = `forgot-pwd:${clientIp}`;
@@ -41,7 +46,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const rawEmail = (body.email || body.identifier || "").toString().trim().toLowerCase();
+  const rawEmail = (body?.email || body?.identifier || "").toString().trim().toLowerCase().slice(0, 254);
 
   // Basic email syntax validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -54,6 +59,15 @@ export async function POST(req: NextRequest) {
 
   // Record this attempt against rate limiter
   recordAuthFailure(rateKey, 5, 900);
+
+  // Per-address limit stops mail-bombing one inbox from many IPs. The response stays identical
+  // so it can't be used to learn whether the address exists.
+  const emailKey = `forgot-email:${rawEmail}`;
+  if (!checkAuthRateLimit(emailKey, PER_EMAIL_MAX, PER_EMAIL_WINDOW_SECONDS).allowed) {
+    securityLog("auth.reset_rate_limited", { subject: rawEmail, ip: clientIp, reason: "per_email" });
+    return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
+  }
+  recordAuthFailure(emailKey, PER_EMAIL_MAX, PER_EMAIL_WINDOW_SECONDS);
 
   try {
     const user = await getUserByEmailServer(rawEmail);

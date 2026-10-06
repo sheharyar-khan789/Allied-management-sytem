@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
+import { findForbiddenFields, forbiddenFieldsResponse, isSafeStoredUrl } from "@/lib/input-validation";
 import {
   getTeachersServer,
   saveTeacherServer,
@@ -93,7 +94,23 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json({ error: "Request body must be a JSON object." }, { status: 400 });
+    }
+    const forbiddenFields = findForbiddenFields(body, ["teacherId", "assignedSubjectIds"]);
+    if (forbiddenFields.length > 0) return forbiddenFieldsResponse(forbiddenFields);
+    if (body.photoUrl !== undefined && body.photoUrl !== null && !isSafeStoredUrl(body.photoUrl)) {
+      return NextResponse.json({ error: "photoUrl must be an https:// URL." }, { status: 400 });
+    }
+    for (const [key, max] of Object.entries({ firstName: 80, lastName: 80, designation: 120, qualification: 200, specialization: 120, phone: 30, email: 254 })) {
+      if (body[key] !== undefined && body[key] !== null && (typeof body[key] !== "string" || body[key].length > max)) {
+        return NextResponse.json({ error: `${key} must be text of at most ${max} characters.` }, { status: 400 });
+      }
+    }
+    if (body.status !== undefined && !["ACTIVE", "INACTIVE"].includes(body.status)) {
+      return NextResponse.json({ error: "status must be ACTIVE or INACTIVE." }, { status: 400 });
+    }
 
     const {
       firstName,

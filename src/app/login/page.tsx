@@ -15,6 +15,9 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
+  // Admin two-factor step (only when the server asks for it).
+  const [mfaRequired, setMfaRequired] = useState(false);
+  const [totpCode, setTotpCode] = useState("");
 
   // Forgot Password modal
   const [showForgotModal, setShowForgotModal] = useState(false);
@@ -54,7 +57,7 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier, password, idToken, role }),
+        body: JSON.stringify({ identifier, password, idToken, role, ...(mfaRequired ? { totpCode } : {}) }),
       });
 
       let data: any = {};
@@ -75,6 +78,10 @@ export default function LoginPage() {
       }
 
       if (!res.ok) {
+        if (data?.mfaRequired) {
+          setMfaRequired(true);
+          setTotpCode("");
+        }
         throw new Error(data?.error || "Login failed. Please verify credentials.");
       }
 
@@ -307,6 +314,26 @@ export default function LoginPage() {
                     </button>
                   </div>
                 </div>
+
+                {mfaRequired && (
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="login-totp" className="font-label-md text-xs font-bold text-on-surface uppercase tracking-wider">
+                      Authentication code
+                    </label>
+                    <input
+                      id="login-totp"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      pattern="[0-9]{6}"
+                      maxLength={6}
+                      required
+                      value={totpCode}
+                      onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      placeholder="6-digit code from your authenticator app"
+                      className="w-full h-11 px-3 bg-surface-container-lowest text-on-surface font-body-md text-sm rounded-lg border border-outline-variant focus:border-secondary focus:ring-2 focus:ring-secondary/20 focus:outline-none transition-all tracking-widest"
+                    />
+                  </div>
+                )}
 
                 {/* Utilities Row */}
                 <div className="flex items-center justify-between pt-1">

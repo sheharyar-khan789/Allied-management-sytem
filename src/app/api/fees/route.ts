@@ -1,6 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { requireAuth } from "@/lib/firebase/server-auth";
+import { requireAuth, requireRecentAuth } from "@/lib/firebase/server-auth";
+import { z } from "zod";
+import { idString, money, parseJsonBody, safeUrl, year as yearSchema } from "@/lib/input-validation";
+
+const challanCreateSchema = z.object({
+  studentId: idString,
+  classId: idString,
+  month: z.string().trim().min(1).max(20),
+  year: yearSchema,
+  dueDate: z.string().trim().min(8).max(20),
+  tuitionFee: money,
+  admissionFee: money.optional(),
+  examFee: money.optional(),
+  otherFee: money.optional(),
+  discount: money.optional(),
+  notes: z.string().trim().max(500).optional(),
+});
+
+// Money state (paidAmount, balanceAmount, status) is never accepted from the client: a payment
+// only ever adds a positive, balance-capped amount computed on the server.
+const paymentSchema = z.object({
+  challanId: idString,
+  amount: z.coerce.number().finite().positive().max(100_000_000),
+  paymentMethod: z.string().trim().max(40).optional(),
+  notes: z.string().trim().max(500).optional(),
+  receiptUrl: safeUrl.optional(),
+});
 import {
   getFeeChallansServer,
   getFeeChallanByIdServer,
@@ -114,7 +140,10 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsed = await parseJsonBody(req, challanCreateSchema, ["status", "payments"]);
+    if (!parsed.ok) return parsed.response;
+    requireRecentAuth(authUser, "issue fee challans", req);
+    const body = parsed.data;
 
     const {
       studentId,
@@ -236,8 +265,11 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
-    const { challanId, amount, paymentMethod, notes, receiptUrl } = body;
+    const parsed = await parseJsonBody(req, paymentSchema, ["status", "studentId"]);
+    if (!parsed.ok) return parsed.response;
+    requireRecentAuth(authUser, "record fee payments", req);
+    const { challanId, amount, paymentMethod, notes, receiptUrl } = parsed.data;
+    void paymentMethod;
 
     if (!challanId || amount === undefined || amount <= 0) {
       return NextResponse.json(

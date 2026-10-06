@@ -16,6 +16,33 @@ import {
 import { ExamDoc, ExamResultDoc, ExamScheduleDoc, SchoolSettingsDoc } from "@/lib/firebase/types";
 import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic-access";
 import { validateDateString } from "@/lib/date-utils";
+import { z } from "zod";
+import { idString, parseJsonBody, safeUrl } from "@/lib/input-validation";
+
+const examUpdateSchema = z.union([
+  // Exam cycle metadata (ADMIN only).
+  z.object({
+    examId: idString,
+    examScheduleId: z.undefined().optional(),
+    title: z.string().trim().min(1).max(160).optional(),
+    status: z.enum(["UPCOMING", "ONGOING", "COMPLETED", "PUBLISHED"]).optional(),
+    resultSheetUrl: safeUrl.optional().nullable(),
+  }),
+  // Marks entry for one schedule (ADMIN, or the TEACHER allocated that subject).
+  z.object({
+    examScheduleId: idString,
+    studentMarks: z
+      .array(
+        z.object({
+          studentId: idString,
+          marksObtained: z.coerce.number().finite().min(0).max(100_000),
+          remarks: z.string().trim().max(500).optional(),
+          cardUrl: safeUrl.optional(),
+        })
+      )
+      .max(1000),
+  }),
+]);
 
 // Grade/GPA are derived from the school's own configured grading scale (Settings), falling
 // back to a sane default scale for schools that have not customized one yet. This replaces a
@@ -339,7 +366,10 @@ export async function PATCH(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
-    const body = await req.json();
+    // obtained/percentage/grade/gpa/status/evaluatedBy of a result are always computed here.
+    const parsed = await parseJsonBody(req, examUpdateSchema, ["percentage", "grade", "gpa", "totalMarks", "teacherId"]);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.data as any;
 
     // Support updating exam metadata (such as result sheet URL or status) by ADMIN
     if (body.examId && !body.examScheduleId) {

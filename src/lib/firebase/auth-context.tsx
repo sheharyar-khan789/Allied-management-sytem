@@ -4,7 +4,6 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import {
   User,
   signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
   signOut as fbSignOut,
   sendPasswordResetEmail as fbResetPassword,
   updatePassword as fbUpdatePassword,
@@ -89,11 +88,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     schoolName: string,
     registrationSecret?: string
   ): Promise<void> => {
-    // 1. Create Firebase Auth user on client
-    const cred = await createUserWithEmailAndPassword(auth, email, pass);
-    const idToken = await cred.user.getIdToken();
-
-    // 2. Call server-side atomic registration endpoint (eliminates Firestore rules race conditions)
+    // The server creates the Firebase Auth account (Admin SDK) together with the school and
+    // profile. Creating it here in the browser required Firebase's public self-sign-up to stay
+    // enabled for the whole project, which lets anyone with the public web API key create
+    // accounts; with server-side creation it can be turned off in the Firebase console.
     const res = await fetch("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -102,7 +100,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email,
         password: pass,
         schoolName,
-        idToken,
         registrationSecret,
       }),
     });

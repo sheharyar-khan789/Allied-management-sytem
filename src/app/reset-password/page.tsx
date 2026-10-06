@@ -30,8 +30,8 @@ function ResetPasswordForm() {
       return;
     }
 
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters in length.");
+    if (password.length < 10) {
+      setError("Password must be at least 10 characters in length.");
       return;
     }
 
@@ -126,11 +126,11 @@ function ResetPasswordForm() {
                   id="new-password"
                   type={showPassword ? "text" : "password"}
                   required
-                  minLength={8}
+                  minLength={10}
                   maxLength={128}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Minimum 8 characters"
+                  placeholder="Minimum 10 characters"
                   className="w-full h-11 px-3.5 pr-10 bg-surface-container-lowest text-on-surface text-sm rounded-lg border border-outline-variant focus:border-secondary focus:outline-none"
                 />
                 <button
@@ -154,7 +154,7 @@ function ResetPasswordForm() {
                 id="confirm-password"
                 type={showPassword ? "text" : "password"}
                 required
-                minLength={8}
+                minLength={10}
                 maxLength={128}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
@@ -165,7 +165,7 @@ function ResetPasswordForm() {
 
             <div className="text-[11px] text-on-surface-variant flex items-center gap-1.5 pt-1">
               <span className="material-symbols-outlined text-[15px] text-secondary">info</span>
-              <span>Must be at least 8 characters long.</span>
+              <span>Must be at least 10 characters long.</span>
             </div>
 
             <button

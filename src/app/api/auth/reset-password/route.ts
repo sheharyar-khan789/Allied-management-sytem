@@ -12,7 +12,14 @@ import {
   ConsumeResetTokenResult,
 } from "@/lib/firebase/server-db";
 import { confirmFirebasePasswordResetServer, setAuthPasswordServer } from "@/lib/firebase/auth-password";
-import { hashResetToken, isValidPassword, looksLikeResetToken } from "@/lib/password-reset";
+import { BCRYPT_COST, checkPasswordPolicy, hashResetToken, looksLikeResetToken } from "@/lib/password-reset";
+import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
+import { getClientIp } from "@/lib/request-security";
+import { securityLog } from "@/lib/security-log";
+
+/** Reset submissions per IP per 15 minutes (tokens are 256-bit; this caps abuse and noise). */
+const RESET_MAX_ATTEMPTS = 10;
+const RESET_WINDOW_SECONDS = 900;
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +34,18 @@ function tokenError(status: Exclude<ConsumeResetTokenResult, "OK">) {
 }
 
 export async function POST(req: NextRequest) {
+  const clientIp = getClientIp(req.headers);
+  const rateKey = `reset-pwd:${clientIp}`;
+  const rate = checkAuthRateLimit(rateKey, RESET_MAX_ATTEMPTS, RESET_WINDOW_SECONDS);
+  if (!rate.allowed) {
+    securityLog("auth.reset_rate_limited", { ip: clientIp, status: 429 });
+    return NextResponse.json(
+      { error: `Too many password reset attempts. Please wait ${Math.ceil(rate.resetInSeconds / 60)} minutes.` },
+      { status: 429, headers: { "Retry-After": String(rate.resetInSeconds) } }
+    );
+  }
+  recordAuthFailure(rateKey, RESET_MAX_ATTEMPTS, RESET_WINDOW_SECONDS);
+
   let body: any;
   try {
     body = await req.json();
@@ -42,11 +61,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Password reset token is required." }, { status: 400 });
   }
 
-  if (!isValidPassword(newPassword)) {
-    return NextResponse.json(
-      { error: "New password must be between 8 and 128 characters in length." },
-      { status: 400 }
-    );
+  const basicPolicyError = checkPasswordPolicy(newPassword);
+  if (basicPolicyError) {
+    return NextResponse.json({ error: basicPolicyError }, { status: 400 });
   }
 
   // A Firebase Authentication action code (the link from Firebase's own password email, when the
@@ -59,7 +76,7 @@ export async function POST(req: NextRequest) {
       const user = await getUserByEmailServer(confirmed.email);
       if (user) {
         const nowIso = new Date().toISOString();
-        await updateUserServer({ ...user, passwordHash: bcrypt.hashSync(newPassword, 10) });
+        await updateUserServer({ ...user, passwordHash: await bcrypt.hash(newPassword, BCRYPT_COST) });
         await revokeUserSessionsServer(user.uid, nowIso);
         await createAuditLogServer(
           user.schoolId, user.uid, user.email, user.role,
@@ -89,15 +106,18 @@ export async function POST(req: NextRequest) {
     // The link is bound to the account and the email it was sent to.
     if (!user || user.email.toLowerCase() !== record!.email.toLowerCase()) return tokenError("INVALID");
     if (user.status === "SUSPENDED" || user.status === "INACTIVE") return tokenError("INVALID");
+    const policyError = checkPasswordPolicy(newPassword, { email: user.email, name: user.name });
+    if (policyError) return NextResponse.json({ error: policyError }, { status: 400 });
 
     // Firebase Auth first: if it fails, nothing is consumed and the link stays usable.
     await setAuthPasswordServer(user, newPassword);
 
-    const passwordHash = bcrypt.hashSync(newPassword, 10);
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
     const consumed = await consumePasswordResetTokenServer(tokenHash, user.uid, passwordHash);
     if (consumed !== "OK") return tokenError(consumed);
 
     const activation = record!.purpose === "ACTIVATION";
+    securityLog("auth.password_reset_completed", { subject: user.uid, role: user.role, schoolId: user.schoolId, reason: record!.purpose || "RESET" });
     await createAuditLogServer(
       user.schoolId,
       user.uid,

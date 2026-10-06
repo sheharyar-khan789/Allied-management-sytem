@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth } from "@/lib/firebase/server-auth";
+import { requireAuth, requireRecentAuth } from "@/lib/firebase/server-auth";
+import { z } from "zod";
+import { parseJsonBody, safeUrl } from "@/lib/input-validation";
 import {
   getSchoolSettingsServer,
   updateSchoolSettingsServer,
@@ -77,10 +79,29 @@ export async function GET(req: NextRequest) {
   }
 }
 
+const text = (max: number) => z.string().trim().max(max).optional();
+const settingsSchema = z.object({
+  schoolName: text(160),
+  campusName: text(160),
+  tagline: text(200),
+  contactEmail: z.string().trim().max(254).optional().or(z.literal("")),
+  contactPhone: text(40),
+  address: text(300),
+  academicYear: text(9),
+  currencySymbol: text(8),
+  gradingSystem: text(80),
+  logoUrl: safeUrl.optional().nullable(),
+});
+
 export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    // The page sends back what GET returned; unknown keys are dropped (the tenant is always the
+    // session's school), every kept field is length-bounded, and the logo must be an https URL.
+    const parsed = await parseJsonBody(req, settingsSchema);
+    if (!parsed.ok) return parsed.response;
+    requireRecentAuth(authUser, "change school settings", req);
+    const body = parsed.data;
 
     if (body.schoolName !== undefined && !String(body.schoolName).trim()) {
       return NextResponse.json({ error: "Institution name cannot be empty." }, { status: 400 });
@@ -121,7 +142,7 @@ export async function PUT(req: NextRequest) {
         || current?.gradingSystemLabel
         || "Standard 4.0 / Percentage",
       gradingScale: current?.gradingScale || [],
-      logoUrl: body.logoUrl !== undefined ? body.logoUrl : (current?.logoUrl || school?.logoUrl || ""),
+      logoUrl: body.logoUrl !== undefined ? (body.logoUrl ?? "") : (current?.logoUrl || school?.logoUrl || ""),
       updatedAt: new Date().toISOString(),
     };
 

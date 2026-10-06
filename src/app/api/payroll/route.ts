@@ -1,5 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAuth } from "@/lib/firebase/server-auth";
+import { requireAuth, requireRecentAuth } from "@/lib/firebase/server-auth";
+import { z } from "zod";
+import { idString, money, monthName, parseJsonBody, year as yearSchema } from "@/lib/input-validation";
+import { validateDateString } from "@/lib/date-utils";
+
+const payrollSchema = z.object({
+  teacherId: idString,
+  month: monthName,
+  year: yearSchema,
+  status: z.string().trim().toUpperCase().pipe(z.enum(["PAID", "UNPAID"])).optional(),
+  paidDate: z.string().trim().max(20).optional().or(z.literal("")),
+  amount: money.optional().nullable(),
+  notes: z.string().trim().max(500).optional(),
+});
 import {
   getTeachersServer,
   getTeacherByIdServer,
@@ -112,9 +125,13 @@ export async function PUT(req: NextRequest) {
 async function handleSavePayroll(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
-
-    const { teacherId, month, year, status, paidDate, amount, notes } = body;
+    const parsed = await parseJsonBody(req, payrollSchema);
+    if (!parsed.ok) return parsed.response;
+    requireRecentAuth(authUser, "change payroll", req);
+    const { teacherId, month, year, status, paidDate, amount, notes } = parsed.data;
+    if (paidDate && !validateDateString(paidDate)) {
+      return NextResponse.json({ error: "paidDate is not a valid date." }, { status: 400 });
+    }
 
     if (!teacherId || !month || !year) {
       return NextResponse.json(
@@ -142,7 +159,7 @@ async function handleSavePayroll(req: NextRequest) {
 
     const resolvedPaidDate =
       resolvedStatus === "PAID"
-        ? (paidDate ? String(paidDate) : new Date().toISOString().split("T")[0])
+        ? (paidDate ? validateDateString(paidDate)! : new Date().toISOString().split("T")[0])
         : undefined;
 
     const recordId = `payrec_${authUser.schoolId}_${teacherId}_${year}_${String(month).toLowerCase()}`;

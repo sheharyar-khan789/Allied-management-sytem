@@ -13,6 +13,8 @@ import {
   STUDENT_IMPORT_BATCH_SIZE,
 } from "@/lib/firebase/server-db";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
+import { generateInitialPassword } from "@/lib/password-reset";
+import { neutralizeSpreadsheetFormula } from "@/lib/spreadsheet-parser";
 import { StudentDoc, UserProfile } from "@/lib/firebase/types";
 import { parseCsv, parseXlsx, SheetRows, SpreadsheetParseError } from "@/lib/spreadsheet-parser";
 import {
@@ -131,7 +133,7 @@ function sanitizeInput(raw: unknown): ImportRowInput {
   if (!raw || typeof raw !== "object") return input;
   for (const field of IMPORT_FIELDS) {
     const v = (raw as Record<string, unknown>)[field];
-    if (typeof v === "string" && v.trim()) input[field] = v.trim().slice(0, MAX_VALUE_LENGTH);
+    if (typeof v === "string" && v.trim()) input[field] = neutralizeSpreadsheetFormula(v.trim()).slice(0, MAX_VALUE_LENGTH);
   }
   return input;
 }
@@ -149,6 +151,8 @@ type RowOutcome = {
   fullName?: string;
   className?: string;
   loginEmail?: string;
+  /** Returned once so the admin can hand it to the student; never stored in clear. */
+  initialPassword?: string;
 };
 
 async function commit(authUser: AuthenticatedUser, req: NextRequest) {
@@ -230,11 +234,20 @@ async function commit(authUser: AuthenticatedUser, req: NextRequest) {
     ready.push({ row: p.row, admissionNo: p.admissionNo, loginEmail });
   }
 
-  const initialPassword = process.env.DEFAULT_STUDENT_INITIAL_PASSWORD || "Student@123";
-  const passwordHash = bcrypt.hashSync(initialPassword, 10);
-  // Same hash for Firebase Auth's BCRYPT importer, in the widely supported $2a$ form ($2b$ only
-  // differs for passwords over 255 bytes).
-  const firebasePasswordHash = Buffer.from(passwordHash.replace(/^\$2b\$/, "$2a$"));
+  // Every imported student gets their own random initial password (returned once, for the
+  // admin's "Download login list"). It replaces a shared default ("Student@123", published in the
+  // repository) that, with predictable login emails, let any student sign in as any classmate.
+  // The work factor is lower than for user-chosen passwords only because these are 120-bit
+  // random values (infeasible to brute-force at any cost) and 500 rows must hash in seconds;
+  // the password the student sets later uses BCRYPT_COST.
+  const IMPORT_INITIAL_PASSWORD_COST = 6;
+  const initialPasswords = new Map<number, string>();
+  const hashes = new Map<number, string>();
+  for (const item of ready) {
+    const pwd = generateInitialPassword();
+    initialPasswords.set(item.row.rowNumber, pwd);
+    hashes.set(item.row.rowNumber, await bcrypt.hash(pwd, IMPORT_INITIAL_PASSWORD_COST));
+  }
   const nowIso = new Date().toISOString();
   const today = nowIso.split("T")[0];
 
@@ -285,7 +298,7 @@ async function commit(authUser: AuthenticatedUser, req: NextRequest) {
         schoolId,
         studentId,
         status: "ACTIVE",
-        passwordHash,
+        passwordHash: hashes.get(item.row.rowNumber)!,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
@@ -303,7 +316,8 @@ async function commit(authUser: AuthenticatedUser, req: NextRequest) {
             email: user.email,
             emailVerified: true,
             displayName: user.name,
-            passwordHash: firebasePasswordHash,
+            // Firebase's BCRYPT importer, in the widely supported $2a$ form.
+            passwordHash: Buffer.from(user.passwordHash!.replace(/^\$2b\$/, "$2a$")),
             customClaims: { role: "STUDENT", schoolId, studentId: student.id },
           })),
           { hash: { algorithm: "BCRYPT" } }
@@ -337,6 +351,7 @@ async function commit(authUser: AuthenticatedUser, req: NextRequest) {
           fullName: student.fullName,
           className: student.className,
           loginEmail: student.email,
+          initialPassword: initialPasswords.get(item.row.rowNumber),
         });
       }
     } catch (e: any) {
@@ -375,7 +390,7 @@ async function commit(authUser: AuthenticatedUser, req: NextRequest) {
     results: outcomes,
     initialPasswordNote:
       summary.imported > 0
-        ? "Imported students sign in with their login email and the default initial student password, and should change it after first sign-in."
+        ? "Each imported student has their own initial password. Use \"Download login list\" now (passwords are shown only once) and ask students to change it after first sign-in."
         : undefined,
   });
 }

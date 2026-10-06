@@ -17,7 +17,8 @@
     "test:fix-phase": "tsx scripts/production-fix-phase-test.ts",
     "test:teacher-scoping": "tsx scripts/teacher-scoping-test.ts",
     "test:teacher-access": "tsx scripts/teacher-allocation-timetable-auth-test.ts",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package",
+    "test:rules": "firebase emulators:exec --project demo-allied-rules-test --only firestore,storage \"node --test tests/rules/\""
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -27,8 +28,8 @@
     "firebase-admin": "^14.4.0",
     "jose": "^6.1.3",
     "lucide-react": "^1.16.0",
-    "next": "^15.2.1",
-    "nodemailer": "^7.0.13",
+    "next": "^15.5.27",
+    "nodemailer": "^10.0.14",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.0.2",
@@ -42,7 +43,7 @@
     "@types/react-dom": "^19.0.4",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^15.2.1",
+    "eslint-config-next": "^15.5.27",
     "patch-package": "^8.0.1",
     "postcss": "^8.5.3",
     "postinstall-postinstall": "^2.1.0",

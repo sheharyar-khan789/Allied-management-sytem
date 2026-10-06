@@ -16,6 +16,46 @@ import {
 } from "@/lib/firebase/server-db";
 import { assertCanViewStudent } from "@/lib/academic-access";
 import { linkGuardianEmailToStudent } from "@/lib/link-parent";
+import { requireRecentAuth } from "@/lib/firebase/server-auth";
+import { syncLoginActive } from "@/lib/account-status";
+import { z } from "zod";
+import { documentsArray, idString, parseJsonBody, safeUrl } from "@/lib/input-validation";
+
+const optText = (max: number) => z.string().trim().max(max).optional().or(z.literal(""));
+const optEmail = z.string().trim().max(254).email().optional().or(z.literal(""));
+
+// Unknown keys are dropped; server-controlled keys (schoolId, userId, parentUserIds, admissionNo,
+// fee balances, audit fields, ...) are rejected by parseJsonBody before this runs.
+const studentFieldsSchema = {
+  firstName: optText(80),
+  lastName: optText(80),
+  fullName: optText(160),
+  rollNumber: optText(30),
+  rollNo: optText(30),
+  gender: z.enum(["Male", "Female", "MALE", "FEMALE"]).optional(),
+  dob: optText(20),
+  admissionDate: optText(20),
+  bloodGroup: optText(20),
+  cnicBForm: optText(30),
+  contactNumber: optText(30),
+  phone: optText(30),
+  email: optEmail,
+  address: optText(300),
+  classId: idString.optional(),
+  guardianName: optText(120),
+  fatherName: optText(120),
+  guardianRelation: optText(40),
+  guardianPhone: optText(30),
+  guardianEmail: optEmail,
+  guardianOccupation: optText(80),
+  photoUrl: safeUrl.optional(),
+  documents: documentsArray.optional(),
+};
+
+const studentUpdateSchema = z.object({
+  ...studentFieldsSchema,
+  status: z.enum(["ACTIVE", "INACTIVE", "ALUMNI", "EXPELLED"]).optional(),
+});
 
 export async function GET(
   req: NextRequest,
@@ -190,7 +230,9 @@ export async function PUT(
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const { id } = await params;
-    const body = await req.json();
+    const parsed = await parseJsonBody(req, studentUpdateSchema);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.data as z.infer<typeof studentUpdateSchema> & Record<string, any>;
 
     const existing = await getStudentByIdServer(authUser.schoolId, id);
     if (!existing) {
@@ -244,6 +286,9 @@ export async function PUT(
     }
 
     await saveStudentServer(updated);
+    if (updated.status !== existing.status) {
+      await syncLoginActive(existing.userId, authUser.schoolId, updated.status === "ACTIVE");
+    }
 
     if (updated.guardianEmail) {
       await linkGuardianEmailToStudent({
@@ -290,6 +335,10 @@ export async function DELETE(
     }
 
     const isPermanent = req.nextUrl.searchParams.get("permanent") === "true";
+    requireRecentAuth(authUser, isPermanent ? "delete a student record" : "archive a student", req);
+    // Either way the student's own login stops working immediately.
+    await syncLoginActive(existing.userId, authUser.schoolId, false);
+
     if (isPermanent) {
       await deleteStudentServer(authUser.schoolId, id);
       await createAuditLogServer(

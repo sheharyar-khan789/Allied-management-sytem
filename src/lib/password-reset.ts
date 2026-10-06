@@ -8,15 +8,75 @@ export const RESET_TOKEN_TTL_MS = RESET_TOKEN_TTL_MINUTES * 60 * 1000;
 export const ACTIVATION_TOKEN_TTL_HOURS = 72;
 export const ACTIVATION_TOKEN_TTL_MS = ACTIVATION_TOKEN_TTL_HOURS * 60 * 60 * 1000;
 
-export const MIN_PASSWORD_LENGTH = 8;
+export const MIN_PASSWORD_LENGTH = 10;
 export const MAX_PASSWORD_LENGTH = 128;
+/** bcrypt work factor for every password hash this app stores. */
+export const BCRYPT_COST = 12;
+
+/**
+ * Passwords at the top of every breach corpus, plus this deployment's own published demo
+ * passwords (README) and the old shared default student password. Matched case-insensitively,
+ * also after stripping symbols and a short trailing number ("P@ssword123!" -> "password").
+ */
+const COMMON_PASSWORDS = new Set([
+  "123456", "1234567", "12345678", "123456789", "1234567890", "12345678910", "0123456789",
+  "password", "passw0rd", "p4ssw0rd", "qwerty", "qwertyuiop", "1q2w3e4r", "1q2w3e4r5t", "zaq12wsx",
+  "abc", "abcd", "abcdef", "111111", "000000", "121212", "654321", "987654321",
+  "iloveyou", "welcome", "letmein", "admin", "administrator", "root", "toor", "changeme",
+  "monkey", "dragon", "football", "baseball", "cricket", "pakistan", "lahore", "karachi",
+  "islamabad", "sunshine", "princess", "superman", "batman", "trustno1", "master", "secret",
+  "login", "default", "test", "school", "student", "teacher", "parent", "allied", "alliedschool",
+  "adminsecure", "teachersecure", "studentsecure", "parentsecure",
+]);
+
+function normalizeForDenylist(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
 
 export function isValidPassword(password: unknown): password is string {
-  return (
-    typeof password === "string" &&
-    password.length >= MIN_PASSWORD_LENGTH &&
-    password.length <= MAX_PASSWORD_LENGTH
-  );
+  return checkPasswordPolicy(password) === null;
+}
+
+/**
+ * Server-side password policy (NIST SP 800-63B style): length 10–128, not a common/breached or
+ * published demo password, not one repeated character, and not containing the account's own
+ * email name or the person's name. Returns a user-facing message, or null when acceptable.
+ */
+export function checkPasswordPolicy(
+  password: unknown,
+  context: { email?: string | null; name?: string | null } = {}
+): string | null {
+  if (typeof password !== "string") return "Password is required.";
+  if (password.length < MIN_PASSWORD_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
+    return `Password must be between ${MIN_PASSWORD_LENGTH} and ${MAX_PASSWORD_LENGTH} characters.`;
+  }
+  const normalized = normalizeForDenylist(password);
+  const core = normalized.replace(/\d{1,4}$/, "");
+  if (
+    COMMON_PASSWORDS.has(normalized) ||
+    COMMON_PASSWORDS.has(core) ||
+    /^(.)\1+$/.test(password) ||
+    /^\d+$/.test(password)
+  ) {
+    return "This password is too common or easy to guess. Please choose a different one.";
+  }
+  const local = (context.email || "").split("@")[0].toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (local.length >= 4 && normalized.includes(local)) {
+    return "Password must not contain your email address.";
+  }
+  for (const part of (context.name || "").toLowerCase().split(/\s+/)) {
+    const clean = part.replace(/[^a-z0-9]/g, "");
+    if (clean.length >= 4 && normalized.includes(clean)) {
+      return "Password must not contain your name.";
+    }
+  }
+  return null;
+}
+
+/** Cryptographically random initial password handed to an admin once (never stored in clear). */
+export function generateInitialPassword(): string {
+  // 15 random bytes -> 20 base64url chars, plus fixed character classes for legacy checks.
+  return `${crypto.randomBytes(15).toString("base64url")}#7a`;
 }
 
 /**

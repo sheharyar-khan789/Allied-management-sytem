@@ -668,6 +668,77 @@ export async function revokeUserSessionsServer(uid: string, atIso: string = new 
   }
 }
 
+/**
+ * Revokes one session (its `sid` claim) — used by logout so a copied cookie stops working
+ * immediately, while the user's other devices stay signed in. Keeps the last 25 ids; older
+ * sessions have passed their absolute lifetime anyway.
+ */
+export async function revokeSessionIdServer(uid: string, sid: string): Promise<void> {
+  const MAX_KEPT = 25;
+  const merge = (current: string[] | undefined) =>
+    Array.from(new Set([...(current || []), sid])).slice(-MAX_KEPT);
+
+  for (const existing of localStore.users.values()) {
+    if (existing.uid === uid) syncLocalUser(uid, { revokedSessionIds: merge(existing.revokedSessionIds) });
+  }
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("users").doc(uid);
+      await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists) return;
+        const current = (snap.data()?.revokedSessionIds as string[] | undefined) || [];
+        tx.set(ref, { revokedSessionIds: merge(current) }, { merge: true });
+      });
+    } catch (e) {
+      onFirestoreError(`revokeSessionIdServer(${uid})`, e);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ONE-TIME SCHOOL REGISTRATION SECRETS (server-only collection, id = sha256(secret))
+// ---------------------------------------------------------------------------
+const localConsumedRegistrationSecrets = new Set<string>();
+
+/**
+ * Atomically marks a registration secret (by hash) as used. Returns false if it was already used,
+ * so one SCHOOL_REGISTRATION_SECRET value can create exactly one institution; registering another
+ * school requires the operator to set a new secret.
+ */
+export async function consumeRegistrationSecretServer(secretHash: string, schoolId: string): Promise<boolean> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("registrationSecrets").doc(secretHash);
+      return await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists) return false;
+        tx.set(ref, { usedAt: new Date().toISOString(), schoolId });
+        return true;
+      });
+    } catch (e) {
+      onFirestoreError("consumeRegistrationSecretServer", e);
+      throw e;
+    }
+  }
+  if (localConsumedRegistrationSecrets.has(secretHash)) return false;
+  localConsumedRegistrationSecrets.add(secretHash);
+  return true;
+}
+
+/** Undo a consume when the registration it guarded failed and was rolled back. */
+export async function releaseRegistrationSecretServer(secretHash: string): Promise<void> {
+  localConsumedRegistrationSecrets.delete(secretHash);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("registrationSecrets").doc(secretHash).delete();
+    } catch (e) {
+      onFirestoreError("releaseRegistrationSecretServer", e);
+    }
+  }
+}
+
 function syncLocalUser(uid: string, patch: Partial<UserProfile>): void {
   for (const [key, existing] of localStore.users.entries()) {
     if (existing.uid === uid) localStore.users.set(key, { ...existing, ...patch });

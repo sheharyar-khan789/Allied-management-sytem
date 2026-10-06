@@ -87,9 +87,6 @@ service cloud.firestore {
       );
     }
 
-    function isSameSchool(schoolId) {
-      return isAuthenticated() && (getUserSchoolId() == schoolId || isAdmin());
-    }
 
     // -------------------------------------------------------------
     // Defense-in-depth: All mutations (create, update, delete) are
@@ -111,11 +108,11 @@ service cloud.firestore {
     // Users Collection
     // -------------------------------------------------------------
     match /users/{userId} {
-      allow read: if isAuthenticated() && (
-        request.auth.uid == userId ||
-        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isTeacher() && getUserSchoolId() == resource.data.schoolId)
-      );
+      // Profiles hold bcrypt password hashes, 2FA secrets and session-revocation state. The
+      // browser only ever reads its own profile (src/lib/firebase/auth-context.tsx); everything
+      // else goes through the API. Teachers and admins previously could read every profile in
+      // the school, including other users' password hashes.
+      allow read: if isAuthenticated() && request.auth.uid == userId;
       allow write: if false;
     }
 
@@ -123,9 +120,10 @@ service cloud.firestore {
     // Students Collection
     // -------------------------------------------------------------
     match /students/{studentId} {
+      // Teachers are not given direct reads: the API limits them to their allocated classes,
+      // which a school-wide rule here would bypass.
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
         (isStudent() && (resource.data.userId == request.auth.uid || resource.data.id == getUserData().studentId)) ||
         isParentOfStudentResource()
       );
@@ -136,7 +134,10 @@ service cloud.firestore {
     // Teachers Collection
     // -------------------------------------------------------------
     match /teachers/{teacherId} {
-      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      // Teacher records include salary and contact details: admins of the school, or the
+      // teacher themself. Students and parents previously could read every teacher's salary.
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId
+        && (isAdmin() || (isTeacher() && callerTeacherId() == teacherId));
       allow write: if false;
     }
 
@@ -242,9 +243,9 @@ service cloud.firestore {
     // Student Observations Collection
     // -------------------------------------------------------------
     match /studentObservations/{obsId} {
+      // Teachers read observations through the API (class-scoped), not directly.
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
         (isStudent() && resource.data.studentId == getUserData().studentId)
       );
       allow write: if false;
@@ -297,5 +298,10 @@ service cloud.firestore {
         );
       allow write: if false;
     }
+
+    // -------------------------------------------------------------
+    // Everything not matched above (payrollRecords, passwordResetTokens, registrationSecrets and
+    // any future collection) is denied: Firestore rules deny every path no rule allows.
+    // -------------------------------------------------------------
   }
 }

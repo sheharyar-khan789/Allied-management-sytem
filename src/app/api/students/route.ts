@@ -16,6 +16,46 @@ import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { linkGuardianEmailToStudent } from "@/lib/link-parent";
 import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic-access";
 import { validateStudentDates } from "@/lib/date-utils";
+import { BCRYPT_COST, generateInitialPassword } from "@/lib/password-reset";
+import { z } from "zod";
+import { documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
+
+const optText = (max: number) => z.string().trim().max(max).optional().or(z.literal(""));
+const optEmail = z.string().trim().max(254).email().optional().or(z.literal(""));
+
+// Unknown keys are dropped; server-controlled keys (schoolId, userId, parentUserIds, admissionNo,
+// fee balances, audit fields, ...) are rejected by parseJsonBody before this runs.
+const studentFieldsSchema = {
+  firstName: optText(80),
+  lastName: optText(80),
+  fullName: optText(160),
+  rollNumber: optText(30),
+  rollNo: optText(30),
+  gender: z.enum(["Male", "Female", "MALE", "FEMALE"]).optional(),
+  dob: optText(20),
+  admissionDate: optText(20),
+  bloodGroup: optText(20),
+  cnicBForm: optText(30),
+  contactNumber: optText(30),
+  phone: optText(30),
+  email: optEmail,
+  address: optText(300),
+  classId: idString.optional(),
+  guardianName: optText(120),
+  fatherName: optText(120),
+  guardianRelation: optText(40),
+  guardianPhone: optText(30),
+  guardianEmail: optEmail,
+  guardianOccupation: optText(80),
+  photoUrl: safeUrl.optional(),
+  documents: documentsArray.optional(),
+};
+
+const studentCreateSchema = z.object({
+  ...studentFieldsSchema,
+  monthlyFee: money.optional(),
+  discount: money.optional(),
+});
 
 export async function GET(req: NextRequest) {
   try {
@@ -91,7 +131,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsed = await parseJsonBody(req, studentCreateSchema);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.data as z.infer<typeof studentCreateSchema> & Record<string, any>;
 
     const {
       firstName,
@@ -180,8 +222,11 @@ export async function POST(req: NextRequest) {
 
     let userUid = `user_std_${uniqueSuffix}`;
     let createdAuthUid: string | null = null;
-    const initialPassword = process.env.DEFAULT_STUDENT_INITIAL_PASSWORD || "Student@123";
-    const passwordHash = bcrypt.hashSync(initialPassword, 10);
+    // A unique random password per student, shown once to the admin. The old shared default
+    // ("Student@123", published in the repository) combined with predictable login emails
+    // (student.first.last@domain) let anyone sign in as any student.
+    const initialPassword = generateInitialPassword();
+    const passwordHash = await bcrypt.hash(initialPassword, BCRYPT_COST);
     const temporaryPassword = initialPassword;
 
     if (hasAdminCredentials) {

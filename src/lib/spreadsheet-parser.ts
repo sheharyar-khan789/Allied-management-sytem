@@ -16,6 +16,24 @@ export type SheetRows = string[][];
 
 export class SpreadsheetParseError extends Error {}
 
+/**
+ * Strips a leading formula trigger from an imported cell so a value like `=HYPERLINK(...)` or
+ * `@SUM(...)` can never be stored and later re-exported into someone's spreadsheet as a live
+ * formula. A leading + or - is kept when it starts a number (phone numbers such as
+ * "+92 300 ..."), because those are not formulas.
+ */
+export function neutralizeSpreadsheetFormula(value: string): string {
+  let v = value;
+  for (let i = 0; i < 5; i++) {
+    const before = v;
+    v = v.replace(/^[=@\t\r]+/, "");
+    if (/^[+-]/.test(v) && !/^[+-]\s*[\d(]/.test(v)) v = v.slice(1);
+    v = v.trimStart();
+    if (v === before) break;
+  }
+  return v;
+}
+
 const MAX_ENTRY_UNCOMPRESSED_BYTES = 20 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,13 @@ export interface UserProfile {
    * server-side — set on password reset/change so other signed-in sessions stop working.
    */
   sessionsValidAfter?: string;
+  /** Session ids (`sid` claim) revoked by logout; only the most recent few are kept. */
+  revokedSessionIds?: string[];
+  /** TOTP two-factor for ADMIN accounts (enforced only when ADMIN_MFA_ENABLED=true). Server-side only. */
+  mfaEnabled?: boolean;
+  mfaSecret?: string;
+  mfaPendingSecret?: string;
+  mfaLastUsedStep?: number;
   teacherId?: string;
   studentId?: string;
   studentIds?: string[];

@@ -9,3 +9,15 @@ node_modules/
 Allied-management-sytem/
 stitch_school_management_saas_system/
 stitch_school_management_saas_system (3).zip
+
+# Secrets — never commit (keep the template)
+.env.*
+!.env.example
+*adminsdk*.json
+*service-account*.json
+*serviceAccount*.json
+*credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx

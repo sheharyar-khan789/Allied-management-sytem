@@ -1,30 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { jwtVerify, SignJWT } from "jose";
 import { dashboardPathForRole } from "@/lib/role-home";
+import {
+  SESSION_COOKIE_NAME,
+  SESSION_IDLE_SECONDS,
+  signSessionToken,
+  verifySessionToken,
+} from "@/lib/session-token";
+import { isCrossSiteStateChange } from "@/lib/request-security";
 
-const SESSION_IDLE_SECONDS = 5 * 60;
-
-function getJwtSecret(): Uint8Array {
-  const secret = process.env.JWT_SECRET;
-  const isProd = process.env.NODE_ENV === "production";
-
-  if (isProd) {
-    if (!secret || secret.trim().length < 32) {
-      throw new Error(
-        "Critical Security Configuration Error: JWT_SECRET environment variable is missing or insecurely short in production (minimum 32 characters required). Refusing to verify tokens."
-      );
-    }
-    return new TextEncoder().encode(secret.trim());
-  }
-
-  if (!secret || secret.trim().length === 0) {
-    return new TextEncoder().encode("allied-school-dev-only-local-secret-key-32-chars-min");
-  }
-
-  return new TextEncoder().encode(secret.trim());
-}
-
-const SECRET_KEY = getJwtSecret();
+// The JWT secret, algorithm (HS256 only), issuer/audience and the absolute session lifetime are
+// all enforced in src/lib/session-token.ts, shared with requireAuth. The hardcoded development
+// secret is refused whenever NODE_ENV=production, on Vercel, or when real Firebase credentials
+// are configured. Middleware is only the first layer: every API route and server page performs
+// its own requireAuth / getAuthenticatedUser check (including revocation against the live user
+// profile), so a middleware bypass (e.g. the x-middleware-subrequest class of bugs) does not
+// grant access.
 
 interface SessionPayload {
   uid: string;
@@ -37,6 +27,7 @@ interface SessionPayload {
   studentIds?: string[];
   /** Original sign-in time (unix seconds); preserved across refreshes. See server-auth.ts. */
   authAt?: number;
+  sid?: string;
   iat?: number;
 }
 
@@ -134,7 +125,9 @@ export async function middleware(req: NextRequest) {
   };
 
   const attachSlidingSession = async (response: NextResponse, sess: SessionPayload) => {
-    const token = await new SignJWT({
+    // authAt and sid are carried over unchanged, so the refresh can never extend a session past
+    // its absolute lifetime and logout revocation (by sid) keeps applying to refreshed tokens.
+    const token = await signSessionToken({
       uid: sess.uid,
       email: sess.email,
       role: sess.role,
@@ -144,12 +137,9 @@ export async function middleware(req: NextRequest) {
       studentId: sess.studentId,
       studentIds: sess.studentIds,
       authAt: typeof sess.authAt === "number" ? sess.authAt : sess.iat,
-    })
-      .setProtectedHeader({ alg: "HS256" })
-      .setIssuedAt()
-      .setExpirationTime(`${SESSION_IDLE_SECONDS}s`)
-      .sign(SECRET_KEY);
-    response.cookies.set("allied_session", token, {
+      sid: sess.sid,
+    });
+    response.cookies.set(SESSION_COOKIE_NAME, token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
@@ -170,19 +160,19 @@ export async function middleware(req: NextRequest) {
     return attachCsp(nextWithNonce());
   }
 
-  const sessionCookie = req.cookies.get("allied_session")?.value;
-  let session: SessionPayload | null = null;
-
-  if (sessionCookie) {
-    try {
-      const { payload } = await jwtVerify(sessionCookie, SECRET_KEY);
-      session = payload as unknown as SessionPayload;
-    } catch {
-      session = null;
-    }
-  }
+  const sessionCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+  const session: SessionPayload | null = sessionCookie
+    ? ((await verifySessionToken(sessionCookie)) as SessionPayload | null)
+    : null;
 
   if (pathname.startsWith("/api")) {
+    // CSRF: cross-site state-changing API calls are refused before any handler runs (requireAuth
+    // repeats the check inside each authenticated route).
+    if (isCrossSiteStateChange(req)) {
+      return attachCsp(
+        NextResponse.json({ error: "Forbidden: cross-site request blocked." }, { status: 403 })
+      );
+    }
     // The session is a 5-minute *idle* timeout. It used to be extended only by full page
     // navigations, never by API calls — so an admin working inside one page (e.g. filling the
     // Add Subject form on /admin/classes) lost the cookie 5 minutes after loading the page and

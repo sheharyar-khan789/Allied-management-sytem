@@ -16,6 +16,17 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { studentId, teacherId, title, category, content, sentiment } = body;
 
+    if (
+      typeof studentId !== "string" || studentId.length > 128 ||
+      typeof content !== "string" || content.length > 4000 ||
+      (title !== undefined && (typeof title !== "string" || title.length > 200)) ||
+      (category !== undefined && (typeof category !== "string" || category.length > 60))
+    ) {
+      return NextResponse.json(
+        { error: "studentId and content are required; content max 4000 and title max 200 characters." },
+        { status: 400 }
+      );
+    }
     if (!studentId || !content) {
       return NextResponse.json(
         { error: "Student ID and observation content are required." },

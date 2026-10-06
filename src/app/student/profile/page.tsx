@@ -28,8 +28,8 @@ export default function StudentProfilePage() {
     setPasswordError("");
     setPasswordMessage("");
 
-    if (newPassword.length < 8 || newPassword.length > 128) {
-      setPasswordError("New password must be between 8 and 128 characters.");
+    if (newPassword.length < 10 || newPassword.length > 128) {
+      setPasswordError("New password must be between 10 and 128 characters.");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -207,7 +207,7 @@ export default function StudentProfilePage() {
               onChange={(e) => setNewPassword(e.target.value)}
               className="mt-1 w-full px-3 py-2 rounded-lg border border-surface-container-high bg-surface-container-lowest text-on-surface"
               required
-              minLength={8}
+              minLength={10}
               maxLength={128}
             />
           </div>
@@ -221,7 +221,7 @@ export default function StudentProfilePage() {
               onChange={(e) => setConfirmPassword(e.target.value)}
               className="mt-1 w-full px-3 py-2 rounded-lg border border-surface-container-high bg-surface-container-lowest text-on-surface"
               required
-              minLength={8}
+              minLength={10}
               maxLength={128}
             />
           </div>

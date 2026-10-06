@@ -70,3 +70,35 @@ export async function confirmFirebasePasswordResetServer(
   }
   throw new Error(`Firebase resetPassword failed: ${message || `HTTP ${res.status}`}`);
 }
+
+/**
+ * Verifies an account's current password: the app's bcrypt hash first, then Firebase Auth —
+ * accepted only if the Firebase account that matches is this exact profile (same uid).
+ */
+export async function verifyAccountPasswordServer(
+  user: Pick<UserProfile, "uid" | "email" | "passwordHash">,
+  password: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<boolean> {
+  if (!password) return false;
+  if (user.passwordHash) {
+    const bcrypt = (await import("bcryptjs")).default;
+    if (await bcrypt.compare(password, user.passwordHash)) return true;
+  }
+  const apiKey = (env.NEXT_PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || "").trim();
+  if (!apiKey || apiKey.includes("Dummy")) return false;
+  try {
+    const res = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: user.email, password, returnSecureToken: false }),
+      }
+    );
+    const data = (await res.json().catch(() => ({}))) as { localId?: string };
+    return res.ok && data.localId === user.uid;
+  } catch {
+    return false;
+  }
+}

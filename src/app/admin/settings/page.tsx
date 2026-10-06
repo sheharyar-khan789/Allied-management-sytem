@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import AdminTwoFactorCard from "@/components/AdminTwoFactorCard";
 import FileUpload from "@/components/FileUpload";
 
 export default function SettingsPage() {
@@ -298,6 +299,8 @@ export default function SettingsPage() {
           </button>
         </div>
       </form>
+
+      <AdminTwoFactorCard />
     </div>
   );
 }
