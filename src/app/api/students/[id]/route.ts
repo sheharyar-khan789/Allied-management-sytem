@@ -77,10 +77,12 @@ export async function GET(
     const student = await assertCanViewStudent(authUser, id);
     // Attendance is only for the class incharge: a subject teacher's dossier carries none.
     const showAttendance = await canViewStudentAttendance(authUser, student);
+    // Fees are school finances: a TEACHER's dossier carries no challans or balances at all.
+    const showFees = authUser.role !== "TEACHER";
 
     const [attendanceRecords, challans, examResults, observations, classes, subjects, exams] = await Promise.all([
       getStudentAttendanceServer(authUser.schoolId, id),
-      getStudentFeeChallansServer(authUser.schoolId, id),
+      showFees ? getStudentFeeChallansServer(authUser.schoolId, id) : Promise.resolve([]),
       getExamResultsServer(authUser.schoolId, undefined, undefined, id),
       getStudentObservationsServer(authUser.schoolId, id),
       getClassesServer(authUser.schoolId),
@@ -208,11 +210,15 @@ export async function GET(
           absent: absentAtt,
           percentage: Number(attPct),
         },
-        fees: {
-          expected: totalExpectedFee,
-          paid: totalPaidFee,
-          outstanding: totalOutstandingFee,
-        },
+        ...(showFees
+          ? {
+              fees: {
+                expected: totalExpectedFee,
+                paid: totalPaidFee,
+                outstanding: totalOutstandingFee,
+              },
+            }
+          : {}),
         academics: {
           totalMarks: totalMaxMarks,
           obtainedMarks: totalObtainedMarks,

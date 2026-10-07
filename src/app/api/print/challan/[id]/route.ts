@@ -6,7 +6,7 @@ import { schoolPrintIdentity } from "@/lib/school-display";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const authUser = await requireAuth(req, ["ADMIN", "TEACHER", "STUDENT", "PARENT"]);
+    const authUser = await requireAuth(req, ["ADMIN", "STUDENT", "PARENT"]);
     const { id } = await params;
     const { challan, student } = await assertCanViewChallan(authUser, id);
     const [school, settings] = await Promise.all([

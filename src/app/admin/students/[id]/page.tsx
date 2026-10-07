@@ -1377,8 +1377,7 @@ export default function StudentDossierPage({
                       <option value="ACTIVE">ACTIVE</option>
                       <option value="INACTIVE">INACTIVE</option>
                       <option value="ALUMNI">ALUMNI</option>
-                      <option value="SUSPENDED">SUSPENDED</option>
-                      <option value="WITHDRAWN">WITHDRAWN</option>
+                      <option value="EXPELLED">EXPELLED</option>
                     </select>
                   </div>
                 </div>

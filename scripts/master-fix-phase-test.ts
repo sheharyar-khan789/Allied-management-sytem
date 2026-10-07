@@ -14,6 +14,7 @@ import { GET as attendanceGet, POST as attendancePost } from "../src/app/api/att
 import { GET as classesGet } from "../src/app/api/classes/route";
 import { GET as printAttendanceGet } from "../src/app/api/print/attendance/[studentId]/route";
 import { GET as reportCardGet } from "../src/app/api/print/report-card/[studentId]/route";
+import { GET as challanPrintGet } from "../src/app/api/print/challan/[id]/route";
 import {
   GET as timetableGet,
   POST as timetablePost,
@@ -35,6 +36,7 @@ import {
   updateSchoolSettingsServer,
 } from "../src/lib/firebase/server-db";
 import { normalizeCnic } from "../src/lib/input-validation";
+import { sendPasswordResetEmail } from "../src/lib/email-service";
 import { ClassDoc, FEE_MONTHS, StudentDoc, SubjectDoc, TeacherDoc } from "../src/lib/firebase/types";
 
 let passed = 0;
@@ -232,7 +234,11 @@ async function run() {
   assert((await acct(ADMIN_B, ahmedId)).status === 404, "Cross-school admin cannot read the fee account");
   assert((await setMonth(ADMIN_B, ahmedId, "May", true)).status === 404, "Cross-school admin cannot change the fee account");
   assert((await acct(T_A, ahmedId)).status === 403 && (await setMonth(T_A, ahmedId, "May", true)).status === 403, "Teachers cannot read or change fee accounts");
-  assert((await acct(studentSelf, ahmedId)).status === 403, "Students cannot call the admin fee account API");
+  const ownAcct = await json(await acct(studentSelf, saraId));
+  assert(ownAcct.success && ownAcct.student.id === ahmedId && ownAcct.months.length === 12, "Student reads only their OWN fee account (a ?studentId= for another student is ignored)");
+  assert(ownAcct.months.find((m: any) => m.month === "October").paid === pattern.October, "Student sees the same month status the admin saved");
+  assert((await setMonth(studentSelf, ahmedId, "May", true)).status === 403, "Students cannot change fee status");
+  assert((await acct(await session("uid-mf-parent-x", "PARENT", A), ahmedId)).status === 403, "Parents cannot call the fee account API");
   assert((await setMonth(ADMIN_A, ahmedId, "Smarch", true)).status === 400, "Unknown month name is rejected");
   assert((await accountPut(req(ADMIN_A, "http://x/api/fees/student-account", "PUT", { studentId: ahmedId, year: 2026, month: "May", paid: true, schoolId: B }))).status === 400, "Mass-assigning schoolId is rejected");
 
@@ -324,8 +330,24 @@ async function run() {
   assert(rcB.success && !("attendance" in rcB) && rcA.attendance?.records?.length === 1, "Report card payload omits attendance for a subject teacher, keeps it for the incharge");
   assert((await printAttendanceGet(req(ADMIN_A, `http://x/api/print/attendance/${ahmedId}`), sidParams(ahmedId))).status === 200, "Admin can still print attendance");
 
+  // Fees are never part of a teacher's view (incharge or subject teacher), server-side.
+  const saraChallan = (await json(await feesGet(req(ADMIN_A, `http://x/api/fees?studentId=${saraId}`)))).challans[0];
+  const tDossier = await view(T_D, saraId);
+  assert(tDossier.success && tDossier.student.feeChallans.length === 0 && !("fees" in tDossier.stats), "Teacher's student dossier carries no fee challans or fee totals");
+  const aDossier = await view(ADMIN_A, saraId);
+  assert(aDossier.student.feeChallans.length === 1 && aDossier.stats.fees.paid === 4000, "Admin's dossier still has the fee challans and totals");
+  assert(!("fees" in rcA) && !("fees" in rcB), "Report card payload carries no fee data for teachers");
+  assert("fees" in (await json(await reportCardGet(req(ADMIN_A, `http://x/api/print/report-card/${ahmedId}`), sidParams(ahmedId)))), "Report card payload keeps fees for the admin");
+  assert((await challanPrintGet(req(T_D, `http://x/api/print/challan/${saraChallan.id}`), idParams(saraChallan.id))).status === 403, "Teacher cannot print a fee challan");
+  assert((await challanPrintGet(req(ADMIN_A, `http://x/api/print/challan/${saraChallan.id}`), idParams(saraChallan.id))).status === 200, "Admin can still print the challan");
+
+  // Student status: the API and the edit dropdowns share ACTIVE / INACTIVE / ALUMNI / EXPELLED.
+  assert((await studentPut(req(ADMIN_A, `http://x/api/students/${bilalId}`, "PUT", { status: "EXPELLED" }), idParams(bilalId))).status === 200, "EXPELLED status is accepted");
+  assert((await studentPut(req(ADMIN_A, `http://x/api/students/${bilalId}`, "PUT", { status: "WITHDRAWN" }), idParams(bilalId))).status === 400, "Unknown status (WITHDRAWN) is rejected");
+  assert((await studentPut(req(ADMIN_A, `http://x/api/students/${bilalId}`, "PUT", { status: "ACTIVE" }), idParams(bilalId))).status === 200, "Status back to ACTIVE");
+
   // ======================================================================
-  // 3. TIMETABLE — admin CRUD, teacher / student / parent views
+  // 3. TIMETABLE — admin CRUD, teacher / student views; parents have no timetable access
   // ======================================================================
   const slot = { classId: c8.id, subjectId: math8.id, dayOfWeek: "Monday", periodName: "1", startTime: "09:00", endTime: "09:45", roomNo: "R-8" };
   const created = await json(await timetablePost(req(ADMIN_A, "http://x/api/timetable", "POST", slot)));
@@ -359,18 +381,17 @@ async function run() {
 
   await createUserServer({ uid: "uid-mf-parent", email: "khan.guardian@mail-a.test", name: "Khan Sahib", role: "PARENT", schoolId: A, status: "ACTIVE", createdAt: now, updatedAt: now });
   const PARENT = await session("uid-mf-parent", "PARENT", A);
-  const childA = await json(await timetableGet(req(PARENT, `http://x/api/timetable?studentId=${ahmedId}`)));
-  const childB = await json(await timetableGet(req(PARENT, `http://x/api/timetable?studentId=${saraId}`)));
-  assert(childA.success && childA.timetable.length === 3 && childA.timetable.every((t: any) => t.classId === c8.id), "Parent: child A → Class 8 timetable");
-  assert(childB.success && childB.timetable.length === 1 && childB.timetable[0].classId === c9.id, "Parent: child B → Class 9 timetable");
-  assert((await timetableGet(req(PARENT, `http://x/api/timetable?studentId=${bilalId}`))).status === 403, "Parent cannot read the timetable of a child not linked to them");
-  assert((await timetableGet(req(PARENT, "http://x/api/timetable"))).status === 400, "Parent request without a child is rejected");
+  const childA = await timetableGet(req(PARENT, `http://x/api/timetable?studentId=${ahmedId}`));
+  assert(childA.status === 403 && !("timetable" in (await json(childA))), "Parent is rejected (403) even for their own linked child — no timetable data returned");
+  assert((await timetableGet(req(PARENT, `http://x/api/timetable?studentId=${saraId}`))).status === 403, "Parent rejected for their second child too");
+  assert((await timetableGet(req(PARENT, `http://x/api/timetable?studentId=${bilalId}`))).status === 403, "Parent rejected for an unlinked child");
+  assert((await timetableGet(req(PARENT, `http://x/api/timetable?classId=${c8.id}`))).status === 403, "Parent cannot reach a timetable via ?classId=");
   assert((await timetablePost(req(studentSelf, "http://x/api/timetable", "POST", slot))).status === 403 && (await timetablePut(req(PARENT, "http://x/api/timetable", "PUT", { ...slot, id: created.id }))).status === 403, "Students and parents cannot create or edit periods");
 
   const del = await timetableDelete(req(ADMIN_A, `http://x/api/timetable?id=${slot2.id}`, "DELETE"));
   assert(del.status === 200 && !(await getTimetableServer(A)).some((t) => t.id === slot2.id), "Admin deletes an entry");
   assert((await json(await timetableGet(req(studentSelf, "http://x/api/timetable")))).timetable.length === 2, "Deletion propagates to the student view");
-  assert((await json(await timetableGet(req(PARENT, `http://x/api/timetable?studentId=${ahmedId}`)))).timetable.length === 2, "Deletion propagates to the parent view");
+  assert((await json(await timetableGet(req(otherStudent, "http://x/api/timetable")))).timetable.length === 1, "Deletion leaves the other class's (Class 9) timetable intact");
 
   // ======================================================================
   // 4. STUDENT PASSWORD RESET
@@ -427,6 +448,22 @@ async function run() {
     assert(providerRes.status === 200 && resendCall && resendCall.body.to[0] === "khan.guardian@mail-a.test", "Provider path: student reset email is addressed to the guardian");
     assert(resendCall && /student account of Ahmed Khan/.test(resendCall.body.html) && resendCall.body.html.includes(studentEmail), "Email names the student account it resets (guardian is not told it is 'your account')");
     assert(!calls.some((c) => c.url.includes("identitytoolkit")), "Firebase's built-in mailer is never used for a student reset");
+
+    const env = { RESEND_API_KEY: "re_SECRET_should_never_log", EMAIL_FROM: "School <no-reply@school.test>", NODE_ENV: "test" };
+    const accepted = await sendPasswordResetEmail({ to: "g@x.test", resetUrl: "http://localhost:3000/reset-password?token=t" }, env);
+    assert(accepted.delivered && accepted.mode === "resend" && accepted.providerMessageId === "email_1", "Resend acceptance returns Resend's message id");
+    globalThis.fetch = (async () => new Response(JSON.stringify({ name: "validation_error", message: "API key is invalid" }), { status: 401 })) as typeof fetch;
+    const logged: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => { logged.push(args.join(" ")); };
+    let rejected: Awaited<ReturnType<typeof sendPasswordResetEmail>>;
+    try {
+      rejected = await sendPasswordResetEmail({ to: "g@x.test", resetUrl: "http://localhost:3000/reset-password?token=t" }, env);
+    } finally {
+      console.error = origError;
+    }
+    assert(!rejected.delivered && /HTTP 401/.test(rejected.message), "Resend rejection is reported as not delivered with a safe reason");
+    assert(logged.length > 0 && !logged.join(" ").includes("re_SECRET") && !rejected.message.includes("re_SECRET"), "The Resend API key never appears in logs or the delivery result");
   } finally {
     globalThis.fetch = realFetch;
     if (prevKey === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = prevKey;

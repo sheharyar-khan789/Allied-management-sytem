@@ -15,9 +15,15 @@ export async function GET(
       publishedResultsOnly: authUser.role === "PARENT" || authUser.role === "STUDENT",
     });
     // Attendance belongs to the class incharge: a subject teacher's report card carries none.
-    const { attendance, ...rest } = payload;
+    // Fees are never part of a teacher's view.
+    const { attendance, fees, ...rest } = payload;
     const showAttendance = await canViewStudentAttendance(authUser, student);
-    return NextResponse.json({ success: true, ...rest, ...(showAttendance ? { attendance } : {}) });
+    return NextResponse.json({
+      success: true,
+      ...rest,
+      ...(showAttendance ? { attendance } : {}),
+      ...(authUser.role !== "TEACHER" ? { fees } : {}),
+    });
   } catch (error: unknown) {
     if (error instanceof Response) return error;
     console.error("Print report card error:", error);

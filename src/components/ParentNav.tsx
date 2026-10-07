@@ -27,7 +27,6 @@ export default function ParentNav({ parentName = "Parent / Guardian" }: ParentNa
   const navLinks = [
     { label: "Dashboard", href: "/parent", icon: "dashboard" },
     { label: "Children", href: "/parent/children", icon: "family_restroom" },
-    { label: "Timetable", href: "/parent/timetable", icon: "calendar_month" },
     { label: "Attendance", href: "/parent/attendance", icon: "event_available" },
     { label: "Fees", href: "/parent/fees", icon: "payments" },
     { label: "Results", href: "/parent/results", icon: "workspace_premium" },

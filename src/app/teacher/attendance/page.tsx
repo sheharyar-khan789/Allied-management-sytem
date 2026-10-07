@@ -261,7 +261,7 @@ export default function TeacherAttendanceRegisterPage() {
 
       {/* Selector ribbon */}
       <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-end gap-3 min-w-0 max-w-full">
           <div>
             <label htmlFor="attendance-select-class-1" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">
               Select Class
@@ -269,7 +269,7 @@ export default function TeacherAttendanceRegisterPage() {
             <select id="attendance-select-class-1"
               value={selectedClassId}
               onChange={(e) => handleClassChange(e.target.value)}
-              className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
+              className="h-9 px-3 max-w-full rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
             >
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>
@@ -286,7 +286,7 @@ export default function TeacherAttendanceRegisterPage() {
             <select id="attendance-select-register"
               value={selectedRegister}
               onChange={(e) => setSelectedRegister(e.target.value)}
-              className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
+              className="h-9 px-3 max-w-full rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
             >
               {registerOptions.map((r) => (
                 <option key={r.value} value={r.value}>
@@ -310,7 +310,7 @@ export default function TeacherAttendanceRegisterPage() {
         </div>
 
         {/* Status Counts */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="px-2.5 py-1 rounded bg-tertiary-container/10 text-on-tertiary-container text-xs font-bold">
             {presentCount} Present
           </span>

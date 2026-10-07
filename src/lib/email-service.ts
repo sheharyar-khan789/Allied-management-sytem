@@ -20,6 +20,8 @@ export interface EmailDeliveryResult {
   /** True only when a real provider accepted the message. */
   delivered: boolean;
   mode: EmailProvider | "firebase" | "dev-console" | "not-configured";
+  /** The provider's own id for the accepted message (Resend returns one), for tracing delivery. */
+  providerMessageId?: string;
   /** Safe for logs/audit: never contains the reset URL, token or credentials. */
   message: string;
 }
@@ -145,7 +147,8 @@ export function buildPasswordResetHtml({
 </html>`;
 }
 
-async function sendViaResend(env: Env, msg: { to: string; subject: string; html: string; text: string }): Promise<string | null> {
+/** Resend send. Returns `{ id }` on acceptance, otherwise a log-safe reason (never the API key). */
+async function sendViaResend(env: Env, msg: { to: string; subject: string; html: string; text: string }): Promise<{ id?: string } | string> {
   try {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -155,8 +158,8 @@ async function sendViaResend(env: Env, msg: { to: string; subject: string; html:
       },
       body: JSON.stringify({ from: env.EMAIL_FROM!.trim(), to: [msg.to], subject: msg.subject, html: msg.html, text: msg.text }),
     });
-    if (res.ok) return null;
-    const data = (await res.json().catch(() => ({}))) as { name?: string; message?: string };
+    const data = (await res.json().catch(() => ({}))) as { id?: string; name?: string; message?: string };
+    if (res.ok) return { id: typeof data.id === "string" ? data.id : undefined };
     // Resend's error body describes config problems (e.g. unverified sender domain); it never
     // echoes the message body, so it is safe to log.
     return `Resend rejected the message (HTTP ${res.status}${data.name ? `, ${data.name}` : ""}${data.message ? `: ${data.message}` : ""})`;
@@ -253,10 +256,17 @@ export async function sendPasswordResetEmail(
   const failures: string[] = [];
 
   for (const provider of providers) {
-    const error = provider === "resend" ? await sendViaResend(env, msg) : await sendViaSmtp(env, msg);
-    if (!error) {
-      return { delivered: true, mode: provider, message: `${activation ? "Account activation" : "Password reset"} email accepted by ${provider}.` };
+    const outcome = provider === "resend" ? await sendViaResend(env, msg) : await sendViaSmtp(env, msg);
+    if (outcome === null || typeof outcome === "object") {
+      const providerMessageId = outcome?.id;
+      return {
+        delivered: true,
+        mode: provider,
+        ...(providerMessageId ? { providerMessageId } : {}),
+        message: `${activation ? "Account activation" : "Password reset"} email accepted by ${provider}${providerMessageId ? ` (id ${providerMessageId})` : ""}.`,
+      };
     }
+    const error = outcome;
     failures.push(error);
     console.error(`[PASSWORD RESET EMAIL] ${error}`);
   }

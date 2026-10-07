@@ -12,6 +12,7 @@ import {
 import { FEE_MONTHS, FeeChallanDoc, FeeMonth, StudentDoc, StudentFeeLedgerDoc } from "@/lib/firebase/types";
 import { idString, parseJsonBody, year as yearSchema } from "@/lib/input-validation";
 import { feeMonthOf } from "@/lib/fee-ledger";
+import { resolveSessionStudent } from "@/lib/academic-access";
 
 export const dynamic = "force-dynamic";
 
@@ -69,16 +70,24 @@ function buildAccount(student: StudentDoc, year: number, ledger: StudentFeeLedge
 
 export async function GET(req: NextRequest) {
   try {
-    const authUser = await requireAuth(req, ["ADMIN"]);
+    // STUDENT: read-only view of their OWN account — the student comes from the session, any
+    // ?studentId= is ignored. Changes stay ADMIN-only (PUT).
+    const authUser = await requireAuth(req, ["ADMIN", "STUDENT"]);
     const { searchParams } = new URL(req.url);
-    const studentId = idString.safeParse(searchParams.get("studentId") || "");
     const year = yearSchema.safeParse(searchParams.get("year") || new Date().getFullYear());
-    if (!studentId.success) return jsonError("A valid studentId is required.", 400);
     if (!year.success) return jsonError("A valid year is required.", 400);
 
-    // Resolved inside the caller's school: another school's student is simply not found.
-    const student = await getStudentByIdServer(authUser.schoolId, studentId.data);
-    if (!student || student.schoolId !== authUser.schoolId) return jsonError("Student not found for this school.", 404);
+    let student: StudentDoc | null;
+    if (authUser.role === "STUDENT") {
+      student = await resolveSessionStudent(authUser);
+      if (!student) return jsonError("Student profile not found.", 404);
+    } else {
+      const studentId = idString.safeParse(searchParams.get("studentId") || "");
+      if (!studentId.success) return jsonError("A valid studentId is required.", 400);
+      // Resolved inside the caller's school: another school's student is simply not found.
+      student = await getStudentByIdServer(authUser.schoolId, studentId.data);
+      if (!student || student.schoolId !== authUser.schoolId) return jsonError("Student not found for this school.", 404);
+    }
 
     const [ledger, challans, charges] = await Promise.all([
       getStudentFeeLedgerServer(authUser.schoolId, student.id, year.data),
@@ -87,8 +96,13 @@ export async function GET(req: NextRequest) {
       getStudentChargesServer(authUser.schoolId, student.id),
     ]);
 
+    // A student gets display fields only (no staff uids or audit fields).
+    const visibleCharges =
+      authUser.role === "STUDENT"
+        ? charges.map((c) => ({ id: c.id, type: c.type, description: c.description, amount: c.amount, date: c.date, status: c.status, notes: c.notes || "" }))
+        : charges;
     return NextResponse.json(
-      { success: true, ...buildAccount(student, year.data, ledger, challans), charges },
+      { success: true, ...buildAccount(student, year.data, ledger, challans), charges: visibleCharges },
       { headers: NO_STORE }
     );
   } catch (error: any) {

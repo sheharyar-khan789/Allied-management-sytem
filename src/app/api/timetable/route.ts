@@ -12,7 +12,6 @@ import {
 } from "@/lib/firebase/server-db";
 import { TimetableDoc } from "@/lib/firebase/types";
 import { requireTeacherAllocation, resolveSessionStudent } from "@/lib/academic-access";
-import { assertParentOwnsStudent } from "@/lib/parent-access";
 
 export const dynamic = "force-dynamic";
 
@@ -48,7 +47,7 @@ function jsonError(error: string, status: number) {
   return NextResponse.json({ error }, { status });
 }
 
-/** Read-only fields a student or parent sees for a period of their (child's) class. */
+/** Read-only fields a student sees for a period of their own class. */
 function toClassView(t: TimetableDoc) {
   return {
     id: t.id,
@@ -66,19 +65,17 @@ function toClassView(t: TimetableDoc) {
 
 export async function GET(req: NextRequest) {
   try {
-    const authUser = await requireAuth(req, ["ADMIN", "TEACHER", "STUDENT", "PARENT"]);
+    // PARENT is deliberately not allowed: the timetable is not part of the parent portal (403).
+    const authUser = await requireAuth(req, ["ADMIN", "TEACHER", "STUDENT"]);
     const { searchParams } = new URL(req.url);
     const classId = searchParams.get("classId") || undefined;
     const dayOfWeek = searchParams.get("dayOfWeek") || undefined;
 
-    // STUDENT and PARENT: the class is always derived server-side — the student's own record
-    // (student → classId), or a child linked to the parent (parent → student → classId). Any
-    // ?classId= / ?teacherId= they send is ignored, so no other class's timetable is reachable.
-    if (authUser.role === "STUDENT" || authUser.role === "PARENT") {
-      const student =
-        authUser.role === "STUDENT"
-          ? await resolveSessionStudent(authUser)
-          : await assertParentOwnsStudent(authUser, (searchParams.get("studentId") || "").trim());
+    // STUDENT: the class is always derived server-side from the student's own record
+    // (student → classId). Any ?classId= / ?teacherId= sent is ignored, so no other class's
+    // timetable is reachable.
+    if (authUser.role === "STUDENT") {
+      const student = await resolveSessionStudent(authUser);
       if (!student) return jsonError("Student profile not found.", 404);
       const items = student.classId ? await getTimetableServer(authUser.schoolId, undefined, student.classId) : [];
       return NextResponse.json({
