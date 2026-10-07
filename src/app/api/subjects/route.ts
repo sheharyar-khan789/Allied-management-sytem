@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
+import { parseJsonBody, subjectBodySchema } from "@/lib/input-validation";
 import {
   getSubjectsServer,
   getSubjectByIdServer,
@@ -12,8 +13,10 @@ import {
   createAuditLogServer,
   getTimetableServer,
   getExamResultsServer,
+  getAttendanceServer,
 } from "@/lib/firebase/server-db";
 import { SubjectDoc } from "@/lib/firebase/types";
+import { requireTeacherAllocation } from "@/lib/academic-access";
 
 export async function GET(req: NextRequest) {
   try {
@@ -29,7 +32,13 @@ export async function GET(req: NextRequest) {
     ]);
 
     let filtered = subjects;
-    if (teacherId) {
+    if (authUser.role === "TEACHER") {
+      // A teacher only ever receives the subjects allocated to them, resolved from their own
+      // session — a client-supplied ?teacherId= is ignored, and nothing else in the school is
+      // returned and left for the page to hide.
+      const allocation = await requireTeacherAllocation(authUser);
+      filtered = filtered.filter((s) => allocation.subjectIds.has(s.id));
+    } else if (teacherId) {
       filtered = filtered.filter((s) => s.teacherId === teacherId);
     }
 
@@ -62,7 +71,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsedBody = await parseJsonBody(req, subjectBodySchema);
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.data;
     const { name, code, classId, teacherId, credits } = body;
 
     if (!name || typeof name !== "string" || !name.trim()) {
@@ -159,7 +170,9 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsedBody = await parseJsonBody(req, subjectBodySchema);
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.data;
     const { id, name, code, classId, teacherId, credits } = body;
 
     if (!id || typeof id !== "string") {
@@ -310,7 +323,20 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    // 2. Active timetable slots
+    // 2. Subject attendance register history
+    const subjectAttendance = await getAttendanceServer(
+      authUser.schoolId, undefined, existing.classId, undefined, undefined, undefined, { subjectId }
+    );
+    if (subjectAttendance.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete subject "${existing.name}". It has ${subjectAttendance.length} subject attendance record(s). Subjects with attendance history cannot be deleted.`,
+        },
+        { status: 409 }
+      );
+    }
+
+    // 3. Active timetable slots
     const timetables = await getTimetableServer(authUser.schoolId);
     const subjectTimetables = timetables.filter((t) => t.subjectId === subjectId);
     if (subjectTimetables.length > 0) {

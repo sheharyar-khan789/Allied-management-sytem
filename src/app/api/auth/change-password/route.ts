@@ -7,11 +7,26 @@ import {
 } from "@/lib/firebase/server-auth";
 import { getUserByIdServer, updateUserServer } from "@/lib/firebase/server-db";
 import { setAuthPasswordServer } from "@/lib/firebase/auth-password";
-import { isValidPassword } from "@/lib/password-reset";
+import { BCRYPT_COST, checkPasswordPolicy } from "@/lib/password-reset";
+import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
+import { securityLog } from "@/lib/security-log";
+
+/** Wrong current-password guesses allowed per account before a 15-minute cooldown. */
+const CHANGE_MAX_FAILURES = 5;
+const CHANGE_LOCK_SECONDS = 900;
 
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req);
+    // A stolen session must not become an oracle for guessing the account's current password.
+    const rateKey = `change-pwd:${authUser.uid}`;
+    const rate = checkAuthRateLimit(rateKey, CHANGE_MAX_FAILURES, CHANGE_LOCK_SECONDS);
+    if (!rate.allowed) {
+      return NextResponse.json(
+        { error: `Too many attempts. Please wait ${Math.ceil(rate.resetInSeconds / 60)} minutes.` },
+        { status: 429, headers: { "Retry-After": String(rate.resetInSeconds) } }
+      );
+    }
     let body: { currentPassword?: string; newPassword?: string; userId?: string };
     try {
       body = await req.json();
@@ -29,11 +44,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!isValidPassword(newPassword)) {
-      return NextResponse.json(
-        { error: "New password must be between 8 and 128 characters." },
-        { status: 400 }
-      );
+    const policyError = checkPasswordPolicy(newPassword, { email: authUser.email, name: authUser.name });
+    if (policyError) {
+      return NextResponse.json({ error: policyError }, { status: 400 });
     }
 
     if (currentPassword === newPassword) {
@@ -50,7 +63,7 @@ export async function POST(req: NextRequest) {
 
     let currentOk = false;
     if (profile.passwordHash) {
-      currentOk = bcrypt.compareSync(currentPassword, profile.passwordHash);
+      currentOk = await bcrypt.compare(currentPassword, profile.passwordHash);
     }
 
     if (!currentOk) {
@@ -70,7 +83,9 @@ export async function POST(req: NextRequest) {
               }),
             }
           );
-          currentOk = fbRes.ok;
+          // Only the Firebase account that IS this profile counts (see the login route).
+          const fbData = await fbRes.json().catch(() => ({}));
+          currentOk = fbRes.ok && fbData?.localId === authUser.uid;
         } catch {
           currentOk = false;
         }
@@ -78,10 +93,13 @@ export async function POST(req: NextRequest) {
     }
 
     if (!currentOk) {
+      recordAuthFailure(rateKey, CHANGE_MAX_FAILURES, CHANGE_LOCK_SECONDS);
+      securityLog("auth.password_change_failed", { subject: authUser.uid, role: authUser.role, schoolId: authUser.schoolId });
       return NextResponse.json({ error: "Current password is incorrect." }, { status: 401 });
     }
+    resetAuthRateLimit(rateKey);
 
-    const passwordHash = bcrypt.hashSync(newPassword, 10);
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);
 
     try {
       await setAuthPasswordServer(profile, newPassword);
@@ -112,12 +130,13 @@ export async function POST(req: NextRequest) {
       studentIds: authUser.studentIds,
       authAt: Math.floor(changedAt.getTime() / 1000),
     });
+    securityLog("auth.password_changed", { subject: authUser.uid, role: authUser.role, schoolId: authUser.schoolId });
     const response = NextResponse.json({ success: true });
     response.cookies.set("allied_session", token, SESSION_COOKIE_OPTIONS);
     return response;
   } catch (error: unknown) {
     if (error instanceof Response) return error;
-    console.error("Change password error:", error);
+    console.error("Change password error:", (error as Error)?.message || "error");
     return NextResponse.json({ error: "Failed to change password." }, { status: 500 });
   }
 }

@@ -181,6 +181,8 @@ async function run() {
   };
   const { saveTeacherServer } = await import("../src/lib/firebase/server-db");
   await saveTeacherServer(teacherA);
+  // The daily register (attendance without a subject) belongs to the class incharge.
+  await saveClassServer({ ...classA5, classTeacherId: teacherA.id, classTeacherName: teacherA.fullName });
   await createUserServer({ uid: "uid-fix-teacher-a", email: teacherA.email, name: teacherA.fullName, role: "TEACHER", schoolId: schoolA, teacherId: teacherA.id, status: "ACTIVE", createdAt: now, updatedAt: now });
   const teacherTokenA = await createSessionCookieServer({ uid: "uid-fix-teacher-a", email: teacherA.email, role: "TEACHER", schoolId: schoolA, teacherId: teacherA.id, name: teacherA.fullName });
 

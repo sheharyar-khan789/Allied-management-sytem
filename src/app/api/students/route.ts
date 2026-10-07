@@ -14,8 +14,49 @@ import {
 import { StudentDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { linkGuardianEmailToStudent } from "@/lib/link-parent";
-import { assertTeacherOwnsClass, resolveAuthenticatedTeacher } from "@/lib/academic-access";
+import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic-access";
 import { validateStudentDates } from "@/lib/date-utils";
+import { BCRYPT_COST, generateInitialPassword } from "@/lib/password-reset";
+import { z } from "zod";
+import { cnicNumber, documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
+
+const optText = (max: number) => z.string().trim().max(max).optional().or(z.literal(""));
+const optEmail = z.string().trim().max(254).email().optional().or(z.literal(""));
+
+// Unknown keys are dropped; server-controlled keys (schoolId, userId, parentUserIds, admissionNo,
+// fee balances, audit fields, ...) are rejected by parseJsonBody before this runs.
+const studentFieldsSchema = {
+  firstName: optText(80),
+  lastName: optText(80),
+  fullName: optText(160),
+  rollNumber: optText(30),
+  rollNo: optText(30),
+  gender: z.enum(["Male", "Female", "MALE", "FEMALE"]).optional(),
+  dob: optText(20),
+  admissionDate: optText(20),
+  bloodGroup: optText(20),
+  cnicBForm: cnicNumber.optional(),
+  contactNumber: optText(30),
+  phone: optText(30),
+  email: optEmail,
+  address: optText(300),
+  classId: idString.optional(),
+  guardianName: optText(120),
+  fatherName: optText(120),
+  guardianRelation: optText(40),
+  guardianPhone: optText(30),
+  guardianEmail: optEmail,
+  guardianOccupation: optText(80),
+  photoUrl: safeUrl.optional(),
+  documents: documentsArray.optional(),
+};
+
+const studentCreateSchema = z.object({
+  ...studentFieldsSchema,
+  monthlyFee: money.optional(),
+  annualFee: money.optional(),
+  discount: money.optional(),
+});
 
 export async function GET(req: NextRequest) {
   try {
@@ -42,12 +83,10 @@ export async function GET(req: NextRequest) {
     // Without a specific classId filter, a TEACHER must still only see students in their own
     // assigned classes (containing full guardian/contact PII) rather than the whole school's
     // roster — matches the same assignedClassIds convention used for attendance/exams.
+    // Fails closed: a teacher with no allocated classes sees no students.
     if (authUser.role === "TEACHER" && !classId) {
-      const teacher = await resolveAuthenticatedTeacher(authUser);
-      const assigned = teacher?.assignedClassIds?.length ? new Set(teacher.assignedClassIds) : null;
-      if (assigned) {
-        students = students.filter((s) => assigned.has(s.classId));
-      }
+      const allocation = await requireTeacherAllocation(authUser);
+      students = students.filter((s) => allocation.classIds.has(s.classId));
     }
 
     const mapped = students.map((st) => ({
@@ -61,7 +100,7 @@ export async function GET(req: NextRequest) {
       gender: st.gender,
       dob: st.dob,
       bloodGroup: st.bloodGroup || "Not Specified",
-      cnicBForm: st.cnic || st.bForm || "-",
+      cnicBForm: st.cnic || st.bForm || "",
       contactNumber: st.phone,
       email: st.email || "Not Available",
       guardianName: st.guardianName,
@@ -93,7 +132,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsed = await parseJsonBody(req, studentCreateSchema);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.data as z.infer<typeof studentCreateSchema> & Record<string, any>;
 
     const {
       firstName,
@@ -182,8 +223,11 @@ export async function POST(req: NextRequest) {
 
     let userUid = `user_std_${uniqueSuffix}`;
     let createdAuthUid: string | null = null;
-    const initialPassword = process.env.DEFAULT_STUDENT_INITIAL_PASSWORD || "Student@123";
-    const passwordHash = bcrypt.hashSync(initialPassword, 10);
+    // A unique random password per student, shown once to the admin. The old shared default
+    // ("Student@123", published in the repository) combined with predictable login emails
+    // (student.first.last@domain) let anyone sign in as any student.
+    const initialPassword = generateInitialPassword();
+    const passwordHash = await bcrypt.hash(initialPassword, BCRYPT_COST);
     const temporaryPassword = initialPassword;
 
     if (hasAdminCredentials) {
@@ -244,7 +288,11 @@ export async function POST(req: NextRequest) {
       guardianEmail: body.guardianEmail || "",
       parentUserIds: [],
       bloodGroup: bloodGroup || "Not Specified",
+      // The form's single "CNIC / B-Form" field was validated but never copied onto the record,
+      // so every CNIC entered at enrolment was silently dropped.
+      cnic: body.cnicBForm || undefined,
       monthlyFee: Number(body.monthlyFee) > 0 ? Number(body.monthlyFee) : 0,
+      annualFee: Number(body.annualFee) > 0 ? Number(body.annualFee) : 0,
       discount: Number(body.discount) || 0,
       photoUrl: body.photoUrl || undefined,
       documents: Array.isArray(body.documents) ? body.documents : [],

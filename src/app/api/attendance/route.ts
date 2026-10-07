@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
+import { attendanceBodySchema, parseJsonBody } from "@/lib/input-validation";
 import {
   getStudentsServer,
   getAttendanceServer,
@@ -8,7 +9,7 @@ import {
   getClassesServer
 } from "@/lib/firebase/server-db";
 import { AttendanceDoc } from "@/lib/firebase/types";
-import { assertTeacherOwnsClass } from "@/lib/academic-access";
+import { assertTeacherCanAccessAttendance } from "@/lib/academic-access";
 import {
   attendanceLockTime,
   canOverrideAttendanceLock,
@@ -22,6 +23,8 @@ export async function GET(req: NextRequest) {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     const { searchParams } = new URL(req.url);
     const classId = searchParams.get("classId");
+    // Absent/empty = the class's daily register; otherwise that subject's register.
+    const subjectId = searchParams.get("subjectId") || null;
     const rawDate = searchParams.get("date");
     const dateStr = rawDate ? validateDateString(rawDate) : new Date().toISOString().split("T")[0];
 
@@ -32,14 +35,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "date must be a valid YYYY-MM-DD calendar date." }, { status: 400 });
     }
 
-    // A TEACHER may only view attendance for a class in their own assignedClassIds. This is
-    // never inferred from anything client-supplied beyond the classId itself being checked
-    // against the authenticated teacher's own Firestore record.
-    await assertTeacherOwnsClass(authUser, classId);
+    // A TEACHER may only open a subject register for a subject allocated to them in this class,
+    // or the daily register of a class they are incharge of — checked against their own
+    // Firestore records before anything is read, so no other register's data is ever returned.
+    const { subject } = await assertTeacherCanAccessAttendance(authUser, classId, subjectId);
 
     const [students, existingRecords] = await Promise.all([
       getStudentsServer(authUser.schoolId, classId),
-      getAttendanceServer(authUser.schoolId, dateStr, classId)
+      getAttendanceServer(authUser.schoolId, dateStr, classId, undefined, undefined, undefined, { subjectId })
     ]);
 
     const recordMap = new Map(existingRecords.map((r) => [r.studentId, r]));
@@ -82,6 +85,8 @@ export async function GET(req: NextRequest) {
       success: true,
       date: dateStr,
       classId,
+      subjectId,
+      subjectName: subject?.name || null,
       roster,
       summary,
       isSaved: existingRecords.length > 0,
@@ -104,8 +109,12 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
-    const body = await req.json();
+    const parsedBody = await parseJsonBody(req, attendanceBodySchema);
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.data;
     const { classId, date, records } = body;
+    const subjectId: string | null =
+      typeof body.subjectId === "string" && body.subjectId.trim() ? body.subjectId.trim() : null;
 
     if (!classId || !date || !Array.isArray(records)) {
       return NextResponse.json(
@@ -139,8 +148,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Class not found for this school." }, { status: 404 });
     }
 
-    // A TEACHER may only mark attendance for a class in their own assignedClassIds.
-    await assertTeacherOwnsClass(authUser, classId);
+    // A TEACHER may only mark their own subject register in this class, or the daily register
+    // of a class they are incharge of.
+    const { subject } = await assertTeacherCanAccessAttendance(authUser, classId, subjectId);
 
     const validStudentIds = new Set(studentsInClass.map((s) => s.id));
     const invalidRecord = records.find((r: any) => !validStudentIds.has(r.studentId));
@@ -154,7 +164,9 @@ export async function POST(req: NextRequest) {
     // 24-hour teacher lock, enforced here rather than trusted from the page. A record keeps its
     // original createdAt/recordedBy on every later save (they were previously reset on each
     // save, which would have let any re-save restart the lock window).
-    const existingRecords = await getAttendanceServer(authUser.schoolId, date, classId);
+    const existingRecords = await getAttendanceServer(
+      authUser.schoolId, date, classId, undefined, undefined, undefined, { subjectId }
+    );
     const existingByStudent = new Map(existingRecords.map((r) => [r.studentId, r]));
     const canOverride = canOverrideAttendanceLock(authUser.role);
     const now = Date.now();
@@ -193,9 +205,12 @@ export async function POST(req: NextRequest) {
         continue;
       }
       attendanceDocs.push({
-        id: `${authUser.schoolId}_${classId}_${r.studentId}_${date}`,
+        id: subject
+          ? `${authUser.schoolId}_${classId}_${subject.id}_${r.studentId}_${date}`
+          : `${authUser.schoolId}_${classId}_${r.studentId}_${date}`,
         schoolId: authUser.schoolId,
         classId,
+        ...(subject ? { subjectId: subject.id, subjectName: subject.name } : {}),
         studentId: r.studentId,
         date,
         status: r.status,
@@ -235,7 +250,7 @@ export async function POST(req: NextRequest) {
       "MARK_ATTENDANCE",
       "ATTENDANCE",
       classId,
-      `Recorded roll call for class on ${date} (${attendanceDocs.length} of ${records.length} records changed` +
+      `Recorded ${subject ? `${subject.name} subject` : "daily"} roll call for class on ${date} (${attendanceDocs.length} of ${records.length} records changed` +
         (overriddenLocked > 0 ? `, including ${overriddenLocked} locked record(s) edited by admin override` : "") +
         ")."
     );

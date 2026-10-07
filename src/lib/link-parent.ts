@@ -67,7 +67,20 @@ export async function linkGuardianEmailToStudent(params: {
           const rec = await adminAuth.getUserByEmail(email);
           uid = rec.uid;
           const again = await getUserByEmailServer(email);
-          if (again) parent = again;
+          if (again) {
+            parent = again;
+          } else {
+            // A Firebase Auth account with this address exists but no school profile does: it was
+            // created outside this app (e.g. public self-sign-up with the web API key). Whoever
+            // created it knows its password, so adopting it as-is would hand them this child's
+            // records. Its password is replaced with a fresh one given only to the admin, its
+            // sessions are revoked, and the school's claims are set.
+            const generatedPassword = generateSecureParentPassword();
+            await adminAuth.updateUser(uid, { password: generatedPassword, emailVerified: false, disabled: false });
+            await adminAuth.revokeRefreshTokens(uid);
+            await adminAuth.setCustomUserClaims(uid, { role: "PARENT", schoolId: params.schoolId });
+            parentTemporaryPassword = generatedPassword;
+          }
         } else {
           console.error("Parent auth provision failed:", err);
           return { created: false };

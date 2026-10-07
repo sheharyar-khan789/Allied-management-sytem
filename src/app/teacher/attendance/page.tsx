@@ -3,9 +3,26 @@
 import React, { useEffect, useState } from "react";
 import { todayLocalISO } from "@/lib/date-utils";
 
+const DAILY_REGISTER = "__daily__";
+
+/**
+ * The registers this teacher may open for a class (the server enforces the same rule): only a
+ * class they are incharge of — its daily register, plus their own subjects' registers there.
+ * Teaching a subject in a class they are not incharge of gives no attendance access.
+ */
+function registersFor(cls: any): { value: string; label: string }[] {
+  if (!cls?.isIncharge) return [];
+  return [
+    { value: DAILY_REGISTER, label: "Daily Register (Class Incharge)" },
+    ...(cls.subjects || []).map((s: any) => ({ value: s.id, label: `${s.name} (${s.code})` })),
+  ];
+}
+
 export default function TeacherAttendanceRegisterPage() {
   const [classes, setClasses] = useState<any[]>([]);
+  const [classesLoaded, setClassesLoaded] = useState(false);
   const [selectedClassId, setSelectedClassId] = useState("");
+  const [selectedRegister, setSelectedRegister] = useState("");
   const [selectedDate, setSelectedDate] = useState(todayLocalISO());
   const [roster, setRoster] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -22,19 +39,47 @@ export default function TeacherAttendanceRegisterPage() {
   const [locked, setLocked] = useState(false);
 
   useEffect(() => {
+    // Only this teacher's allocated classes (with only their own subjects) come back.
     fetch("/api/classes")
-      .then((res) => res.json())
-      .then((json) => {
-        if (json.success && json.classes.length > 0) {
-          setClasses(json.classes);
-          setSelectedClassId(json.classes[0].id);
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.success) {
+          setLoadError(json.error || "Failed to load your allocated classes.");
+          return;
         }
+        const list = (json.classes || []).filter((c: any) => registersFor(c).length > 0);
+        setClasses(list);
+        if (list.length === 0) return;
+        // Preselect a class/subject when arriving from a timetable period's "Roll Call" link.
+        const params = new URLSearchParams(window.location.search);
+        const wanted = list.find((c: any) => c.id === params.get("classId")) || list[0];
+        const registers = registersFor(wanted);
+        const wantedRegister = registers.find((r) => r.value === params.get("subjectId")) || registers[0];
+        setSelectedClassId(wanted.id);
+        setSelectedRegister(wantedRegister.value);
       })
-      .catch(console.error);
+      .catch((err) => {
+        console.error(err);
+        setLoadError("Failed to load your allocated classes. Please check your connection.");
+      })
+      .finally(() => {
+        setClassesLoaded(true);
+        setLoading(false);
+      });
   }, []);
 
+  const selectedClass = classes.find((c) => c.id === selectedClassId);
+  const registerOptions = registersFor(selectedClass);
+  const subjectQuery = selectedRegister && selectedRegister !== DAILY_REGISTER ? selectedRegister : "";
+
+  const handleClassChange = (classId: string) => {
+    setSelectedClassId(classId);
+    const first = registersFor(classes.find((c) => c.id === classId))[0];
+    setSelectedRegister(first ? first.value : "");
+  };
+
   const fetchAttendance = async (keepMessages = false) => {
-    if (!selectedClassId) return;
+    if (!selectedClassId || !selectedRegister) return;
     setLoading(true);
     if (!keepMessages) {
       setSaveSuccess(false);
@@ -43,7 +88,10 @@ export default function TeacherAttendanceRegisterPage() {
     setLoadError("");
 
     try {
-      const res = await fetch(`/api/attendance?classId=${encodeURIComponent(selectedClassId)}&date=${selectedDate}`);
+      const res = await fetch(
+        `/api/attendance?classId=${encodeURIComponent(selectedClassId)}&date=${selectedDate}` +
+          (subjectQuery ? `&subjectId=${encodeURIComponent(subjectQuery)}` : "")
+      );
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
         setRoster(json.roster);
@@ -64,10 +112,10 @@ export default function TeacherAttendanceRegisterPage() {
   };
 
   useEffect(() => {
-    if (selectedClassId) {
+    if (selectedClassId && selectedRegister) {
       fetchAttendance();
     }
-  }, [selectedClassId, selectedDate]);
+  }, [selectedClassId, selectedRegister, selectedDate]);
 
   const handleStatusChange = (studentId: string, status: string) => {
     setRoster((prev) =>
@@ -89,6 +137,7 @@ export default function TeacherAttendanceRegisterPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           classId: selectedClassId,
+          ...(subjectQuery ? { subjectId: subjectQuery } : {}),
           date: selectedDate,
           records: roster.map((r) => ({
             studentId: r.studentId,
@@ -212,19 +261,36 @@ export default function TeacherAttendanceRegisterPage() {
 
       {/* Selector ribbon */}
       <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-end gap-3 min-w-0 max-w-full">
           <div>
             <label htmlFor="attendance-select-class-1" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">
               Select Class
             </label>
             <select id="attendance-select-class-1"
               value={selectedClassId}
-              onChange={(e) => setSelectedClassId(e.target.value)}
-              className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
+              onChange={(e) => handleClassChange(e.target.value)}
+              className="h-9 px-3 max-w-full rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
             >
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.displayName}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="attendance-select-register" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">
+              Subject / Register
+            </label>
+            <select id="attendance-select-register"
+              value={selectedRegister}
+              onChange={(e) => setSelectedRegister(e.target.value)}
+              className="h-9 px-3 max-w-full rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
+            >
+              {registerOptions.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
                 </option>
               ))}
             </select>
@@ -244,7 +310,7 @@ export default function TeacherAttendanceRegisterPage() {
         </div>
 
         {/* Status Counts */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="px-2.5 py-1 rounded bg-tertiary-container/10 text-on-tertiary-container text-xs font-bold">
             {presentCount} Present
           </span>
@@ -267,9 +333,9 @@ export default function TeacherAttendanceRegisterPage() {
             <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
             <p className="text-xs text-on-surface-variant">Loading roster...</p>
           </div>
-        ) : classes.length === 0 ? (
+        ) : classesLoaded && classes.length === 0 ? (
           <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">
-            No classes assigned or available to take attendance.
+            Attendance is managed by class incharges. You are not the class incharge of any class.
           </div>
         ) : roster.length === 0 ? (
           <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">

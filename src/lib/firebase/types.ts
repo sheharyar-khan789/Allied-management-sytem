@@ -31,6 +31,13 @@ export interface UserProfile {
    * server-side — set on password reset/change so other signed-in sessions stop working.
    */
   sessionsValidAfter?: string;
+  /** Session ids (`sid` claim) revoked by logout; only the most recent few are kept. */
+  revokedSessionIds?: string[];
+  /** TOTP two-factor for ADMIN accounts (enforced only when ADMIN_MFA_ENABLED=true). Server-side only. */
+  mfaEnabled?: boolean;
+  mfaSecret?: string;
+  mfaPendingSecret?: string;
+  mfaLastUsedStep?: number;
   teacherId?: string;
   studentId?: string;
   studentIds?: string[];
@@ -67,6 +74,8 @@ export interface StudentDoc {
   cnic?: string;
   bForm?: string;
   monthlyFee: number;
+  /** Annual fee (PKR), configured independently of monthlyFee — never derived as 12 × monthly. */
+  annualFee?: number;
   discount: number;
   photoUrl?: string;
   /** Academic session (YYYY-YYYY) this record belongs to. Legacy records without it are
@@ -161,9 +170,16 @@ export interface TimetableDoc {
 export type AttendanceStatus = "PRESENT" | "LATE" | "ABSENT" | "LEAVE";
 
 export interface AttendanceDoc {
-  id: string; // schoolId_classId_studentId_date
+  id: string; // schoolId_classId_studentId_date (daily) or schoolId_classId_subjectId_studentId_date
   schoolId: string;
   classId: string;
+  /**
+   * Set only on a subject register (marked by that subject's allocated teacher). Records
+   * without it form the class's daily register, which is the one student/parent/report
+   * attendance figures are computed from.
+   */
+  subjectId?: string;
+  subjectName?: string;
   studentId: string;
   studentName?: string;
   rollNo?: string;
@@ -224,6 +240,57 @@ export interface PaymentDoc {
   collectedBy: string;
   academicYear?: string;
   createdAt: string;
+}
+
+export const FEE_MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+] as const;
+export type FeeMonth = (typeof FEE_MONTHS)[number];
+
+export interface FeeMonthStatus {
+  paid: boolean;
+  paidAt?: string | null;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+/**
+ * One student's fee-status ledger for one calendar year (collection `studentFeeLedgers`).
+ * Each of the 12 months persists independently; the annual fee's paid state is tracked here too.
+ */
+export interface StudentFeeLedgerDoc {
+  id: string; // `${schoolId}_${studentId}_${year}`
+  schoolId: string;
+  studentId: string;
+  studentName?: string;
+  year: number;
+  months: Partial<Record<FeeMonth, FeeMonthStatus>>;
+  annualFeePaid?: boolean;
+  annualFeePaidAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const STUDENT_CHARGE_TYPES = ["EVENT", "TRIP", "SPORTS", "EXAM", "ACTIVITY", "OTHER"] as const;
+export type StudentChargeType = (typeof STUDENT_CHARGE_TYPES)[number];
+
+/** An additional / event payment owed by a student (collection `studentCharges`). */
+export interface StudentChargeDoc {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  studentName?: string;
+  type: StudentChargeType;
+  description: string;
+  amount: number;
+  date: string; // YYYY-MM-DD
+  status: "PAID" | "UNPAID";
+  notes?: string;
+  createdBy: string;
+  updatedBy?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ExamDoc {
@@ -389,6 +456,8 @@ export interface PayrollRecordDoc {
  */
 export interface PasswordResetTokenDoc {
   id: string; // sha256(token)
+  /** ACTIVATION: first-time password setup for an admin-created account. Absent = RESET. */
+  purpose?: "RESET" | "ACTIVATION";
   uid: string;
   email: string;
   schoolId: string;

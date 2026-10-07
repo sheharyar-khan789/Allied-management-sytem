@@ -1,6 +1,6 @@
 import React from "react";
 import StudentNav from "@/components/StudentNav";
-import { getAuthenticatedUser } from "@/lib/firebase/server-auth";
+import { requirePageRole } from "@/lib/page-auth";
 import { getStudentByIdServer } from "@/lib/firebase/server-db";
 
 export default async function StudentLayout({
@@ -8,7 +8,7 @@ export default async function StudentLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const session = await getAuthenticatedUser();
+  const session = await requirePageRole("STUDENT");
 
   let studentName = session?.name || "Student";
   let admissionNo = "";

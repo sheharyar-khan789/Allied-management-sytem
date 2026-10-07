@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
+import { classBodySchema, parseJsonBody } from "@/lib/input-validation";
 import {
   getClassesServer,
   getClassByIdServer,
@@ -18,7 +19,7 @@ import {
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
 import { ClassDoc, TeacherDoc } from "@/lib/firebase/types";
-import { resolveAuthenticatedTeacher } from "@/lib/academic-access";
+import { requireTeacherAllocation } from "@/lib/academic-access";
 
 export async function GET(req: NextRequest) {
   try {
@@ -35,18 +36,18 @@ export async function GET(req: NextRequest) {
     ]);
 
     // A TEACHER's class list (used to populate class selectors/dropdowns on the teacher
-    // portal) is restricted to their own assignedClassIds — the UI must not be the only
-    // thing hiding other classes from a teacher. ADMIN (and a teacher with no
-    // assignedClassIds configured yet) continue to see the full school list unchanged.
-    const teacher = await resolveAuthenticatedTeacher(authUser);
-    const teacherAssignedClasses = teacher?.assignedClassIds?.length ? new Set(teacher.assignedClassIds) : null;
-    const visibleClasses = teacherAssignedClasses
-      ? classes.filter((c) => teacherAssignedClasses.has(c.id))
-      : classes;
+    // portal) is restricted server-side to their own allocation — subject classes, incharge
+    // classes and admin-granted classes — and each class only lists the teacher's own
+    // subjects. Fails closed: a teacher with nothing allocated gets an empty list, never the
+    // whole school. ADMIN sees every class unchanged.
+    const allocation = authUser.role === "TEACHER" ? await requireTeacherAllocation(authUser) : null;
+    const visibleClasses = allocation ? classes.filter((c) => allocation.classIds.has(c.id)) : classes;
 
     const formatted = visibleClasses.map((c) => {
       const clsStudents = students.filter((s) => s.classId === c.id);
-      const clsSubjects = subjects.filter((s) => s.classId === c.id);
+      const clsSubjects = subjects.filter(
+        (s) => s.classId === c.id && (!allocation || allocation.subjectIds.has(s.id))
+      );
       const classTeacher = c.classTeacherId ? teachers.find((t) => t.id === c.classTeacherId) : null;
       const classTeacherName = classTeacher
         ? classTeacher.fullName
@@ -63,6 +64,7 @@ export async function GET(req: NextRequest) {
         activeStudentCount: clsStudents.filter((s) => s.status === "ACTIVE").length,
         classTeacherId: c.classTeacherId || null,
         classTeacherName,
+        ...(allocation ? { isIncharge: allocation.inchargeClassIds.has(c.id) } : {}),
         subjects: clsSubjects.map((s) => {
           const subTeacher = s.teacherId ? teachers.find((t) => t.id === s.teacherId) : null;
           return {
@@ -93,7 +95,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsedBody = await parseJsonBody(req, classBodySchema);
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.data;
     const { name, section, roomNumber, capacity, classTeacherId } = body;
 
     if (!name || !section) {
@@ -197,7 +201,9 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsedBody = await parseJsonBody(req, classBodySchema);
+    if (!parsedBody.ok) return parsedBody.response;
+    const body = parsedBody.data;
     const { id, name, section, roomNumber, capacity, classTeacherId } = body;
 
     if (!id || !name || !section) {
@@ -353,7 +359,8 @@ export async function DELETE(req: NextRequest) {
     }
 
     // 3. Historical attendance records
-    const attendanceRecords = await getAttendanceServer(authUser.schoolId, undefined, classId);
+    // Daily and subject registers both count as history.
+    const attendanceRecords = await getAttendanceServer(authUser.schoolId, undefined, classId, undefined, undefined, undefined, "ALL");
     if (attendanceRecords.length > 0) {
       return NextResponse.json(
         {

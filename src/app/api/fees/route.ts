@@ -1,6 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { requireAuth } from "@/lib/firebase/server-auth";
+import { requireAuth, requireRecentAuth } from "@/lib/firebase/server-auth";
+import { z } from "zod";
+import { idString, money, parseJsonBody, safeUrl, year as yearSchema } from "@/lib/input-validation";
+
+const challanCreateSchema = z.object({
+  studentId: idString,
+  classId: idString,
+  month: z.string().trim().min(1).max(20),
+  year: yearSchema,
+  dueDate: z.string().trim().min(8).max(20),
+  tuitionFee: money,
+  admissionFee: money.optional(),
+  examFee: money.optional(),
+  otherFee: money.optional(),
+  discount: money.optional(),
+  notes: z.string().trim().max(500).optional(),
+});
+
+// Money state (paidAmount, balanceAmount, status) is never accepted from the client: a payment
+// only ever adds a positive, balance-capped amount computed on the server.
+const paymentSchema = z.object({
+  challanId: idString,
+  amount: z.coerce.number().finite().positive().max(100_000_000),
+  paymentMethod: z.string().trim().max(40).optional(),
+  notes: z.string().trim().max(500).optional(),
+  receiptUrl: safeUrl.optional(),
+});
 import {
   getFeeChallansServer,
   getFeeChallanByIdServer,
@@ -8,8 +34,10 @@ import {
   recordPaymentServer,
   createAuditLogServer,
   getClassesServer,
-  getStudentByIdServer
+  getStudentByIdServer,
+  updateStudentFeeLedgerServer,
 } from "@/lib/firebase/server-db";
+import { feeMonthOf } from "@/lib/fee-ledger";
 import { FeeChallanDoc, PaymentDoc } from "@/lib/firebase/types";
 import { validateDateString } from "@/lib/date-utils";
 
@@ -28,8 +56,11 @@ export async function GET(req: NextRequest) {
     const limitParam = searchParams.get("limit");
     const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
 
+    // "UNPAID" is a UI grouping of the stored PENDING and OVERDUE statuses — no challan is ever
+    // stored as UNPAID, so passing it to the query used to return nothing at all.
+    const statusFilter = status && !["ALL", "UNPAID"].includes(status.toUpperCase()) ? status.toUpperCase() : undefined;
     const [challans, classes] = await Promise.all([
-      getFeeChallansServer(authUser.schoolId, studentId, month, undefined, status, parsedLimit),
+      getFeeChallansServer(authUser.schoolId, studentId, month, undefined, statusFilter, parsedLimit),
       getClassesServer(authUser.schoolId)
     ]);
 
@@ -37,8 +68,10 @@ export async function GET(req: NextRequest) {
     if (classId && classId !== "all" && classId !== "ALL") {
       filtered = filtered.filter((c) => c.classId === classId);
     }
-    if (status && status !== "ALL" && status !== "all") {
-      filtered = filtered.filter((c) => c.status.toUpperCase() === status.toUpperCase());
+    if (status && status.toUpperCase() === "UNPAID") {
+      filtered = filtered.filter((c) => c.status === "PENDING" || c.status === "OVERDUE");
+    } else if (statusFilter) {
+      filtered = filtered.filter((c) => c.status.toUpperCase() === statusFilter);
     }
     if (search) {
       filtered = filtered.filter((c) =>
@@ -114,7 +147,10 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
+    const parsed = await parseJsonBody(req, challanCreateSchema, ["status", "payments"]);
+    if (!parsed.ok) return parsed.response;
+    requireRecentAuth(authUser, "issue fee challans", req);
+    const body = parsed.data;
 
     const {
       studentId,
@@ -236,8 +272,11 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const body = await req.json();
-    const { challanId, amount, paymentMethod, notes, receiptUrl } = body;
+    const parsed = await parseJsonBody(req, paymentSchema, ["status", "studentId"]);
+    if (!parsed.ok) return parsed.response;
+    requireRecentAuth(authUser, "record fee payments", req);
+    const { challanId, amount, paymentMethod, notes, receiptUrl } = parsed.data;
+    void paymentMethod;
 
     if (!challanId || amount === undefined || amount <= 0) {
       return NextResponse.json(
@@ -291,6 +330,18 @@ export async function PUT(req: NextRequest) {
     };
 
     await recordPaymentServer(paymentDoc);
+
+    // A challan this payment fully settles marks its month paid in the student's 12-month fee
+    // ledger, so the Fee page's month grid reflects counter collections without a manual tick.
+    const settled = await getFeeChallanByIdServer(authUser.schoolId, challanId);
+    const settledMonth = feeMonthOf(settled?.month);
+    if (settled && settled.status === "PAID" && settledMonth) {
+      await updateStudentFeeLedgerServer(
+        { schoolId: authUser.schoolId, studentId: settled.studentId, studentName: settled.studentName, year: Number(settled.year) },
+        { month: { name: settledMonth, paid: true } },
+        authUser.uid
+      );
+    }
 
     await createAuditLogServer(
       authUser.schoolId,

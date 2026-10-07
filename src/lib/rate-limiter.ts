@@ -1,5 +1,7 @@
 // Lightweight in-memory rate limiter for authentication endpoints
-// Provides burst and brute-force protection per Vercel serverless container instance
+// Provides burst and brute-force protection per Vercel serverless container instance.
+// NOTE: state is per instance and resets on cold start; on a multi-instance deployment also
+// enable the host's rate limiting / WAF for /api/auth/* (see ALLIED_SECURITY_REPORT.md).
 
 interface RateLimitRecord {
   count: number;
@@ -11,7 +13,7 @@ const rateLimitStore = new Map<string, RateLimitRecord>();
 
 // Cleanup stale entries every 10 minutes to prevent memory leaks
 if (typeof setInterval !== "undefined") {
-  setInterval(() => {
+  const cleanup = setInterval(() => {
     const now = Date.now();
     for (const [key, record] of rateLimitStore.entries()) {
       if (now > record.blockedUntil && now - record.firstAttempt > 10 * 60 * 1000) {
@@ -19,6 +21,8 @@ if (typeof setInterval !== "undefined") {
       }
     }
   }, 10 * 60 * 1000);
+  // Don't keep a Node process (tests, scripts) alive just for this housekeeping timer.
+  (cleanup as unknown as { unref?: () => void }).unref?.();
 }
 
 export interface RateLimitResult {

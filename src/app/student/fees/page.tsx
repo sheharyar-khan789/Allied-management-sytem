@@ -3,9 +3,17 @@
 import React, { useEffect, useState } from "react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
+const CHARGE_LABELS: Record<string, string> = {
+  EVENT: "Event Fee", TRIP: "Trip Fee", SPORTS: "Sports Fee", EXAM: "Exam Fee", ACTIVITY: "Activity Fee", OTHER: "Other Charges",
+};
+
 export default function StudentFeesPage() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const thisYear = new Date().getFullYear();
+  const [year, setYear] = useState(thisYear);
+  const [account, setAccount] = useState<any>(null);
+  const [accountError, setAccountError] = useState("");
 
   useEffect(() => {
     fetch("/api/student/me")
@@ -16,6 +24,26 @@ export default function StudentFeesPage() {
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    // The server resolves the student from this login; no student id is sent.
+    let cancelled = false;
+    setAccount(null);
+    setAccountError("");
+    fetch(`/api/fees/student-account?year=${year}`, { cache: "no-store" })
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok || !json.success) throw new Error(json.error || "Failed to load your fee status.");
+        setAccount(json);
+      })
+      .catch((err) => {
+        if (!cancelled) setAccountError(err?.message || "Failed to load your fee status.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [year]);
 
   if (loading) {
     return (
@@ -90,6 +118,92 @@ export default function StudentFeesPage() {
           </span>
         </div>
       </div>
+
+      {/* 12-month status, annual fee and other payments (read-only) */}
+      <section className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="font-headline-md text-sm font-bold text-on-surface">Monthly Fee Status</h3>
+          <select
+            aria-label="Year"
+            value={year}
+            onChange={(e) => setYear(Number(e.target.value))}
+            className="h-8 px-2 rounded-lg bg-surface-container-low text-xs font-semibold text-on-surface border border-outline-variant/40"
+          >
+            {[thisYear - 1, thisYear, thisYear + 1].map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+        </div>
+        {accountError && <p role="alert" className="text-xs text-error font-semibold">{accountError}</p>}
+        {!account && !accountError && <p className="text-xs text-on-surface-variant">Loading fee status...</p>}
+        {account && (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+              <div className="p-3 rounded-lg bg-surface-container-low">
+                <span className="block text-on-surface-variant">Monthly Fee</span>
+                <span className="block text-base font-bold text-on-surface">{formatCurrency(account.student.monthlyFee)}</span>
+              </div>
+              <div className="p-3 rounded-lg bg-surface-container-low">
+                <span className="block text-on-surface-variant">Annual Fee {year}</span>
+                <span className="block text-base font-bold text-on-surface">{formatCurrency(account.annualFee.amount)}</span>
+                <span className={`font-semibold ${account.annualFee.paid ? "text-on-tertiary-container" : "text-error"}`}>
+                  {account.annualFee.paid ? "Paid" : "Unpaid"}
+                </span>
+              </div>
+              <div className="p-3 rounded-lg bg-surface-container-low">
+                <span className="block text-on-surface-variant">Months Paid</span>
+                <span className="block text-base font-bold text-on-surface">{account.paidMonths} / 12</span>
+              </div>
+            </div>
+            <ul className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+              {account.months.map((m: any) => (
+                <li
+                  key={m.month}
+                  className={`p-2.5 rounded-lg border text-xs ${m.paid ? "bg-tertiary-container/10 border-on-tertiary-container/30" : "bg-surface-container-low border-outline-variant/30"}`}
+                >
+                  <span className="block font-bold text-on-surface">{m.month}</span>
+                  <span className={`font-semibold ${m.paid ? "text-on-tertiary-container" : "text-error"}`}>{m.paid ? "Paid" : "Unpaid"}</span>
+                </li>
+              ))}
+            </ul>
+            <div>
+              <h4 className="font-bold text-xs text-on-surface mb-2">Other Payments</h4>
+              {account.charges.length === 0 ? (
+                <p className="text-xs text-on-surface-variant">No additional payments.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-surface-container-low text-on-surface-variant uppercase text-[11px] font-bold">
+                        <th className="py-2 px-3">Type</th>
+                        <th className="py-2 px-3">Description</th>
+                        <th className="py-2 px-3">Amount</th>
+                        <th className="py-2 px-3">Date</th>
+                        <th className="py-2 px-3">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-surface-container-low">
+                      {account.charges.map((c: any) => (
+                        <tr key={c.id}>
+                          <td className="py-2 px-3 font-semibold">{CHARGE_LABELS[c.type] || c.type}</td>
+                          <td className="py-2 px-3">{c.description}</td>
+                          <td className="py-2 px-3 font-semibold">{formatCurrency(c.amount)}</td>
+                          <td className="py-2 px-3 text-on-surface-variant">{formatDate(c.date)}</td>
+                          <td className="py-2 px-3">
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${c.status === "PAID" ? "bg-tertiary-container/10 text-on-tertiary-container" : "bg-error-container text-on-error-container"}`}>
+                              {c.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </section>
 
       {/* Challans Table */}
       <div className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">

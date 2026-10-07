@@ -5,6 +5,8 @@ const isProd = process.env.NODE_ENV === "production";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Don't advertise the framework/version.
+  poweredByHeader: false,
   outputFileTracingRoot: path.resolve(__dirname),
   serverExternalPackages: ["jose", "jwks-rsa"],
   images: {
@@ -31,7 +33,21 @@ const nextConfig: NextConfig = {
       },
       {
         key: "Permissions-Policy",
-        value: "camera=(), microphone=(), geolocation=()",
+        value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+      },
+      {
+        key: "Cross-Origin-Opener-Policy",
+        value: "same-origin",
+      },
+      {
+        key: "X-DNS-Prefetch-Control",
+        value: "off",
+      },
+      // Baseline CSP for any route the middleware doesn't match (static assets, public pages).
+      // Middleware sets the full nonce-based policy on every page and API route it handles.
+      {
+        key: "Content-Security-Policy",
+        value: "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
       },
     ];
 
@@ -46,6 +62,16 @@ const nextConfig: NextConfig = {
       {
         source: "/:path*",
         headers: securityHeaders,
+      },
+      {
+        // API responses carry personal data (children's records, fees, payroll): never cached by
+        // browsers or shared caches.
+        source: "/api/:path*",
+        headers: [
+          ...securityHeaders,
+          { key: "Cache-Control", value: "no-store, max-age=0" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+        ],
       },
       ...["admin", "teacher", "student", "parent", "print"].map((segment) => ({
         source: `/${segment}/:path*`,

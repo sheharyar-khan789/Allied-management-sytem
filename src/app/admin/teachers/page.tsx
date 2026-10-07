@@ -33,9 +33,11 @@ export default function TeachersManagementPage() {
   const [editingTeacher, setEditingTeacher] = useState<any>(null);
   const [formLoading, setFormLoading] = useState(false);
   const [error, setError] = useState("");
-  const [newCredentials, setNewCredentials] = useState<
-    { email: string; password: string; name: string } | null
+  // Outcome of the account activation email for a newly created (or re-invited) teacher.
+  const [activationNotice, setActivationNotice] = useState<
+    { name: string; email: string; sent: boolean; channel?: string } | null
   >(null);
+  const [sendingActivationId, setSendingActivationId] = useState<string | null>(null);
 
   const [formData, setFormData] = useState(EMPTY_TEACHER_FORM);
 
@@ -116,11 +118,12 @@ export default function TeachersManagementPage() {
       }
 
       setModalOpen(false);
-      if (data.temporaryPassword) {
-        setNewCredentials({
+      if (data.activation) {
+        setActivationNotice({
           name: data.teacher?.fullName || `${formData.firstName} ${formData.lastName}`.trim(),
-          email: data.teacher?.email || formData.email,
-          password: data.temporaryPassword,
+          email: data.activation.email || data.teacher?.email || formData.email,
+          sent: Boolean(data.activation.sent),
+          channel: data.activation.channel,
         });
       }
       setFormData(EMPTY_TEACHER_FORM);
@@ -129,6 +132,29 @@ export default function TeachersManagementPage() {
       setError(err.message);
     } finally {
       setFormLoading(false);
+    }
+  };
+
+  const handleSendActivation = async (t: any) => {
+    setSendingActivationId(t.id);
+    try {
+      const res = await fetch(`/api/teachers/${t.id}/activation`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 404 || res.status === 409) {
+        alert(data.error || "Could not send the activation email.");
+        return;
+      }
+      setActivationNotice({
+        name: t.fullName,
+        email: data.email || t.email,
+        sent: Boolean(data.sent),
+        channel: data.channel,
+      });
+    } catch (err) {
+      console.error("Error sending activation email:", err);
+      alert("Failed to send the activation email.");
+    } finally {
+      setSendingActivationId(null);
     }
   };
 
@@ -180,52 +206,52 @@ export default function TeachersManagementPage() {
         </button>
       </div>
 
-      {newCredentials && (
+      {activationNotice && (
         <div
           role="status"
-          className="p-4 rounded-xl bg-tertiary-container/10 border border-on-tertiary-container/30 space-y-3"
+          className={`p-4 rounded-xl border space-y-2 ${
+            activationNotice.sent
+              ? "bg-tertiary-container/10 border-on-tertiary-container/30"
+              : "bg-error-container/20 border-error/30"
+          }`}
         >
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-on-tertiary-container text-[20px]">
-                key
+              <span className={`material-symbols-outlined text-[20px] ${activationNotice.sent ? "text-on-tertiary-container" : "text-error"}`}>
+                {activationNotice.sent ? "mark_email_read" : "error"}
               </span>
               <h2 className="font-headline-md text-sm font-bold text-on-surface">
-                Sign-in details for {newCredentials.name}
+                {activationNotice.sent
+                  ? `Activation email sent to ${activationNotice.name}`
+                  : `Activation email for ${activationNotice.name} was not delivered`}
               </h2>
             </div>
             <button
               type="button"
-              onClick={() => setNewCredentials(null)}
+              onClick={() => setActivationNotice(null)}
               className="text-on-surface-variant hover:text-on-surface shrink-0"
-              aria-label="Dismiss sign-in details"
+              aria-label="Dismiss activation notice"
             >
               <span className="material-symbols-outlined text-[20px]">close</span>
             </button>
           </div>
           <p className="text-[11px] leading-relaxed text-on-surface-variant">
-            This one-time password is shown here once and is not stored anywhere. Copy it now and
-            pass it to the teacher securely — ask them to change it after their first sign-in. If
-            you lose it, the password must be reset from the authentication console.
+            {activationNotice.sent ? (
+              <>
+                A secure link to choose their own password was emailed to{" "}
+                <span className="font-mono font-semibold text-on-surface">{activationNotice.email}</span>. No password is
+                created or shown here. Once they set it they can sign in normally; if the link expires, use the
+                resend button on their row.
+              </>
+            ) : activationNotice.channel === "dev-console" ? (
+              <>Local development: no mail channel is configured, so the activation link was written to the server console.</>
+            ) : (
+              <>
+                The account exists, but no email could be sent (check the email configuration and the Audit Log). Use the
+                resend button on their row once email delivery is working.
+              </>
+            )}
           </p>
-          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-            <div className="p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/40">
-              <dt className="text-[10px] uppercase tracking-wider font-bold text-on-surface-variant">
-                Email
-              </dt>
-              <dd className="font-mono font-semibold text-on-surface break-all mt-0.5">
-                {newCredentials.email}
-              </dd>
-            </div>
-            <div className="p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/40">
-              <dt className="text-[10px] uppercase tracking-wider font-bold text-on-surface-variant">
-                Temporary password
-              </dt>
-              <dd className="font-mono font-semibold text-on-surface break-all mt-0.5">
-                {newCredentials.password}
-              </dd>
-            </div>
-          </dl>
         </div>
       )}
 
@@ -369,6 +395,20 @@ export default function TeachersManagementPage() {
                         >
                           <span className="material-symbols-outlined text-[18px]">visibility</span>
                         </Link>
+                        {t.status === "ACTIVE" && (
+                          <button
+                            type="button"
+                            onClick={() => handleSendActivation(t)}
+                            disabled={sendingActivationId === t.id}
+                            className="p-1.5 rounded-lg hover:bg-surface-container text-secondary transition-colors inline-block disabled:opacity-50"
+                            title="Send account activation / set-password email"
+                            aria-label={`Send account activation email to ${t.fullName}`}
+                          >
+                            <span className="material-symbols-outlined text-[18px]">
+                              {sendingActivationId === t.id ? "hourglass_top" : "forward_to_inbox"}
+                            </span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleDeleteTeacher(t.id, t.fullName)}

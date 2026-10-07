@@ -29,6 +29,7 @@ interface CommitResult {
   fullName?: string;
   className?: string;
   loginEmail?: string;
+  initialPassword?: string;
 }
 
 const STATUS_STYLES: Record<RowStatus, string> = {
@@ -38,8 +39,11 @@ const STATUS_STYLES: Record<RowStatus, string> = {
   DUPLICATE: "bg-surface-container-high text-on-surface",
 };
 
-function csvEscape(value: string): string {
-  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+function csvEscape(raw: string): string {
+  // Spreadsheet formula injection: a cell starting with = + - @ (or tab/CR) is evaluated as a
+  // formula by Excel/Sheets. Prefix an apostrophe so it is always shown as plain text.
+  const value = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
 function downloadCsv(name: string, lines: string[][]) {
@@ -334,10 +338,10 @@ export default function StudentImportModal({ onClose, onImported }: { onClose: (
                   type="button"
                   onClick={() =>
                     downloadCsv("imported-students.csv", [
-                      ["Row", "Admission No", "Student Name", "Class", "Login Email"],
+                      ["Row", "Admission No", "Student Name", "Class", "Login Email", "Initial Password"],
                       ...result.results
                         .filter((r) => r.status === "IMPORTED")
-                        .map((r) => [String(r.rowNumber), r.admissionNo || "", r.fullName || "", r.className || "", r.loginEmail || ""]),
+                        .map((r) => [String(r.rowNumber), r.admissionNo || "", r.fullName || "", r.className || "", r.loginEmail || "", r.initialPassword || ""]),
                     ])
                   }
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-surface-container text-on-surface font-semibold"

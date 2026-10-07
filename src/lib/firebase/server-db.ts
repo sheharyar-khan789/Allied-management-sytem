@@ -28,6 +28,9 @@ import {
   AnnouncementDoc,
   PayrollRecordDoc,
   PasswordResetTokenDoc,
+  StudentFeeLedgerDoc,
+  StudentChargeDoc,
+  FeeMonth,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -52,6 +55,8 @@ const localStore: {
   announcements: Map<string, AnnouncementDoc>;
   payrollRecords: Map<string, PayrollRecordDoc>;
   passwordResetTokens: Map<string, PasswordResetTokenDoc>;
+  studentFeeLedgers: Map<string, StudentFeeLedgerDoc>;
+  studentCharges: Map<string, StudentChargeDoc>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -73,6 +78,8 @@ const localStore: {
   announcements: new Map(),
   payrollRecords: new Map(),
   passwordResetTokens: new Map(),
+  studentFeeLedgers: new Map(),
+  studentCharges: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -664,6 +671,77 @@ export async function revokeUserSessionsServer(uid: string, atIso: string = new 
     } catch (e) {
       onFirestoreError(`revokeUserSessionsServer(${uid})`, e);
       throw e;
+    }
+  }
+}
+
+/**
+ * Revokes one session (its `sid` claim) — used by logout so a copied cookie stops working
+ * immediately, while the user's other devices stay signed in. Keeps the last 25 ids; older
+ * sessions have passed their absolute lifetime anyway.
+ */
+export async function revokeSessionIdServer(uid: string, sid: string): Promise<void> {
+  const MAX_KEPT = 25;
+  const merge = (current: string[] | undefined) =>
+    Array.from(new Set([...(current || []), sid])).slice(-MAX_KEPT);
+
+  for (const existing of localStore.users.values()) {
+    if (existing.uid === uid) syncLocalUser(uid, { revokedSessionIds: merge(existing.revokedSessionIds) });
+  }
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("users").doc(uid);
+      await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists) return;
+        const current = (snap.data()?.revokedSessionIds as string[] | undefined) || [];
+        tx.set(ref, { revokedSessionIds: merge(current) }, { merge: true });
+      });
+    } catch (e) {
+      onFirestoreError(`revokeSessionIdServer(${uid})`, e);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ONE-TIME SCHOOL REGISTRATION SECRETS (server-only collection, id = sha256(secret))
+// ---------------------------------------------------------------------------
+const localConsumedRegistrationSecrets = new Set<string>();
+
+/**
+ * Atomically marks a registration secret (by hash) as used. Returns false if it was already used,
+ * so one SCHOOL_REGISTRATION_SECRET value can create exactly one institution; registering another
+ * school requires the operator to set a new secret.
+ */
+export async function consumeRegistrationSecretServer(secretHash: string, schoolId: string): Promise<boolean> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("registrationSecrets").doc(secretHash);
+      return await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists) return false;
+        tx.set(ref, { usedAt: new Date().toISOString(), schoolId });
+        return true;
+      });
+    } catch (e) {
+      onFirestoreError("consumeRegistrationSecretServer", e);
+      throw e;
+    }
+  }
+  if (localConsumedRegistrationSecrets.has(secretHash)) return false;
+  localConsumedRegistrationSecrets.add(secretHash);
+  return true;
+}
+
+/** Undo a consume when the registration it guarded failed and was rolled back. */
+export async function releaseRegistrationSecretServer(secretHash: string): Promise<void> {
+  localConsumedRegistrationSecrets.delete(secretHash);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("registrationSecrets").doc(secretHash).delete();
+    } catch (e) {
+      onFirestoreError("releaseRegistrationSecretServer", e);
     }
   }
 }
@@ -1300,6 +1378,41 @@ export async function getTimetableServer(
   return filterToSession(ctx, year, await fetchTimetableRaw(schoolId, teacherId, classId, dayOfWeek));
 }
 
+export async function getTimetableEntryByIdServer(schoolId: string, entryId: string): Promise<TimetableDoc | null> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("timetables").doc(entryId).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as TimetableDoc;
+        return data.schoolId === schoolId ? data : null;
+      }
+      if (process.env.NODE_ENV === "production") return null;
+    } catch (e) {
+      onFirestoreError(`getTimetableEntryByIdServer(${entryId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  const local = localStore.timetables.get(entryId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/** Deletes one slot, only if it belongs to `schoolId`. Returns false when it doesn't exist there. */
+export async function deleteTimetableEntryServer(schoolId: string, entryId: string): Promise<boolean> {
+  const existing = await getTimetableEntryByIdServer(schoolId, entryId);
+  if (!existing) return false;
+  localStore.timetables.delete(entryId);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("timetables").doc(entryId).delete();
+    } catch (e) {
+      onFirestoreError(`deleteTimetableEntryServer(${entryId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  return true;
+}
+
 export async function saveTimetableEntryServer(entry: TimetableDoc): Promise<string> {
   const id = entry.id || `tt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const academicYear = await sessionForWrite(entry.schoolId, entry);
@@ -1343,16 +1456,22 @@ async function fetchAttendanceRaw(
   date?: string,
   classId?: string,
   studentId?: string,
-  fromDate?: string
+  fromDate?: string,
+  register: AttendanceRegister = DAILY_REGISTER
 ): Promise<AttendanceDoc[]> {
+  const subjectId = register === "ALL" ? undefined : register.subjectId;
+  const inRegister = (a: AttendanceDoc) =>
+    register === "ALL" || (subjectId ? a.subjectId === subjectId : !a.subjectId);
+
   if (hasAdminCredentials) {
     try {
       let ref = adminDb.collection("attendance").where("schoolId", "==", schoolId);
       if (date) ref = ref.where("date", "==", date);
       if (classId && classId !== "ALL") ref = ref.where("classId", "==", classId);
       if (studentId) ref = ref.where("studentId", "==", studentId);
+      if (subjectId) ref = ref.where("subjectId", "==", subjectId);
       const snap = await ref.get();
-      let records = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceDoc));
+      let records = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceDoc)).filter(inRegister);
       if (fromDate) {
         records = records.filter((a) => a.date >= fromDate);
       }
@@ -1364,7 +1483,7 @@ async function fetchAttendanceRaw(
     }
   }
 
-  let list = Array.from(localStore.attendance.values()).filter((a) => a.schoolId === schoolId);
+  let list = Array.from(localStore.attendance.values()).filter((a) => a.schoolId === schoolId && inRegister(a));
   if (date) list = list.filter((a) => a.date === date);
   else if (fromDate) list = list.filter((a) => a.date >= fromDate);
   if (classId && classId !== "ALL") list = list.filter((a) => a.classId === classId);
@@ -1372,16 +1491,26 @@ async function fetchAttendanceRaw(
   return list;
 }
 
+/**
+ * Which attendance register a read covers. The default is the class's daily register (records
+ * without a subjectId) — the one every student/parent/report/dashboard figure is computed from,
+ * so subject registers never double-count a student's day. `{ subjectId }` selects one subject
+ * register; "ALL" ignores the distinction (e.g. dependency checks before deleting a class).
+ */
+export type AttendanceRegister = { subjectId: string | null } | "ALL";
+export const DAILY_REGISTER: AttendanceRegister = { subjectId: null };
+
 export async function getAttendanceServer(
   schoolId: string,
   date?: string,
   classId?: string,
   studentId?: string,
   fromDate?: string,
-  scope?: SessionScope
+  scope?: SessionScope,
+  register: AttendanceRegister = DAILY_REGISTER
 ): Promise<AttendanceDoc[]> {
   const { ctx, year } = await resolveSessionScope(schoolId, scope);
-  return filterToSession(ctx, year, await fetchAttendanceRaw(schoolId, date, classId, studentId, fromDate));
+  return filterToSession(ctx, year, await fetchAttendanceRaw(schoolId, date, classId, studentId, fromDate, register));
 }
 
 /** Inclusive start date of the rolling analytics window used by the school-wide dashboards. */
@@ -2198,3 +2327,143 @@ export async function savePayrollRecordServer(
   return id;
 }
 
+// ---------------------------------------------------------------------------
+// STUDENT FEE LEDGERS (12-month + annual-fee paid status) & ADDITIONAL CHARGES
+// ---------------------------------------------------------------------------
+export function studentFeeLedgerId(schoolId: string, studentId: string, year: number): string {
+  return `${schoolId}_${studentId}_${year}`;
+}
+
+export async function getStudentFeeLedgerServer(
+  schoolId: string,
+  studentId: string,
+  year: number
+): Promise<StudentFeeLedgerDoc | null> {
+  assertProductionDbReady();
+  const id = studentFeeLedgerId(schoolId, studentId, year);
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("studentFeeLedgers").doc(id).get();
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as StudentFeeLedgerDoc;
+      return data.schoolId === schoolId && data.studentId === studentId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getStudentFeeLedgerServer(${id})`, e);
+      throw e;
+    }
+  }
+  const local = localStore.studentFeeLedgers.get(id);
+  return local && local.schoolId === schoolId && local.studentId === studentId ? local : null;
+}
+
+/**
+ * Writes only the given month and/or the annual-fee flag into the ledger. Firestore merges the
+ * nested `months.<Month>` map, so each month persists independently of the other eleven.
+ */
+export async function updateStudentFeeLedgerServer(
+  key: { schoolId: string; studentId: string; studentName?: string; year: number },
+  patch: { month?: { name: FeeMonth; paid: boolean }; annualFeePaid?: boolean },
+  updatedBy: string
+): Promise<StudentFeeLedgerDoc> {
+  assertProductionDbReady();
+  const id = studentFeeLedgerId(key.schoolId, key.studentId, key.year);
+  const nowIso = new Date().toISOString();
+  const partial: Record<string, any> = {
+    id,
+    schoolId: key.schoolId,
+    studentId: key.studentId,
+    year: key.year,
+    updatedAt: nowIso,
+    ...(key.studentName ? { studentName: key.studentName } : {}),
+  };
+  if (patch.month) {
+    partial.months = {
+      [patch.month.name]: { paid: patch.month.paid, paidAt: patch.month.paid ? nowIso : null, updatedBy, updatedAt: nowIso },
+    };
+  }
+  if (patch.annualFeePaid !== undefined) {
+    partial.annualFeePaid = patch.annualFeePaid;
+    partial.annualFeePaidAt = patch.annualFeePaid ? nowIso : null;
+  }
+
+  const existing = localStore.studentFeeLedgers.get(id);
+  const mergedLocal: StudentFeeLedgerDoc = {
+    ...(existing || { months: {}, createdAt: nowIso }),
+    ...partial,
+    months: { ...(existing?.months || {}), ...(partial.months || {}) },
+  } as StudentFeeLedgerDoc;
+  localStore.studentFeeLedgers.set(id, mergedLocal);
+
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("studentFeeLedgers").doc(id);
+      await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists && (snap.data() as StudentFeeLedgerDoc).schoolId !== key.schoolId) {
+          throw new Error("Unauthorized: fee ledger belongs to a different institution.");
+        }
+        tx.set(ref, snap.exists ? partial : { ...partial, months: partial.months || {}, createdAt: nowIso }, { merge: true });
+      });
+      const fresh = await ref.get();
+      return { id, ...fresh.data() } as StudentFeeLedgerDoc;
+    } catch (e) {
+      onFirestoreError(`updateStudentFeeLedgerServer(${id})`, e);
+      throw e;
+    }
+  }
+  return mergedLocal;
+}
+
+export async function getStudentChargesServer(schoolId: string, studentId: string): Promise<StudentChargeDoc[]> {
+  assertProductionDbReady();
+  const sort = (list: StudentChargeDoc[]) => list.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("studentCharges")
+        .where("schoolId", "==", schoolId)
+        .where("studentId", "==", studentId)
+        .limit(500)
+        .get();
+      return sort(snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentChargeDoc)));
+    } catch (e) {
+      onFirestoreError(`getStudentChargesServer(${studentId})`, e);
+      throw e;
+    }
+  }
+  return sort(
+    Array.from(localStore.studentCharges.values()).filter((c) => c.schoolId === schoolId && c.studentId === studentId)
+  );
+}
+
+export async function getStudentChargeByIdServer(schoolId: string, chargeId: string): Promise<StudentChargeDoc | null> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("studentCharges").doc(chargeId).get();
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as StudentChargeDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getStudentChargeByIdServer(${chargeId})`, e);
+      throw e;
+    }
+  }
+  const local = localStore.studentCharges.get(chargeId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+export async function saveStudentChargeServer(charge: StudentChargeDoc): Promise<StudentChargeDoc> {
+  assertProductionDbReady();
+  const data: StudentChargeDoc = { ...charge, updatedAt: new Date().toISOString() };
+  localStore.studentCharges.set(data.id, data);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("studentCharges").doc(data.id).set(cleanUndefined(data));
+    } catch (e) {
+      onFirestoreError(`saveStudentChargeServer(${data.id})`, e);
+      throw e;
+    }
+  }
+  return data;
+}

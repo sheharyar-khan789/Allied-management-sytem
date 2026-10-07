@@ -4,14 +4,12 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import {
   User,
   signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
   signOut as fbSignOut,
   sendPasswordResetEmail as fbResetPassword,
   updatePassword as fbUpdatePassword,
   onAuthStateChanged
 } from "firebase/auth";
-import { auth, db } from "./config";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { auth } from "./config";
 import { UserProfile, UserRole } from "./types";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -21,7 +19,7 @@ interface AuthContextType {
   role: UserRole | null;
   schoolId: string | null;
   loading: boolean;
-  login: (email: string, pass: string) => Promise<UserProfile>;
+  login: (email: string, pass: string) => Promise<void>;
   signup: (fullName: string, email: string, pass: string, schoolName: string, registrationSecret?: string) => Promise<void>;
   logout: () => Promise<void>;
   sendPasswordReset: (email: string) => Promise<void>;
@@ -29,6 +27,22 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+/**
+ * The signed-in profile, sanitised by the server (no password hash, 2FA secret or revocation
+ * state). Profiles are never read from Firestore in the browser: the rules deny it, because a
+ * profile holds the admin's TOTP secret.
+ */
+async function fetchServerProfile(): Promise<UserProfile | null> {
+  try {
+    const res = await fetch("/api/auth/me", { credentials: "same-origin" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data?.user as UserProfile) || null;
+  } catch {
+    return null;
+  }
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -43,21 +57,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
       if (firebaseUser) {
-        try {
-          const userDocRef = doc(db, "users", firebaseUser.uid);
-          const snap = await getDoc(userDocRef);
-          if (snap.exists()) {
-            const prof = snap.data() as UserProfile;
-            setProfile(prof);
-            // Client state managed in AuthContext; server session managed via allied_session HttpOnly cookie
-            document.cookie = "session_user=; path=/; max-age=0";
-          } else {
-            setProfile(null);
-          }
-        } catch (e) {
-          console.error("Error fetching user profile:", e);
-          setProfile(null);
-        }
+        // Client state managed in AuthContext; server session managed via allied_session HttpOnly cookie
+        setProfile(await fetchServerProfile());
+        document.cookie = "session_user=; path=/; max-age=0";
       } else {
         setProfile(null);
         document.cookie = "session_user=; path=/; max-age=0";
@@ -68,18 +70,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => unsubscribe();
   }, []);
 
-  const login = async (email: string, pass: string): Promise<UserProfile> => {
-    const userCredential = await signInWithEmailAndPassword(auth, email, pass);
-    const uid = userCredential.user.uid;
-    const userDocRef = doc(db, "users", uid);
-    const snap = await getDoc(userDocRef);
-    if (!snap.exists()) {
-      throw new Error("User profile not found in Firestore.");
-    }
-    const prof = snap.data() as UserProfile;
-    setProfile(prof);
+  // Firebase client sign-in only; the caller then exchanges the ID token for the server session
+  // at /api/auth/login, which loads the profile and enforces 2FA.
+  const login = async (email: string, pass: string): Promise<void> => {
+    await signInWithEmailAndPassword(auth, email, pass);
     document.cookie = "session_user=; path=/; max-age=0";
-    return prof;
   };
 
   const signup = async (
@@ -89,11 +84,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     schoolName: string,
     registrationSecret?: string
   ): Promise<void> => {
-    // 1. Create Firebase Auth user on client
-    const cred = await createUserWithEmailAndPassword(auth, email, pass);
-    const idToken = await cred.user.getIdToken();
-
-    // 2. Call server-side atomic registration endpoint (eliminates Firestore rules race conditions)
+    // The server creates the Firebase Auth account (Admin SDK) together with the school and
+    // profile. Creating it here in the browser required Firebase's public self-sign-up to stay
+    // enabled for the whole project, which lets anyone with the public web API key create
+    // accounts; with server-side creation it can be turned off in the Firebase console.
     const res = await fetch("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -102,7 +96,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email,
         password: pass,
         schoolName,
-        idToken,
         registrationSecret,
       }),
     });

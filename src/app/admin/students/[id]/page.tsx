@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, use } from "react";
+import React, { useEffect, useRef, useState, use } from "react";
 import Link from "next/link";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
@@ -31,6 +31,7 @@ export default function StudentDossierPage({
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("Bank Deposit");
   const [payLoading, setPayLoading] = useState(false);
+  const [payError, setPayError] = useState("");
 
   // Observation note modal state
   const [noteModalOpen, setNoteModalOpen] = useState(false);
@@ -62,23 +63,35 @@ export default function StudentDossierPage({
     guardianPhone: "",
     guardianEmail: "",
     photoUrl: "",
+    cnicBForm: "",
+    monthlyFee: "",
+    annualFee: "",
   });
+  // CNIC as loaded, so an untouched legacy value isn't re-validated (and rejected) on save.
+  const loadedCnic = useRef("");
+
+  // Only the response for the student currently on screen may be applied: switching students
+  // quickly used to let a slower, older response overwrite the newer student's dossier.
+  const currentIdRef = useRef(id);
+  currentIdRef.current = id;
 
   const fetchStudentDossier = async () => {
+    const requestedId = id;
     try {
-      const res = await fetch(`/api/students/${id}`);
+      const res = await fetch(`/api/students/${requestedId}`, { cache: "no-store" });
       const json = await res.json();
-      if (json.success) {
-        setData(json);
-      }
+      if (currentIdRef.current !== requestedId) return;
+      setData(json.success ? json : null);
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      if (currentIdRef.current === requestedId) setLoading(false);
     }
   };
 
   useEffect(() => {
+    setData(null);
+    setLoading(true);
     fetchStudentDossier();
     fetch("/api/classes")
       .then((r) => r.json())
@@ -109,7 +122,11 @@ export default function StudentDossierPage({
       guardianPhone: st.guardianPhone || "",
       guardianEmail: st.guardianEmail || "",
       photoUrl: st.photoUrl || "",
+      cnicBForm: st.cnicBForm || "",
+      monthlyFee: String(st.monthlyFee ?? 0),
+      annualFee: String(st.annualFee ?? 0),
     });
+    loadedCnic.current = st.cnicBForm || "";
     setEditStudentError("");
     setEditStudentModalOpen(true);
   };
@@ -119,11 +136,19 @@ export default function StudentDossierPage({
     setEditStudentError("");
     setEditStudentLoading(true);
 
+    const { cnicBForm, monthlyFee, annualFee, ...rest } = studentFormData;
+    const payload: Record<string, unknown> = {
+      ...rest,
+      monthlyFee: monthlyFee === "" ? 0 : Number(monthlyFee),
+      annualFee: annualFee === "" ? 0 : Number(annualFee),
+      ...(cnicBForm.trim() !== loadedCnic.current ? { cnicBForm: cnicBForm.trim() } : {}),
+    };
+
     try {
       const res = await fetch(`/api/students/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(studentFormData),
+        body: JSON.stringify(payload),
       });
 
       const json = await res.json();
@@ -144,6 +169,7 @@ export default function StudentDossierPage({
     e.preventDefault();
     if (!selectedChallan || !payAmount) return;
     setPayLoading(true);
+    setPayError("");
 
     try {
       const res = await fetch("/api/fees", {
@@ -159,9 +185,13 @@ export default function StudentDossierPage({
       if (res.ok) {
         setPaymentModalOpen(false);
         fetchStudentDossier();
+      } else {
+        const json = await res.json().catch(() => ({}));
+        setPayError(json.error || "Failed to record the payment.");
       }
     } catch (err) {
       console.error(err);
+      setPayError("Failed to record the payment. Please check your connection.");
     } finally {
       setPayLoading(false);
     }
@@ -569,7 +599,17 @@ export default function StudentDossierPage({
       {activeTab === "fees" && (
         <div className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">
           <div className="p-4 border-b border-surface-container-low flex items-center justify-between">
-            <h3 className="font-headline-md text-sm font-bold text-on-surface">Issued Fee Challans & Payments</h3>
+            <div>
+              <h3 className="font-headline-md text-sm font-bold text-on-surface">Issued Fee Challans & Payments</h3>
+              <p className="text-[11px] text-on-surface-variant mt-0.5">
+                Monthly fee: <span className="font-semibold text-on-surface">{formatCurrency(student.monthlyFee || 0)}</span>
+                {" • "}Annual fee: <span className="font-semibold text-on-surface">{formatCurrency(student.annualFee || 0)}</span>
+                {" • "}
+                <Link href={`/admin/fees?studentId=${encodeURIComponent(id)}`} className="text-secondary font-semibold hover:underline">
+                  12-month status &amp; other payments
+                </Link>
+              </p>
+            </div>
             <span className="text-xs text-on-surface-variant font-semibold">
               Outstanding Balance: {formatCurrency(stats.fees.outstanding)}
             </span>
@@ -617,6 +657,7 @@ export default function StudentDossierPage({
                           onClick={() => {
                             setSelectedChallan(ch);
                             setPayAmount((ch.totalExpected - ch.paidAmount).toString());
+                            setPayError("");
                             setPaymentModalOpen(true);
                           }}
                           className="px-2.5 py-1 rounded bg-secondary text-on-secondary font-semibold text-[11px] hover:bg-secondary/90"
@@ -975,6 +1016,9 @@ export default function StudentDossierPage({
             </div>
 
             <form onSubmit={handleRecordPayment} className="space-y-3 text-xs">
+              {payError && (
+                <div role="alert" className="p-2.5 rounded bg-error-container text-on-error-container">{payError}</div>
+              )}
               <div>
                 <label htmlFor="id-challan-reference-1" className="block font-semibold text-on-surface mb-1">Challan Reference</label>
                 <input id="id-challan-reference-1"
@@ -1248,6 +1292,47 @@ export default function StudentDossierPage({
                       className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                     />
                   </div>
+                  <div>
+                    <label htmlFor="edit-st-cnic" className="block font-semibold text-on-surface mb-1">CNIC / B-Form Number</label>
+                    <input
+                      id="edit-st-cnic"
+                      type="text"
+                      value={studentFormData.cnicBForm}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, cnicBForm: e.target.value })}
+                      placeholder="e.g. 35201-8765432-2"
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="font-bold text-on-surface mb-2 text-[11px] uppercase tracking-wider text-secondary">Fee Structure</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="edit-st-monthly-fee" className="block font-semibold text-on-surface mb-1">Monthly Fee (PKR)</label>
+                    <input
+                      id="edit-st-monthly-fee"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={studentFormData.monthlyFee}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, monthlyFee: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="edit-st-annual-fee" className="block font-semibold text-on-surface mb-1">Annual Fee (PKR)</label>
+                    <input
+                      id="edit-st-annual-fee"
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={studentFormData.annualFee}
+                      onChange={(e) => setStudentFormData({ ...studentFormData, annualFee: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1292,8 +1377,7 @@ export default function StudentDossierPage({
                       <option value="ACTIVE">ACTIVE</option>
                       <option value="INACTIVE">INACTIVE</option>
                       <option value="ALUMNI">ALUMNI</option>
-                      <option value="SUSPENDED">SUSPENDED</option>
-                      <option value="WITHDRAWN">WITHDRAWN</option>
+                      <option value="EXPELLED">EXPELLED</option>
                     </select>
                   </div>
                 </div>

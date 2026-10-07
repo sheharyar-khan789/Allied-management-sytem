@@ -6,6 +6,9 @@ import { todayLocalISO } from "@/lib/date-utils";
 export default function AttendanceManagementPage() {
   const [classes, setClasses] = useState<any[]>([]);
   const [selectedClassId, setSelectedClassId] = useState("");
+  // "" = the class's daily register (the one student/parent/report figures use); otherwise a
+  // subject register marked by that subject's teacher.
+  const [selectedSubjectId, setSelectedSubjectId] = useState("");
   const [selectedDate, setSelectedDate] = useState(todayLocalISO());
   const [roster, setRoster] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,7 +48,10 @@ export default function AttendanceManagementPage() {
     setLoadError("");
 
     try {
-      const res = await fetch(`/api/attendance?classId=${encodeURIComponent(selectedClassId)}&date=${selectedDate}`);
+      const res = await fetch(
+        `/api/attendance?classId=${encodeURIComponent(selectedClassId)}&date=${selectedDate}` +
+          (selectedSubjectId ? `&subjectId=${encodeURIComponent(selectedSubjectId)}` : "")
+      );
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
         setRoster(json.roster);
@@ -69,7 +75,7 @@ export default function AttendanceManagementPage() {
     if (selectedClassId) {
       fetchAttendance();
     }
-  }, [selectedClassId, selectedDate]);
+  }, [selectedClassId, selectedSubjectId, selectedDate]);
 
   const handleStatusChange = (studentId: string, status: string) => {
     setRoster((prev) =>
@@ -97,6 +103,7 @@ export default function AttendanceManagementPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           classId: selectedClassId,
+          ...(selectedSubjectId ? { subjectId: selectedSubjectId } : {}),
           date: selectedDate,
           records: roster.map((r) => ({
             studentId: r.studentId,
@@ -224,12 +231,33 @@ export default function AttendanceManagementPage() {
             </label>
             <select id="attendance-select-class-cohort-1"
               value={selectedClassId}
-              onChange={(e) => setSelectedClassId(e.target.value)}
+              onChange={(e) => {
+                setSelectedClassId(e.target.value);
+                setSelectedSubjectId("");
+              }}
               className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
             >
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.displayName} ({c.studentCount} students)
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="attendance-select-register" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">
+              Register
+            </label>
+            <select id="attendance-select-register"
+              value={selectedSubjectId}
+              onChange={(e) => setSelectedSubjectId(e.target.value)}
+              className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+            >
+              <option value="">Daily Register</option>
+              {(classes.find((c) => c.id === selectedClassId)?.subjects || []).map((s: any) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} ({s.teacherName})
                 </option>
               ))}
             </select>

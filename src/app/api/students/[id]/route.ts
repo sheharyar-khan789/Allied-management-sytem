@@ -14,8 +14,50 @@ import {
   getSubjectsServer,
   getExamsServer
 } from "@/lib/firebase/server-db";
-import { assertCanViewStudent } from "@/lib/academic-access";
+import { assertCanViewStudent, canViewStudentAttendance } from "@/lib/academic-access";
 import { linkGuardianEmailToStudent } from "@/lib/link-parent";
+import { requireRecentAuth } from "@/lib/firebase/server-auth";
+import { syncLoginActive } from "@/lib/account-status";
+import { z } from "zod";
+import { cnicNumber, documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
+
+const optText = (max: number) => z.string().trim().max(max).optional().or(z.literal(""));
+const optEmail = z.string().trim().max(254).email().optional().or(z.literal(""));
+
+// Unknown keys are dropped; server-controlled keys (schoolId, userId, parentUserIds, admissionNo,
+// fee balances, audit fields, ...) are rejected by parseJsonBody before this runs.
+const studentFieldsSchema = {
+  firstName: optText(80),
+  lastName: optText(80),
+  fullName: optText(160),
+  rollNumber: optText(30),
+  rollNo: optText(30),
+  gender: z.enum(["Male", "Female", "MALE", "FEMALE"]).optional(),
+  dob: optText(20),
+  admissionDate: optText(20),
+  bloodGroup: optText(20),
+  cnicBForm: cnicNumber.optional(),
+  contactNumber: optText(30),
+  phone: optText(30),
+  email: optEmail,
+  address: optText(300),
+  classId: idString.optional(),
+  guardianName: optText(120),
+  fatherName: optText(120),
+  guardianRelation: optText(40),
+  guardianPhone: optText(30),
+  guardianEmail: optEmail,
+  guardianOccupation: optText(80),
+  photoUrl: safeUrl.optional(),
+  documents: documentsArray.optional(),
+};
+
+const studentUpdateSchema = z.object({
+  ...studentFieldsSchema,
+  status: z.enum(["ACTIVE", "INACTIVE", "ALUMNI", "EXPELLED"]).optional(),
+  monthlyFee: money.optional(),
+  annualFee: money.optional(),
+});
 
 export async function GET(
   req: NextRequest,
@@ -33,10 +75,14 @@ export async function GET(
     // teacher scoping is now consistent across the whole application rather than correct
     // everywhere except here. It also performs the school-isolation and 404 checks.
     const student = await assertCanViewStudent(authUser, id);
+    // Attendance is only for the class incharge: a subject teacher's dossier carries none.
+    const showAttendance = await canViewStudentAttendance(authUser, student);
+    // Fees are school finances: a TEACHER's dossier carries no challans or balances at all.
+    const showFees = authUser.role !== "TEACHER";
 
-    const [attendances, challans, examResults, observations, classes, subjects, exams] = await Promise.all([
+    const [attendanceRecords, challans, examResults, observations, classes, subjects, exams] = await Promise.all([
       getStudentAttendanceServer(authUser.schoolId, id),
-      getStudentFeeChallansServer(authUser.schoolId, id),
+      showFees ? getStudentFeeChallansServer(authUser.schoolId, id) : Promise.resolve([]),
       getExamResultsServer(authUser.schoolId, undefined, undefined, id),
       getStudentObservationsServer(authUser.schoolId, id),
       getClassesServer(authUser.schoolId),
@@ -44,6 +90,7 @@ export async function GET(
       getExamsServer(authUser.schoolId)
     ]);
 
+    const attendances = showAttendance ? attendanceRecords : [];
     const targetClass = classes.find((c) => c.id === student.classId);
     const examNameById = new Map(exams.map((e) => [e.id, e.name]));
 
@@ -78,7 +125,10 @@ export async function GET(
       gender: student.gender === "MALE" ? "Male" : "Female",
       dob: student.dob,
       bloodGroup: student.bloodGroup || "Not Specified",
-      cnicBForm: student.cnic || student.bForm || "-",
+      cnicBForm: student.cnic || student.bForm || "",
+      ...(authUser.role === "ADMIN"
+        ? { monthlyFee: Number(student.monthlyFee) || 0, annualFee: Number(student.annualFee) || 0 }
+        : {}),
       contactNumber: student.phone,
       email: student.email || "Not Available",
       address: student.address || "Not Provided",
@@ -105,6 +155,7 @@ export async function GET(
           teacher: { firstName: sub.teacherName || "Faculty", lastName: "" }
         }))
       },
+      attendanceRestricted: !showAttendance,
       attendances: attendances.map((a) => ({
         id: a.id,
         date: a.date,
@@ -159,11 +210,15 @@ export async function GET(
           absent: absentAtt,
           percentage: Number(attPct),
         },
-        fees: {
-          expected: totalExpectedFee,
-          paid: totalPaidFee,
-          outstanding: totalOutstandingFee,
-        },
+        ...(showFees
+          ? {
+              fees: {
+                expected: totalExpectedFee,
+                paid: totalPaidFee,
+                outstanding: totalOutstandingFee,
+              },
+            }
+          : {}),
         academics: {
           totalMarks: totalMaxMarks,
           obtainedMarks: totalObtainedMarks,
@@ -190,7 +245,9 @@ export async function PUT(
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const { id } = await params;
-    const body = await req.json();
+    const parsed = await parseJsonBody(req, studentUpdateSchema);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.data as z.infer<typeof studentUpdateSchema> & Record<string, any>;
 
     const existing = await getStudentByIdServer(authUser.schoolId, id);
     if (!existing) {
@@ -225,6 +282,12 @@ export async function PUT(
       status: body.status || existing.status,
       photoUrl: body.photoUrl !== undefined ? body.photoUrl : existing.photoUrl,
       documents: body.documents !== undefined ? body.documents : (existing.documents || []),
+      // CNIC was accepted by this schema but never written, so edits never persisted. The form
+      // has one "CNIC / B-Form" field: writing it replaces any legacy imported bForm value too,
+      // so a cleared or changed number can't fall back to a stale one on display.
+      ...(body.cnicBForm !== undefined ? { cnic: body.cnicBForm, bForm: "" } : {}),
+      monthlyFee: body.monthlyFee !== undefined ? Number(body.monthlyFee) : (Number(existing.monthlyFee) || 0),
+      annualFee: body.annualFee !== undefined ? Number(body.annualFee) : (Number(existing.annualFee) || 0),
       updatedAt: new Date().toISOString()
     };
 
@@ -244,6 +307,9 @@ export async function PUT(
     }
 
     await saveStudentServer(updated);
+    if (updated.status !== existing.status) {
+      await syncLoginActive(existing.userId, authUser.schoolId, updated.status === "ACTIVE");
+    }
 
     if (updated.guardianEmail) {
       await linkGuardianEmailToStudent({
@@ -262,7 +328,9 @@ export async function PUT(
       "UPDATE_STUDENT",
       "STUDENT",
       id,
-      `Updated profile for student ${updated.fullName} (${updated.admissionNo}).`
+      `Updated profile for student ${updated.fullName} (${updated.admissionNo}).` +
+        (updated.monthlyFee !== (Number(existing.monthlyFee) || 0) ? ` Monthly fee: Rs. ${Number(existing.monthlyFee) || 0} → Rs. ${updated.monthlyFee}.` : "") +
+        (updated.annualFee !== (Number(existing.annualFee) || 0) ? ` Annual fee: Rs. ${Number(existing.annualFee) || 0} → Rs. ${updated.annualFee}.` : "")
     );
 
     return NextResponse.json({ success: true, student: updated });
@@ -290,6 +358,10 @@ export async function DELETE(
     }
 
     const isPermanent = req.nextUrl.searchParams.get("permanent") === "true";
+    requireRecentAuth(authUser, isPermanent ? "delete a student record" : "archive a student", req);
+    // Either way the student's own login stops working immediately.
+    await syncLoginActive(existing.userId, authUser.schoolId, false);
+
     if (isPermanent) {
       await deleteStudentServer(authUser.schoolId, id);
       await createAuditLogServer(

@@ -43,6 +43,8 @@ export default function AddNewStudentPage() {
     guardianEmail: "",
     guardianOccupation: "",
     photoUrl: "",
+    monthlyFee: "",
+    annualFee: "",
   });
 
   useEffect(() => {
@@ -71,7 +73,11 @@ export default function AddNewStudentPage() {
       const res = await fetch("/api/students", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          ...formData,
+          monthlyFee: formData.monthlyFee === "" ? undefined : Number(formData.monthlyFee),
+          annualFee: formData.annualFee === "" ? undefined : Number(formData.annualFee),
+        }),
       });
 
       const data = await res.json();
@@ -312,6 +318,8 @@ export default function AddNewStudentPage() {
                 value={formData.cnicBForm}
                 onChange={handleChange}
                 placeholder="e.g. 35201-8765432-2"
+                pattern="\d{5}-?\d{7}-?\d"
+                title="13 digits in the format XXXXX-XXXXXXX-X"
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
               />
             </div>
@@ -353,6 +361,34 @@ export default function AddNewStudentPage() {
                 value={formData.rollNumber}
                 onChange={handleChange}
                 placeholder="e.g. 15 (leave blank to auto-assign)"
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="new-monthly-fee" className="block font-semibold text-on-surface mb-1">Monthly Fee (PKR)</label>
+              <input id="new-monthly-fee"
+                type="number"
+                min={0}
+                step="any"
+                name="monthlyFee"
+                value={formData.monthlyFee}
+                onChange={handleChange}
+                placeholder="e.g. 5000"
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="new-annual-fee" className="block font-semibold text-on-surface mb-1">Annual Fee (PKR)</label>
+              <input id="new-annual-fee"
+                type="number"
+                min={0}
+                step="any"
+                name="annualFee"
+                value={formData.annualFee}
+                onChange={handleChange}
+                placeholder="e.g. 20000 (set separately, not 12 × monthly)"
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
               />
             </div>

@@ -14,8 +14,35 @@ import {
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
 import { ExamDoc, ExamResultDoc, ExamScheduleDoc, SchoolSettingsDoc } from "@/lib/firebase/types";
-import { assertTeacherOwnsClass, resolveAuthenticatedTeacher } from "@/lib/academic-access";
+import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic-access";
 import { validateDateString } from "@/lib/date-utils";
+import { z } from "zod";
+import { idString, parseJsonBody, safeUrl } from "@/lib/input-validation";
+
+const examUpdateSchema = z.union([
+  // Exam cycle metadata (ADMIN only).
+  z.object({
+    examId: idString,
+    examScheduleId: z.undefined().optional(),
+    title: z.string().trim().min(1).max(160).optional(),
+    status: z.enum(["UPCOMING", "ONGOING", "COMPLETED", "PUBLISHED"]).optional(),
+    resultSheetUrl: safeUrl.optional().nullable(),
+  }),
+  // Marks entry for one schedule (ADMIN, or the TEACHER allocated that subject).
+  z.object({
+    examScheduleId: idString,
+    studentMarks: z
+      .array(
+        z.object({
+          studentId: idString,
+          marksObtained: z.coerce.number().finite().min(0).max(100_000),
+          remarks: z.string().trim().max(500).optional(),
+          cardUrl: safeUrl.optional(),
+        })
+      )
+      .max(1000),
+  }),
+]);
 
 // Grade/GPA are derived from the school's own configured grading scale (Settings), falling
 // back to a sane default scale for schools that have not customized one yet. This replaces a
@@ -51,10 +78,9 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const examId = searchParams.get("examId");
 
-    // A TEACHER only ever sees schedules/results for their own assignedClassIds — resolved
-    // from the authenticated session, never from a client-supplied value.
-    const teacher = await resolveAuthenticatedTeacher(authUser);
-    const teacherAssignedClasses = teacher?.assignedClassIds?.length ? new Set(teacher.assignedClassIds) : null;
+    // A TEACHER only ever sees schedules/results for subjects allocated to them — resolved
+    // from the authenticated session, never from a client-supplied value. Fails closed.
+    const allocation = authUser.role === "TEACHER" ? await requireTeacherAllocation(authUser) : null;
 
     const [exams, settings] = await Promise.all([
       getExamsServer(authUser.schoolId),
@@ -68,10 +94,8 @@ export async function GET(req: NextRequest) {
       ? await getExamSchedulesServer(authUser.schoolId, activeExam.id)
       : [];
 
-    // Restrict to the teacher's own assigned classes (no-op for ADMIN or for a teacher with
-    // no assignedClassIds configured yet — see assertTeacherOwnsClass for the same convention).
-    const visibleSchedules = teacherAssignedClasses
-      ? realSchedules.filter((s) => teacherAssignedClasses.has(s.classId))
+    const visibleSchedules = allocation
+      ? realSchedules.filter((s) => allocation.subjectIds.has(s.subjectId) && allocation.classIds.has(s.classId))
       : realSchedules;
 
     const [classes, subjects] = await Promise.all([
@@ -342,7 +366,10 @@ export async function PATCH(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
-    const body = await req.json();
+    // obtained/percentage/grade/gpa/status/evaluatedBy of a result are always computed here.
+    const parsed = await parseJsonBody(req, examUpdateSchema, ["percentage", "grade", "gpa", "totalMarks", "teacherId"]);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.data as any;
 
     // Support updating exam metadata (such as result sheet URL or status) by ADMIN
     if (body.examId && !body.examScheduleId) {
@@ -394,6 +421,16 @@ export async function PUT(req: NextRequest) {
     // A TEACHER may only submit marks for a schedule whose class is in their own
     // assignedClassIds — resolved server-side, never trusting a client-supplied class/teacher.
     await assertTeacherOwnsClass(authUser, schedule.classId);
+    // ...and only for a subject allocated to them, not any subject of that class.
+    if (authUser.role === "TEACHER") {
+      const allocation = await requireTeacherAllocation(authUser);
+      if (!allocation.subjectIds.has(schedule.subjectId)) {
+        return NextResponse.json(
+          { error: "Forbidden: this subject is not allocated to you." },
+          { status: 403 }
+        );
+      }
+    }
 
     // Verify every graded student actually belongs to this school and to the schedule's class.
     const classStudents = await getStudentsServer(authUser.schoolId, schedule.classId);

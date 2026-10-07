@@ -1,25 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { saveSchoolServer, updateSchoolSettingsServer, createUserServer, createAuditLogServer } from "@/lib/firebase/server-db";
-import { createSessionCookieServer, AuthenticatedUser } from "@/lib/firebase/server-auth";
+import {
+  saveSchoolServer,
+  updateSchoolSettingsServer,
+  createUserServer,
+  createAuditLogServer,
+  getUserByEmailServer,
+  getUserByIdServer,
+  consumeRegistrationSecretServer,
+  releaseRegistrationSecretServer,
+} from "@/lib/firebase/server-db";
+import { createSessionCookieServer, AuthenticatedUser, SESSION_COOKIE_OPTIONS } from "@/lib/firebase/server-auth";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { School, SchoolSettingsDoc, UserProfile } from "@/lib/firebase/types";
 import { getDefaultAcademicYear } from "@/lib/school-display";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
+import { getClientIp, rejectCrossSite } from "@/lib/request-security";
+import { checkPasswordPolicy } from "@/lib/password-reset";
+import { securityLog } from "@/lib/security-log";
+
+/** Constant-time comparison of the submitted registration secret with the configured one. */
+function secretMatches(submitted: string, expected: string): boolean {
+  const a = crypto.createHash("sha256").update(submitted).digest();
+  const b = crypto.createHash("sha256").update(expected).digest();
+  return crypto.timingSafeEqual(a, b) && submitted.length === expected.length;
+}
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  const csrfBlocked = rejectCrossSite(req);
+  if (csrfBlocked) return csrfBlocked;
   try {
     // School registration creates a brand-new tenant plus a privileged ADMIN account, and was
     // previously the only unauthenticated write endpoint with no rate limiting at all — a
     // single client could create unlimited schools, admin users and Firebase Auth accounts.
     // Uses the same per-IP limiter as /api/auth/login, with a tighter budget because
     // legitimate registration is a rare, deliberate action.
-    const forwarded = req.headers.get("x-forwarded-for");
-    const clientIp = forwarded
-      ? forwarded.split(",")[0].trim()
-      : req.headers.get("x-real-ip") || "127.0.0.1";
+    const clientIp = getClientIp(req.headers);
     const rateCheck = checkAuthRateLimit(`register:${clientIp}`, 5, 900);
     if (!rateCheck.allowed) {
       return NextResponse.json(
@@ -55,9 +73,15 @@ export async function POST(req: NextRequest) {
     const idToken = (body.idToken || "").toString();
     const registrationSecret = (body.registrationSecret || req.headers.get("x-registration-secret") || "").toString().trim();
 
-    // Institutional registration gate: require the shared registration secret code
+    // Institutional registration gate. The page URL is not a control (it is in the public
+    // source); the operator-held SCHOOL_REGISTRATION_SECRET is. It is compared in constant time,
+    // every wrong guess counts against the per-IP budget, and each secret value is single-use
+    // (consumed below), so it works as a one-time setup token: creating another institution
+    // requires the operator to set a new secret.
     const expectedSecret = (process.env.SCHOOL_REGISTRATION_SECRET || "").trim();
-    if (!expectedSecret || registrationSecret !== expectedSecret) {
+    if (!expectedSecret || expectedSecret.length < 16 || !registrationSecret || !secretMatches(registrationSecret, expectedSecret)) {
+      recordAuthFailure(`register:${clientIp}`, 5, 900);
+      securityLog("auth.register_rejected", { ip: clientIp, reason: expectedSecret ? "bad_secret" : "not_configured", status: 403 });
       return NextResponse.json(
         { error: "Invalid or missing registration authorization secret code." },
         { status: 403, headers: { "Content-Type": "application/json" } }
@@ -110,6 +134,20 @@ export async function POST(req: NextRequest) {
           { status: 400, headers: { "Content-Type": "application/json" } }
         );
       }
+      const policyError = checkPasswordPolicy(password, { email, name: fullName });
+      if (policyError) {
+        return NextResponse.json({ error: policyError }, { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+    }
+
+    // Registration only ever creates a NEW account as the admin of a NEW school. An existing
+    // user (teacher, parent, another school's admin...) can't be re-registered, which would
+    // otherwise overwrite their profile and move them into a tenant they control.
+    if (await getUserByEmailServer(email)) {
+      return NextResponse.json(
+        { error: "A user with this administrator email already exists." },
+        { status: 409, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     let uid: string;
@@ -117,6 +155,12 @@ export async function POST(req: NextRequest) {
 
     if (idToken && hasAdminCredentials) {
       const decoded = await adminAuth.verifyIdToken(idToken);
+      if ((decoded.email || "").toLowerCase().trim() !== email || (await getUserByIdServer(decoded.uid))) {
+        return NextResponse.json(
+          { error: "This sign-in token does not belong to a new administrator account." },
+          { status: 409, headers: { "Content-Type": "application/json" } }
+        );
+      }
       uid = decoded.uid;
     } else if (hasAdminCredentials) {
       const authUser = await adminAuth.createUser({
@@ -143,6 +187,18 @@ export async function POST(req: NextRequest) {
     const uniqueSuffix = crypto.randomBytes(6).toString("hex");
     const schoolId = `${schoolSlug || "allied-school"}-${uniqueSuffix}`;
     const now = new Date().toISOString();
+
+    const secretHash = crypto.createHash("sha256").update(`school-registration:${expectedSecret}`).digest("hex");
+    if (!(await consumeRegistrationSecretServer(secretHash, schoolId))) {
+      if (createdAuthUid && hasAdminCredentials) {
+        await adminAuth.deleteUser(createdAuthUid).catch(() => undefined);
+      }
+      securityLog("auth.register_rejected", { ip: clientIp, reason: "secret_already_used", status: 403 });
+      return NextResponse.json(
+        { error: "This registration secret code has already been used. Ask the system operator for a new one." },
+        { status: 403, headers: { "Content-Type": "application/json" } }
+      );
+    }
 
     if (hasAdminCredentials) {
       try {
@@ -223,6 +279,7 @@ export async function POST(req: NextRequest) {
         `School ${schoolName} registered with Administrator ${fullName}.`
       );
     } catch (dbErr: any) {
+      await releaseRegistrationSecretServer(secretHash);
       if (createdAuthUid && hasAdminCredentials) {
         try {
           await adminAuth.deleteUser(createdAuthUid);
@@ -250,17 +307,13 @@ export async function POST(req: NextRequest) {
       redirectUrl: "/admin",
     }, { status: 201 });
 
-    response.cookies.set("allied_session", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 7,
-    });
+    // Same 5-minute idle cookie as every other sign-in (this used to be a 7-day cookie).
+    response.cookies.set("allied_session", token, SESSION_COOKIE_OPTIONS);
+    securityLog("auth.register_succeeded", { subject: uid, ip: clientIp, role: "ADMIN", schoolId });
 
     return response;
   } catch (error: any) {
-    console.error("Registration route error:", error);
+    console.error("Registration route error:", error?.code || error?.message || "error");
     const duplicateEmail = error?.code === "auth/email-already-exists";
     return NextResponse.json(
       {
