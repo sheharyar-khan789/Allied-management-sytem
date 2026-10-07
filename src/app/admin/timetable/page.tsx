@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import TimetableGrid from "@/components/TimetableGrid";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -31,9 +32,12 @@ export default function TimetableManagementPage() {
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // "grid" mirrors the school's printed timetable: one day, classes as rows, periods as columns.
+  const [layout, setLayout] = useState<"list" | "grid">("list");
+  const [gridDay, setGridDay] = useState("Monday");
 
   const fetchSlots = async () => {
-    const res = await fetch("/api/timetable");
+    const res = await fetch("/api/timetable", { cache: "no-store" });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || !json.success) throw new Error(json.error || "Failed to load the timetable.");
     setSlots(Array.isArray(json.timetable) ? json.timetable : []);
@@ -74,7 +78,7 @@ export default function TimetableManagementPage() {
   const formSubjects: any[] = formClass?.subjects || [];
 
   const openCreate = () => {
-    setForm({ ...EMPTY_SLOT, classId: filterClassId, dayOfWeek: filterDay || "Monday" });
+    setForm({ ...EMPTY_SLOT, classId: filterClassId, dayOfWeek: layout === "grid" ? gridDay : filterDay || "Monday" });
     setFormError("");
     setModalOpen(true);
   };
@@ -158,7 +162,7 @@ export default function TimetableManagementPage() {
             </span>
           </div>
           <p className="font-body-md text-xs text-on-surface-variant mt-0.5">
-            Schedule weekly periods by class, subject, teacher, day and time. Teachers see only their own periods.
+            Schedule weekly periods by class, subject, teacher, day and time. Teachers see their own periods; students and parents see their class timetable.
           </p>
         </div>
 
@@ -200,14 +204,39 @@ export default function TimetableManagementPage() {
             ))}
           </select>
         </div>
-        <div>
-          <label htmlFor="timetable-filter-day" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Day</label>
-          <select id="timetable-filter-day" value={filterDay} onChange={(e) => setFilterDay(e.target.value)} className={filterClass}>
-            <option value="">All Days</option>
-            {DAYS.map((d) => (
-              <option key={d} value={d}>{d}</option>
-            ))}
-          </select>
+        {layout === "list" ? (
+          <div>
+            <label htmlFor="timetable-filter-day" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Day</label>
+            <select id="timetable-filter-day" value={filterDay} onChange={(e) => setFilterDay(e.target.value)} className={filterClass}>
+              <option value="">All Days</option>
+              {DAYS.map((d) => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div>
+            <label htmlFor="timetable-grid-day" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Day</label>
+            <select id="timetable-grid-day" value={gridDay} onChange={(e) => setGridDay(e.target.value)} className={filterClass}>
+              {DAYS.map((d) => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div className="ml-auto flex rounded-lg overflow-hidden border border-outline-variant/40" role="group" aria-label="Timetable layout">
+          {(["list", "grid"] as const).map((l) => (
+            <button
+              key={l}
+              type="button"
+              onClick={() => setLayout(l)}
+              aria-pressed={layout === l}
+              className={`h-9 px-3 text-xs font-bold flex items-center gap-1 ${layout === l ? "bg-secondary text-on-secondary" : "bg-surface-container-low text-on-surface"}`}
+            >
+              <span className="material-symbols-outlined text-[16px]">{l === "list" ? "view_list" : "grid_on"}</span>
+              {l === "list" ? "By Day" : "Class Grid"}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -216,6 +245,22 @@ export default function TimetableManagementPage() {
           <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
           <p className="text-xs text-on-surface-variant">Loading timetable...</p>
         </div>
+      ) : layout === "grid" && !loadError ? (
+        (() => {
+          const dayEntries = visible.filter((t) => t.dayOfWeek === gridDay);
+          return dayEntries.length === 0 ? (
+            <div className="p-12 text-center space-y-2 bg-surface-container-lowest rounded-xl border border-surface-container-high/40">
+              <span className="material-symbols-outlined text-4xl text-outline-variant">calendar_month</span>
+              <p className="text-sm font-semibold text-on-surface">No periods on {gridDay}</p>
+              <p className="text-xs text-on-surface-variant">Use Add Period, or pick another day.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-[11px] text-on-surface-variant">Click a period to edit it.</p>
+              <TimetableGrid entries={dayEntries} rows="class" onSelect={(entry) => openEdit(entry)} />
+            </div>
+          );
+        })()
       ) : !loadError && days.length === 0 ? (
         <div className="p-12 text-center space-y-2 bg-surface-container-lowest rounded-xl border border-surface-container-high/40">
           <span className="material-symbols-outlined text-4xl text-outline-variant">calendar_month</span>

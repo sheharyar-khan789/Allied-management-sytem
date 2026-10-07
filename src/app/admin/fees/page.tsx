@@ -3,8 +3,16 @@
 import React, { useEffect, useState } from "react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
+import StudentFeeAccount from "@/components/StudentFeeAccount";
+
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
 
 export default function FeeManagementPage() {
+  const [view, setView] = useState<"ledger" | "student">("ledger");
+  const [initialStudentId, setInitialStudentId] = useState("");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -19,6 +27,17 @@ export default function FeeManagementPage() {
   const [payMethod, setPayMethod] = useState("Bank Deposit");
   const [payReceiptUrl, setPayReceiptUrl] = useState("");
   const [payLoading, setPayLoading] = useState(false);
+  const [payError, setPayError] = useState("");
+  const [loadError, setLoadError] = useState("");
+
+  // Deep link from a student's dossier: /admin/fees?studentId=... opens that student's account.
+  useEffect(() => {
+    const sid = new URLSearchParams(window.location.search).get("studentId");
+    if (sid) {
+      setInitialStudentId(sid);
+      setView("student");
+    }
+  }, []);
 
   const fetchFees = async () => {
     try {
@@ -28,13 +47,17 @@ export default function FeeManagementPage() {
       if (selectedStatus !== "all") params.append("status", selectedStatus);
       if (selectedMonth !== "all") params.append("month", selectedMonth);
 
-      const res = await fetch(`/api/fees?${params.toString()}`);
-      const json = await res.json();
-      if (json.success) {
+      const res = await fetch(`/api/fees?${params.toString()}`, { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.success) {
         setData(json);
+        setLoadError("");
+      } else {
+        setLoadError(json.error || "Failed to load fee records.");
       }
     } catch (err) {
       console.error(err);
+      setLoadError("Failed to load fee records. Please check your connection.");
     } finally {
       setLoading(false);
     }
@@ -48,6 +71,7 @@ export default function FeeManagementPage() {
     e.preventDefault();
     if (!selectedChallan || !payAmount) return;
     setPayLoading(true);
+    setPayError("");
 
     try {
       const res = await fetch("/api/fees", {
@@ -65,9 +89,15 @@ export default function FeeManagementPage() {
         setPaymentModalOpen(false);
         setPayReceiptUrl("");
         fetchFees();
+      } else {
+        // Failures (re-authentication required, amount over balance, ...) were silently ignored,
+        // so the modal closed nothing and the ledger looked like the payment had been recorded.
+        const json = await res.json().catch(() => ({}));
+        setPayError(json.error || "Failed to record the payment.");
       }
     } catch (err) {
       console.error(err);
+      setPayError("Failed to record the payment. Please check your connection.");
     } finally {
       setPayLoading(false);
     }
@@ -113,6 +143,35 @@ export default function FeeManagementPage() {
         </button>
       </div>
 
+      <div className="border-b border-surface-container-high/60 flex space-x-2 sm:space-x-4 overflow-x-auto no-print">
+        {[
+          { key: "ledger", label: "Challan Ledger", icon: "receipt_long" },
+          { key: "student", label: "Student Fee Account (12 Months)", icon: "calendar_month" },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setView(tab.key as "ledger" | "student")}
+            className={`flex items-center gap-1.5 py-3 px-3 text-xs sm:text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
+              view === tab.key ? "border-secondary text-secondary font-bold" : "border-transparent text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            <span className="material-symbols-outlined text-[18px]">{tab.icon}</span>
+            <span>{tab.label}</span>
+          </button>
+        ))}
+      </div>
+
+      {view === "student" && <StudentFeeAccount classes={classes} initialStudentId={initialStudentId} />}
+
+      {view === "ledger" && loadError && (
+        <div role="alert" className="p-3 rounded-lg bg-error-container text-on-error-container text-xs font-bold flex items-center gap-2">
+          <span className="material-symbols-outlined text-[18px]">error</span>
+          <span>{loadError}</span>
+        </div>
+      )}
+
+      {view === "ledger" && (<>
       {/* 3 Metric Overview Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex items-center justify-between">
@@ -199,9 +258,9 @@ export default function FeeManagementPage() {
             className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-medium text-on-surface border border-outline-variant/40"
           >
             <option value="all">All Months</option>
-            <option value="September">September</option>
-            <option value="October">October</option>
-            <option value="November">November</option>
+            {MONTHS.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
           </select>
 
           <select
@@ -304,6 +363,7 @@ export default function FeeManagementPage() {
                             setSelectedChallan(ch);
                             setPayAmount(ch.balance.toString());
                             setPayReceiptUrl(ch.receiptUrl || "");
+                            setPayError("");
                             setPaymentModalOpen(true);
                           }}
                           className="px-2.5 py-1 rounded bg-secondary text-on-secondary font-semibold text-[11px] hover:bg-secondary/90 shadow-sm transition-all"
@@ -321,6 +381,8 @@ export default function FeeManagementPage() {
           </div>
         )}
       </div>
+
+      </>)}
 
       {/* Payment Recording Modal */}
       {paymentModalOpen && (
@@ -342,6 +404,9 @@ export default function FeeManagementPage() {
             </div>
 
             <form onSubmit={handleRecordPayment} className="space-y-3 text-xs">
+              {payError && (
+                <div role="alert" className="p-2.5 rounded bg-error-container text-on-error-container">{payError}</div>
+              )}
               <div>
                 <label htmlFor="fees-student-1" className="block font-semibold text-on-surface mb-1">Student</label>
                 <input id="fees-student-1"

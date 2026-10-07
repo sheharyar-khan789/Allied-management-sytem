@@ -106,7 +106,7 @@ export async function GET(req: NextRequest) {
       gender: student.gender === "MALE" ? "Male" : "Female",
       dob: student.dob || "",
       bloodGroup: student.bloodGroup || "Not Specified",
-      cnicBForm: student.cnic || student.bForm || "-",
+      cnicBForm: student.cnic || student.bForm || "",
       contactNumber: student.phone || "",
       email: authUser.email,
       address: student.address || "Not Provided",

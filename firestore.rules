@@ -87,6 +87,13 @@ service cloud.firestore {
       );
     }
 
+    // Attendance is the class incharge's alone: a teacher may read an attendance record (any
+    // register of the class) only if classes.classTeacherId names them. Teaching a subject in
+    // the class grants nothing. Mirrors assertTeacherCanAccessAttendance in /api/attendance.
+    function teacherIsClassInchargeOf(classId) {
+      return callerTeacherId() != ''
+        && get(/databases/$(database)/documents/classes/$(classId)).data.get('classTeacherId', '') == callerTeacherId();
+    }
 
     // -------------------------------------------------------------
     // Defense-in-depth: All mutations (create, update, delete) are
@@ -176,7 +183,7 @@ service cloud.firestore {
     match /attendance/{attendanceId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isTeacher() && getUserSchoolId() == resource.data.schoolId && teacherOwnsAttendanceRegister()) ||
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId && teacherIsClassInchargeOf(resource.data.classId)) ||
         (isStudent() && resource.data.studentId == getUserData().studentId) ||
         isParentOfStudentId(resource.data.studentId)
       );
@@ -301,8 +308,8 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------
-    // Everything not matched above (payrollRecords, passwordResetTokens, registrationSecrets and
-    // any future collection) is denied: Firestore rules deny every path no rule allows.
+    // Everything not matched above (payrollRecords, passwordResetTokens, registrationSecrets,
+    // studentFeeLedgers, studentCharges and any future collection) is denied: Firestore rules deny every path no rule allows.
     // -------------------------------------------------------------
   }
 }

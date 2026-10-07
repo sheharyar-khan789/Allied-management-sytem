@@ -34,8 +34,10 @@ import {
   recordPaymentServer,
   createAuditLogServer,
   getClassesServer,
-  getStudentByIdServer
+  getStudentByIdServer,
+  updateStudentFeeLedgerServer,
 } from "@/lib/firebase/server-db";
+import { feeMonthOf } from "@/lib/fee-ledger";
 import { FeeChallanDoc, PaymentDoc } from "@/lib/firebase/types";
 import { validateDateString } from "@/lib/date-utils";
 
@@ -54,8 +56,11 @@ export async function GET(req: NextRequest) {
     const limitParam = searchParams.get("limit");
     const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
 
+    // "UNPAID" is a UI grouping of the stored PENDING and OVERDUE statuses — no challan is ever
+    // stored as UNPAID, so passing it to the query used to return nothing at all.
+    const statusFilter = status && !["ALL", "UNPAID"].includes(status.toUpperCase()) ? status.toUpperCase() : undefined;
     const [challans, classes] = await Promise.all([
-      getFeeChallansServer(authUser.schoolId, studentId, month, undefined, status, parsedLimit),
+      getFeeChallansServer(authUser.schoolId, studentId, month, undefined, statusFilter, parsedLimit),
       getClassesServer(authUser.schoolId)
     ]);
 
@@ -63,8 +68,10 @@ export async function GET(req: NextRequest) {
     if (classId && classId !== "all" && classId !== "ALL") {
       filtered = filtered.filter((c) => c.classId === classId);
     }
-    if (status && status !== "ALL" && status !== "all") {
-      filtered = filtered.filter((c) => c.status.toUpperCase() === status.toUpperCase());
+    if (status && status.toUpperCase() === "UNPAID") {
+      filtered = filtered.filter((c) => c.status === "PENDING" || c.status === "OVERDUE");
+    } else if (statusFilter) {
+      filtered = filtered.filter((c) => c.status.toUpperCase() === statusFilter);
     }
     if (search) {
       filtered = filtered.filter((c) =>
@@ -323,6 +330,18 @@ export async function PUT(req: NextRequest) {
     };
 
     await recordPaymentServer(paymentDoc);
+
+    // A challan this payment fully settles marks its month paid in the student's 12-month fee
+    // ledger, so the Fee page's month grid reflects counter collections without a manual tick.
+    const settled = await getFeeChallanByIdServer(authUser.schoolId, challanId);
+    const settledMonth = feeMonthOf(settled?.month);
+    if (settled && settled.status === "PAID" && settledMonth) {
+      await updateStudentFeeLedgerServer(
+        { schoolId: authUser.schoolId, studentId: settled.studentId, studentName: settled.studentName, year: Number(settled.year) },
+        { month: { name: settledMonth, paid: true } },
+        authUser.uid
+      );
+    }
 
     await createAuditLogServer(
       authUser.schoolId,

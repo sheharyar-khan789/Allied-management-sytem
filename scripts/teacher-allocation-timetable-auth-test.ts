@@ -188,12 +188,13 @@ async function run() {
       classId, date: today, ...(subjectId ? { subjectId } : {}), records: [{ studentId, status }],
     }));
 
-  const ownReg = await att(T, c8.id, math8.id);
-  const ownRegJson = await json(ownReg);
-  assert(ownReg.status === 200 && ownRegJson.subjectId === math8.id && ownRegJson.roster.length === 1, "Teacher opens own Class 8 Mathematics register");
+  // Attendance is class-incharge-only: teaching a subject in a class grants no attendance access
+  // (not even to that subject's register). T is incharge of Class 9 only.
+  assert((await att(T, c8.id, math8.id)).status === 403, "Subject teacher cannot open their own Class 8 Mathematics register (not the incharge)");
   assert((await att(T, c7.id, sci7.id)).status === 403, "Teacher cannot open another class's register (Class 7)");
   assert((await att(T, c8.id, eng8.id)).status === 403, "Teacher cannot open another subject's register in their own class (Class 8 English)");
-  assert((await att(T, c9.id, chem9.id)).status === 403, "Teacher cannot open an unallocated subject register (Class 9 Chemistry)");
+  const inchargeChem = await att(T, c9.id, chem9.id);
+  assert(inchargeChem.status === 200 && (await json(inchargeChem)).subjectId === chem9.id, "Class incharge may open any subject register of their own class (Class 9 Chemistry)");
   assert((await att(T, c8.id, math9.id)).status === 403, "Teacher cannot pair their own subject with a different class (Math 9 id on Class 8)");
   assert((await att(T, c8.id)).status === 403, "Non-incharge teacher cannot open Class 8's daily register");
   assert((await att(T, c9.id)).status === 200, "Class incharge opens Class 9's daily register");
@@ -201,28 +202,32 @@ async function run() {
   assert((await att(IDLE, c8.id, math8.id)).status === 403, "Teacher with no allocation is rejected for any register");
   assert((await att(ORPHAN, c8.id, math8.id)).status === 403, "Teacher session without a teacher record is rejected for attendance");
 
-  assert((await mark(T, c8.id, s8.id, "PRESENT", math8.id)).status === 200, "Teacher marks own Class 8 Mathematics register");
+  assert((await mark(T, c8.id, s8.id, "PRESENT", math8.id)).status === 403, "Subject teacher's direct POST to their Class 8 Mathematics register is rejected");
   assert((await mark(T, c7.id, s7.id, "PRESENT", sci7.id)).status === 403, "Direct API POST with another classId is rejected");
   assert((await mark(T, c8.id, s8.id, "PRESENT", eng8.id)).status === 403, "Direct API POST with another subjectId is rejected");
   assert((await mark(T, c8.id, s8.id, "PRESENT")).status === 403, "Direct API POST to a daily register they are not incharge of is rejected");
   const crossPost = await mark(T, cB.id, sB.id, "PRESENT", bSubj.id);
   assert(crossPost.status === 404 || crossPost.status === 403, "Cross-school attendance POST is rejected");
-  assert((await mark(E, c8.id, s8.id, "ABSENT", eng8.id)).status === 200, "English teacher marks their own Class 8 English register");
+  assert((await mark(E, c8.id, s8.id, "ABSENT", eng8.id)).status === 403, "English subject teacher's direct POST to Class 8 English register is rejected");
   assert((await mark(T, c9.id, s9.id, "LATE")).status === 200, "Class incharge marks Class 9's daily register");
+  assert((await mark(T, c9.id, s9.id, "PRESENT", math9.id)).status === 200, "Class incharge marks a subject register of their class (Class 9 Mathematics)");
+  assert((await mark(ADMIN_A, c9.id, s9.id, "ABSENT", chem9.id)).status === 200, "Admin marks another subject register (Class 9 Chemistry)");
+  assert((await getAttendanceServer(A, today, c8.id, undefined, undefined, undefined, "ALL")).length === 0, "No Class 8 attendance was written by any subject teacher");
 
-  const mathRecords = await getAttendanceServer(A, today, c8.id, undefined, undefined, undefined, { subjectId: math8.id });
-  const engRecords = await getAttendanceServer(A, today, c8.id, undefined, undefined, undefined, { subjectId: eng8.id });
-  assert(mathRecords.length === 1 && mathRecords[0].status === "PRESENT" && mathRecords[0].subjectId === math8.id, "Math register stores its own record, tagged with the subject");
-  assert(engRecords.length === 1 && engRecords[0].status === "ABSENT" && engRecords[0].id !== mathRecords[0].id, "English register is a separate record for the same student/day");
-  const tMathView = await json(await att(T, c8.id, math8.id));
-  assert(tMathView.roster[0].status === "PRESENT" && tMathView.savedCount === 1, "Math teacher's register response contains only Math data (not the English ABSENT)");
-  assert((await getAttendanceServer(A, today, c8.id)).length === 0, "Class 8 daily register is untouched by subject registers");
-  assert((await getStudentAttendanceServer(A, s8.id)).length === 0, "Student/parent attendance figures (daily register) don't double-count subject registers");
-  const adminEng = await json(await att(ADMIN_A, c8.id, eng8.id));
-  assert(adminEng.success && adminEng.roster[0].status === "ABSENT", "Admin can view any subject register of their school");
+  const mathRecords = await getAttendanceServer(A, today, c9.id, undefined, undefined, undefined, { subjectId: math9.id });
+  const chemRecords = await getAttendanceServer(A, today, c9.id, undefined, undefined, undefined, { subjectId: chem9.id });
+  assert(mathRecords.length === 1 && mathRecords[0].status === "PRESENT" && mathRecords[0].subjectId === math9.id, "Math register stores its own record, tagged with the subject");
+  assert(chemRecords.length === 1 && chemRecords[0].status === "ABSENT" && chemRecords[0].id !== mathRecords[0].id, "Chemistry register is a separate record for the same student/day");
+  const tMathView = await json(await att(T, c9.id, math9.id));
+  assert(tMathView.roster[0].status === "PRESENT" && tMathView.savedCount === 1, "Math register response contains only Math data (not the Chemistry ABSENT)");
+  const dailyC9 = await getAttendanceServer(A, today, c9.id);
+  assert(dailyC9.length === 1 && dailyC9[0].status === "LATE", "Class 9 daily register holds only its own record, untouched by subject registers");
+  assert((await getStudentAttendanceServer(A, s9.id)).length === 1, "Student/parent attendance figures (daily register) don't double-count subject registers");
+  const adminChem = await json(await att(ADMIN_A, c9.id, chem9.id));
+  assert(adminChem.success && adminChem.roster[0].status === "ABSENT", "Admin can view any subject register of their school");
   assert((await att(ADMIN_A, c8.id, math9.id)).status === 404, "Admin request pairing a subject with the wrong class is rejected");
   assert((await att(ADMIN_B, c8.id, math8.id)).status === 404, "Other school's admin cannot open this school's subject register");
-  const delWithHistory = await subjectsDelete(req(ADMIN_A, `http://x/api/subjects?id=${math8.id}`, "DELETE"));
+  const delWithHistory = await subjectsDelete(req(ADMIN_A, `http://x/api/subjects?id=${math9.id}`, "DELETE"));
   assert(delWithHistory.status === 409, "Subject with subject-attendance history cannot be deleted");
 
   // ======================================================================

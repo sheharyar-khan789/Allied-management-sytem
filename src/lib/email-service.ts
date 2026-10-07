@@ -10,6 +10,8 @@ export interface SendPasswordResetOptions {
   schoolName?: string;
   resetUrl: string;
   purpose?: PasswordLinkPurpose;
+  /** Set when the recipient is not the account holder (a guardian receiving a student's link). */
+  accountLabel?: string;
 }
 
 export type EmailProvider = "resend" | "smtp";
@@ -64,6 +66,7 @@ function linkLifetimeText(purpose: PasswordLinkPurpose): string {
 }
 
 export function buildPasswordResetHtml({
+  accountLabel,
   recipientName = "Allied School User",
   schoolName = "Allied School",
   resetUrl,
@@ -73,6 +76,7 @@ export function buildPasswordResetHtml({
   schoolName?: string;
   resetUrl: string;
   purpose?: PasswordLinkPurpose;
+  accountLabel?: string;
 }): string {
   const name = escapeHtml(recipientName);
   const school = escapeHtml(schoolName);
@@ -81,7 +85,7 @@ export function buildPasswordResetHtml({
   const heading = activation ? "Activate Your Account" : "Password Reset Request";
   const intro = activation
     ? `An account has been created for you on the ${school} portal. Click the button below to choose your password and activate your account:`
-    : `We received a request to reset the password for your account on the ${school} portal. Click the button below to choose a new password:`;
+    : `We received a request to reset the password for ${accountLabel ? escapeHtml(accountLabel) : "your account"} on the ${school} portal. Click the button below to choose a new password:`;
   const button = activation ? "Set Your Password" : "Reset Password";
   const ignore = activation
     ? "If you were not expecting this account, you can ignore this email; no password will be set."
@@ -234,15 +238,15 @@ export async function sendPasswordResetEmail(
   options: SendPasswordResetOptions,
   env: Env = process.env
 ): Promise<EmailDeliveryResult> {
-  const { to, recipientName = "User", schoolName = "Allied School", resetUrl, purpose = "RESET" } = options;
+  const { to, recipientName = "User", schoolName = "Allied School", resetUrl, purpose = "RESET", accountLabel } = options;
   const activation = purpose === "ACTIVATION";
   // Header values never carry CR/LF (school names are admin-entered), so no header can be injected
   // whatever the transport does with them.
   const subject = headerSafe(activation ? `Activate your ${schoolName} account` : `Reset your ${schoolName} password`);
-  const html = buildPasswordResetHtml({ recipientName, schoolName, resetUrl, purpose });
+  const html = buildPasswordResetHtml({ recipientName, schoolName, resetUrl, purpose, accountLabel });
   const text = activation
     ? `Account Activation - ${schoolName}\n\nHello ${recipientName},\n\nAn account has been created for you. Use the following secure link to choose your password and activate it:\n\n${resetUrl}\n\nThis link is single-use and will expire in ${linkLifetimeText(purpose)}.\n\nIf you were not expecting this account, please ignore this email.`
-    : `Password Reset Request - ${schoolName}\n\nHello ${recipientName},\n\nA password reset was requested for your account. Please use the following secure link to set your new password:\n\n${resetUrl}\n\nThis link is single-use and will expire in ${linkLifetimeText(purpose)}.\n\nIf you did not request this, please ignore this email.`;
+    : `Password Reset Request - ${schoolName}\n\nHello ${recipientName},\n\nA password reset was requested for ${accountLabel || "your account"}. Please use the following secure link to set your new password:\n\n${resetUrl}\n\nThis link is single-use and will expire in ${linkLifetimeText(purpose)}.\n\nIf you did not request this, please ignore this email.`;
   const msg = { to: headerSafe(to), subject, html, text };
 
   const { providers, missingForResend, missingForSmtp } = getEmailConfigStatus(env);

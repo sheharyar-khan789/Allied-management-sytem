@@ -11,7 +11,8 @@ import {
   createAuditLogServer,
 } from "@/lib/firebase/server-db";
 import { TimetableDoc } from "@/lib/firebase/types";
-import { requireTeacherAllocation } from "@/lib/academic-access";
+import { requireTeacherAllocation, resolveSessionStudent } from "@/lib/academic-access";
+import { assertParentOwnsStudent } from "@/lib/parent-access";
 
 export const dynamic = "force-dynamic";
 
@@ -47,16 +48,45 @@ function jsonError(error: string, status: number) {
   return NextResponse.json({ error }, { status });
 }
 
+/** Read-only fields a student or parent sees for a period of their (child's) class. */
+function toClassView(t: TimetableDoc) {
+  return {
+    id: t.id,
+    dayOfWeek: t.dayOfWeek,
+    periodName: t.periodName,
+    startTime: t.startTime,
+    endTime: t.endTime,
+    classId: t.classId,
+    className: t.className,
+    subjectName: t.subjectName,
+    teacherName: t.teacherId ? t.teacherName || "" : "",
+    roomNo: t.roomNo || "",
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
-    // STUDENT was previously allowed but had no scoping at all — a student session could
-    // pass any ?classId= or ?teacherId= and read the whole school's timetable. No student
-    // page calls this route (the student portal is served by /api/student/me), so the role
-    // is removed rather than a scoping rule invented for an unused code path.
-    const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
+    const authUser = await requireAuth(req, ["ADMIN", "TEACHER", "STUDENT", "PARENT"]);
     const { searchParams } = new URL(req.url);
     const classId = searchParams.get("classId") || undefined;
     const dayOfWeek = searchParams.get("dayOfWeek") || undefined;
+
+    // STUDENT and PARENT: the class is always derived server-side — the student's own record
+    // (student → classId), or a child linked to the parent (parent → student → classId). Any
+    // ?classId= / ?teacherId= they send is ignored, so no other class's timetable is reachable.
+    if (authUser.role === "STUDENT" || authUser.role === "PARENT") {
+      const student =
+        authUser.role === "STUDENT"
+          ? await resolveSessionStudent(authUser)
+          : await assertParentOwnsStudent(authUser, (searchParams.get("studentId") || "").trim());
+      if (!student) return jsonError("Student profile not found.", 404);
+      const items = student.classId ? await getTimetableServer(authUser.schoolId, undefined, student.classId) : [];
+      return NextResponse.json({
+        success: true,
+        student: { id: student.id, fullName: student.fullName, classId: student.classId, className: student.className || "" },
+        timetable: sortEntries(items.filter((t) => t.classId === student.classId)).map(toClassView),
+      });
+    }
 
     let teacherId: string | undefined;
     if (authUser.role === "TEACHER") {

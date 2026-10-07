@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
-import { assertCanViewStudent } from "@/lib/academic-access";
+import { assertCanViewStudent, canViewStudentAttendance } from "@/lib/academic-access";
 import { buildStudentAcademicPayload } from "@/lib/student-academic-payload";
 
 export async function GET(
@@ -14,7 +14,10 @@ export async function GET(
     const payload = await buildStudentAcademicPayload(authUser.schoolId, student, {
       publishedResultsOnly: authUser.role === "PARENT" || authUser.role === "STUDENT",
     });
-    return NextResponse.json({ success: true, ...payload });
+    // Attendance belongs to the class incharge: a subject teacher's report card carries none.
+    const { attendance, ...rest } = payload;
+    const showAttendance = await canViewStudentAttendance(authUser, student);
+    return NextResponse.json({ success: true, ...rest, ...(showAttendance ? { attendance } : {}) });
   } catch (error: unknown) {
     if (error instanceof Response) return error;
     console.error("Print report card error:", error);

@@ -396,6 +396,9 @@ export default function LoginPage() {
             <p className="font-body-sm text-xs text-on-surface-variant mb-4">
               Enter your registered email address to receive a secure password reset link.
             </p>
+            <p className="font-body-sm text-[11px] text-on-surface-variant mb-4 -mt-2">
+              Students: enter your student login email. The reset link is sent to your parent/guardian&apos;s email address on file.
+            </p>
             {resetMessage && (
               <div className="mb-4 p-3 rounded-lg bg-surface-container-low text-xs text-secondary border border-surface-container-high">
                 {resetMessage}

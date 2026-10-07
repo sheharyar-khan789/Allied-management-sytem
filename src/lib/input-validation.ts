@@ -119,6 +119,30 @@ export const MONTH_NAMES = [
 export const monthName = z.enum(MONTH_NAMES);
 export const year = z.coerce.number().int().min(2000).max(2100);
 
+/**
+ * Pakistani CNIC / B-Form number (both are 13 digits). Accepts "12345-1234567-1" or the bare
+ * 13 digits and normalises to the dashed form; "" clears the field.
+ */
+export function normalizeCnic(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === "") return "";
+  if (!/^\d{5}-?\d{7}-?\d$/.test(trimmed)) return null;
+  const digits = trimmed.replace(/-/g, "");
+  return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
+}
+
+export const cnicNumber = z
+  .string()
+  .max(30)
+  .transform((v, ctx) => {
+    const normalized = normalizeCnic(v);
+    if (normalized === null) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "CNIC / B-Form must be 13 digits in the format XXXXX-XXXXXXX-X" });
+      return z.NEVER;
+    }
+    return normalized;
+  });
+
 /** Mirrors StudentDoc["documents"]: only these fields are stored. */
 export const documentsArray = z
   .array(

@@ -29,12 +29,18 @@ type Env = Record<string, string | undefined>;
  *     This is what makes the flow work when no Resend/SMTP provider is configured — previously
  *     production silently sent nothing in that case.
  *  3. Local development only: the link is printed to the dev console.
+ *
+ * `deliverTo` sends the link to a different, reachable inbox than the login address (student
+ * logins are generated addresses with no mailbox — see resolveResetRecipient). The token stays
+ * bound to the account's own uid + login email. Firebase's built-in mailer can only write to the
+ * login address itself, so it is never used when `deliverTo` is given.
  */
 export async function sendPasswordSetupLink(
   user: Pick<UserProfile, "uid" | "email" | "name" | "schoolId">,
   purpose: PasswordLinkPurpose,
   request: { origin?: string | null; host?: string | null },
-  env: Env = process.env
+  env: Env = process.env,
+  deliverTo?: { email: string; name?: string }
 ): Promise<EmailDeliveryResult> {
   const base = resolveAppBaseUrl(request, env);
   const failures: string[] = base.ok ? [] : [base.reason];
@@ -60,7 +66,14 @@ export async function sendPasswordSetupLink(
   };
   const sendAppEmail = async (baseUrl: string) =>
     sendPasswordResetEmail(
-      { to: user.email, recipientName: user.name || "User", schoolName, resetUrl: await issueLink(baseUrl), purpose },
+      {
+        to: deliverTo?.email || user.email,
+        recipientName: deliverTo?.name || user.name || "User",
+        ...(deliverTo ? { accountLabel: `the student account of ${user.name || "your child"} (sign-in: ${user.email})` } : {}),
+        schoolName,
+        resetUrl: await issueLink(baseUrl),
+        purpose,
+      },
       env
     );
 
@@ -70,7 +83,7 @@ export async function sendPasswordSetupLink(
     failures.push(result.message);
   }
 
-  if (hasAdminCredentials) {
+  if (hasAdminCredentials && !deliverTo) {
     const error = await sendViaFirebaseAuth(user.email, base.ok ? `${base.baseUrl}/login` : null, env);
     if (!error) {
       return {

@@ -52,6 +52,8 @@ export default function TeacherDashboardPage() {
   }, [today]);
 
   const subjectCount = classes.reduce((n, c) => n + c.subjects.length, 0);
+  // Attendance belongs to the class incharge only (enforced by /api/attendance).
+  const inchargeClassIds = new Set(classes.filter((c) => c.isIncharge).map((c) => c.id));
 
   return (
     <div className="flex flex-col w-full gap-space-lg">
@@ -76,13 +78,15 @@ export default function TeacherDashboardPage() {
             <span className="material-symbols-outlined text-[18px]">calendar_month</span>
             <span>Full Timetable</span>
           </Link>
-          <Link
-            href="/teacher/attendance"
-            className="px-3.5 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 shadow-sm flex items-center gap-1.5"
-          >
-            <span className="material-symbols-outlined text-[18px]">how_to_reg</span>
-            <span>Roll Call Register</span>
-          </Link>
+          {inchargeClassIds.size > 0 && (
+            <Link
+              href="/teacher/attendance"
+              className="px-3.5 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 shadow-sm flex items-center gap-1.5"
+            >
+              <span className="material-symbols-outlined text-[18px]">how_to_reg</span>
+              <span>Roll Call Register</span>
+            </Link>
+          )}
         </div>
       </div>
 
@@ -155,7 +159,7 @@ export default function TeacherDashboardPage() {
                       </ul>
                     ) : (
                       <p className="text-[11px] text-on-surface-variant">
-                        {c.isIncharge ? "Daily register only — no subject allocated in this class." : "Class access only — no subject allocated in this class."}
+                        {c.isIncharge ? "Class incharge (attendance) — no subject allocated in this class." : "Class access only — no subject allocated in this class."}
                       </p>
                     )}
                   </div>
@@ -214,15 +218,17 @@ export default function TeacherDashboardPage() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 self-end sm:self-auto">
-                    <Link
-                      href={`/teacher/attendance?classId=${encodeURIComponent(t.classId)}${t.subjectId ? `&subjectId=${encodeURIComponent(t.subjectId)}` : ""}`}
-                      className="px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-semibold text-xs flex items-center gap-1"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">how_to_reg</span>
-                      <span>Roll Call</span>
-                    </Link>
-                  </div>
+                  {inchargeClassIds.has(t.classId) && (
+                    <div className="flex items-center gap-2 self-end sm:self-auto">
+                      <Link
+                        href={`/teacher/attendance?classId=${encodeURIComponent(t.classId)}`}
+                        className="px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-semibold text-xs flex items-center gap-1"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">how_to_reg</span>
+                        <span>Roll Call</span>
+                      </Link>
+                    </div>
+                  )}
                 </div>
               );
             })}

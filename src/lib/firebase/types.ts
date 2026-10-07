@@ -74,6 +74,8 @@ export interface StudentDoc {
   cnic?: string;
   bForm?: string;
   monthlyFee: number;
+  /** Annual fee (PKR), configured independently of monthlyFee — never derived as 12 × monthly. */
+  annualFee?: number;
   discount: number;
   photoUrl?: string;
   /** Academic session (YYYY-YYYY) this record belongs to. Legacy records without it are
@@ -238,6 +240,57 @@ export interface PaymentDoc {
   collectedBy: string;
   academicYear?: string;
   createdAt: string;
+}
+
+export const FEE_MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+] as const;
+export type FeeMonth = (typeof FEE_MONTHS)[number];
+
+export interface FeeMonthStatus {
+  paid: boolean;
+  paidAt?: string | null;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+/**
+ * One student's fee-status ledger for one calendar year (collection `studentFeeLedgers`).
+ * Each of the 12 months persists independently; the annual fee's paid state is tracked here too.
+ */
+export interface StudentFeeLedgerDoc {
+  id: string; // `${schoolId}_${studentId}_${year}`
+  schoolId: string;
+  studentId: string;
+  studentName?: string;
+  year: number;
+  months: Partial<Record<FeeMonth, FeeMonthStatus>>;
+  annualFeePaid?: boolean;
+  annualFeePaidAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const STUDENT_CHARGE_TYPES = ["EVENT", "TRIP", "SPORTS", "EXAM", "ACTIVITY", "OTHER"] as const;
+export type StudentChargeType = (typeof STUDENT_CHARGE_TYPES)[number];
+
+/** An additional / event payment owed by a student (collection `studentCharges`). */
+export interface StudentChargeDoc {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  studentName?: string;
+  type: StudentChargeType;
+  description: string;
+  amount: number;
+  date: string; // YYYY-MM-DD
+  status: "PAID" | "UNPAID";
+  notes?: string;
+  createdBy: string;
+  updatedBy?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ExamDoc {

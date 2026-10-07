@@ -33,6 +33,7 @@ export default function StudentNav({
   const navLinks = [
     { label: "Dashboard", href: "/student", icon: "dashboard" },
     { label: "Student Profile", href: "/student/profile", icon: "badge" },
+    { label: "Timetable", href: "/student/timetable", icon: "calendar_month" },
     { label: "Attendance & Leaves", href: "/student/attendance", icon: "event_available" },
     { label: "Fee Challans", href: "/student/fees", icon: "payments" },
     { label: "Results & Report Card", href: "/student/results", icon: "workspace_premium" },

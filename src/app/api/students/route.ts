@@ -18,7 +18,7 @@ import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic
 import { validateStudentDates } from "@/lib/date-utils";
 import { BCRYPT_COST, generateInitialPassword } from "@/lib/password-reset";
 import { z } from "zod";
-import { documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
+import { cnicNumber, documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
 
 const optText = (max: number) => z.string().trim().max(max).optional().or(z.literal(""));
 const optEmail = z.string().trim().max(254).email().optional().or(z.literal(""));
@@ -35,7 +35,7 @@ const studentFieldsSchema = {
   dob: optText(20),
   admissionDate: optText(20),
   bloodGroup: optText(20),
-  cnicBForm: optText(30),
+  cnicBForm: cnicNumber.optional(),
   contactNumber: optText(30),
   phone: optText(30),
   email: optEmail,
@@ -54,6 +54,7 @@ const studentFieldsSchema = {
 const studentCreateSchema = z.object({
   ...studentFieldsSchema,
   monthlyFee: money.optional(),
+  annualFee: money.optional(),
   discount: money.optional(),
 });
 
@@ -99,7 +100,7 @@ export async function GET(req: NextRequest) {
       gender: st.gender,
       dob: st.dob,
       bloodGroup: st.bloodGroup || "Not Specified",
-      cnicBForm: st.cnic || st.bForm || "-",
+      cnicBForm: st.cnic || st.bForm || "",
       contactNumber: st.phone,
       email: st.email || "Not Available",
       guardianName: st.guardianName,
@@ -287,7 +288,11 @@ export async function POST(req: NextRequest) {
       guardianEmail: body.guardianEmail || "",
       parentUserIds: [],
       bloodGroup: bloodGroup || "Not Specified",
+      // The form's single "CNIC / B-Form" field was validated but never copied onto the record,
+      // so every CNIC entered at enrolment was silently dropped.
+      cnic: body.cnicBForm || undefined,
       monthlyFee: Number(body.monthlyFee) > 0 ? Number(body.monthlyFee) : 0,
+      annualFee: Number(body.annualFee) > 0 ? Number(body.annualFee) : 0,
       discount: Number(body.discount) || 0,
       photoUrl: body.photoUrl || undefined,
       documents: Array.isArray(body.documents) ? body.documents : [],

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
-import { assertCanViewStudent } from "@/lib/academic-access";
+import { assertCanViewStudentAttendance } from "@/lib/academic-access";
 import { buildStudentAcademicPayload } from "@/lib/student-academic-payload";
 
 export async function GET(
@@ -13,7 +13,8 @@ export async function GET(
     const { searchParams } = new URL(req.url);
     const from = searchParams.get("from") || "";
     const to = searchParams.get("to") || "";
-    const student = await assertCanViewStudent(authUser, studentId);
+    // A TEACHER must be the incharge of the student's class; subject teachers are rejected.
+    const student = await assertCanViewStudentAttendance(authUser, studentId);
     const payload = await buildStudentAcademicPayload(authUser.schoolId, student);
 
     let records = payload.attendance.records;

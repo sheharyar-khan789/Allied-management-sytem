@@ -50,6 +50,13 @@ beforeEach(async () => {
     await setDoc(doc(db, "auditLogs", "log-a"), { id: "log-a", schoolId: "A" });
     await setDoc(doc(db, "passwordResetTokens", "h"), { uid: "adminA" });
     await setDoc(doc(db, "studentObservations", "obs-a"), { id: "obs-a", schoolId: "A", studentId: "std-a2" });
+    // Class cls-a: incharge tch-a; tch-a2 only teaches a subject there.
+    await setDoc(doc(db, "classes", "cls-a"), { id: "cls-a", schoolId: "A", classTeacherId: "tch-a" });
+    await setDoc(doc(db, "subjects", "sub-a-math"), { id: "sub-a-math", schoolId: "A", classId: "cls-a", teacherId: "tch-a2" });
+    await setDoc(doc(db, "attendance", "att-daily"), { id: "att-daily", schoolId: "A", classId: "cls-a", studentId: "std-a2" });
+    await setDoc(doc(db, "attendance", "att-math"), { id: "att-math", schoolId: "A", classId: "cls-a", subjectId: "sub-a-math", studentId: "std-a2" });
+    await setDoc(doc(db, "studentFeeLedgers", "A_std-a_2026"), { id: "A_std-a_2026", schoolId: "A", studentId: "std-a" });
+    await setDoc(doc(db, "studentCharges", "chg-a"), { id: "chg-a", schoolId: "A", studentId: "std-a" });
   });
 });
 
@@ -107,6 +114,18 @@ test("students/parents: only their own child's records", async () => {
 test("server-only collections are never readable by clients", async () => {
   await assertFails(getDoc(doc(as("adminA"), "payrollRecords", "pay-a")));
   await assertFails(getDoc(doc(as("adminA"), "passwordResetTokens", "h")));
+  await assertFails(getDoc(doc(as("studentA"), "studentFeeLedgers", "A_std-a_2026")));
+  await assertFails(getDoc(doc(as("parentA"), "studentCharges", "chg-a")));
+});
+
+test("attendance: only the class incharge teacher, never a subject teacher", async () => {
+  await assertSucceeds(getDoc(doc(as("teacherA"), "attendance", "att-daily")));
+  await assertSucceeds(getDoc(doc(as("teacherA"), "attendance", "att-math")));
+  // tch-a2 teaches Mathematics in cls-a — that grants no attendance access, even to the Math register.
+  await assertFails(getDoc(doc(as("teacher2A"), "attendance", "att-daily")));
+  await assertFails(getDoc(doc(as("teacher2A"), "attendance", "att-math")));
+  await assertFails(getDoc(doc(as("adminB"), "attendance", "att-daily")));
+  await assertSucceeds(getDoc(doc(as("adminA"), "attendance", "att-daily")));
 });
 
 test("storage: same-school read only, no client writes", async () => {

@@ -28,6 +28,9 @@ import {
   AnnouncementDoc,
   PayrollRecordDoc,
   PasswordResetTokenDoc,
+  StudentFeeLedgerDoc,
+  StudentChargeDoc,
+  FeeMonth,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -52,6 +55,8 @@ const localStore: {
   announcements: Map<string, AnnouncementDoc>;
   payrollRecords: Map<string, PayrollRecordDoc>;
   passwordResetTokens: Map<string, PasswordResetTokenDoc>;
+  studentFeeLedgers: Map<string, StudentFeeLedgerDoc>;
+  studentCharges: Map<string, StudentChargeDoc>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -73,6 +78,8 @@ const localStore: {
   announcements: new Map(),
   payrollRecords: new Map(),
   passwordResetTokens: new Map(),
+  studentFeeLedgers: new Map(),
+  studentCharges: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -2320,3 +2327,143 @@ export async function savePayrollRecordServer(
   return id;
 }
 
+// ---------------------------------------------------------------------------
+// STUDENT FEE LEDGERS (12-month + annual-fee paid status) & ADDITIONAL CHARGES
+// ---------------------------------------------------------------------------
+export function studentFeeLedgerId(schoolId: string, studentId: string, year: number): string {
+  return `${schoolId}_${studentId}_${year}`;
+}
+
+export async function getStudentFeeLedgerServer(
+  schoolId: string,
+  studentId: string,
+  year: number
+): Promise<StudentFeeLedgerDoc | null> {
+  assertProductionDbReady();
+  const id = studentFeeLedgerId(schoolId, studentId, year);
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("studentFeeLedgers").doc(id).get();
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as StudentFeeLedgerDoc;
+      return data.schoolId === schoolId && data.studentId === studentId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getStudentFeeLedgerServer(${id})`, e);
+      throw e;
+    }
+  }
+  const local = localStore.studentFeeLedgers.get(id);
+  return local && local.schoolId === schoolId && local.studentId === studentId ? local : null;
+}
+
+/**
+ * Writes only the given month and/or the annual-fee flag into the ledger. Firestore merges the
+ * nested `months.<Month>` map, so each month persists independently of the other eleven.
+ */
+export async function updateStudentFeeLedgerServer(
+  key: { schoolId: string; studentId: string; studentName?: string; year: number },
+  patch: { month?: { name: FeeMonth; paid: boolean }; annualFeePaid?: boolean },
+  updatedBy: string
+): Promise<StudentFeeLedgerDoc> {
+  assertProductionDbReady();
+  const id = studentFeeLedgerId(key.schoolId, key.studentId, key.year);
+  const nowIso = new Date().toISOString();
+  const partial: Record<string, any> = {
+    id,
+    schoolId: key.schoolId,
+    studentId: key.studentId,
+    year: key.year,
+    updatedAt: nowIso,
+    ...(key.studentName ? { studentName: key.studentName } : {}),
+  };
+  if (patch.month) {
+    partial.months = {
+      [patch.month.name]: { paid: patch.month.paid, paidAt: patch.month.paid ? nowIso : null, updatedBy, updatedAt: nowIso },
+    };
+  }
+  if (patch.annualFeePaid !== undefined) {
+    partial.annualFeePaid = patch.annualFeePaid;
+    partial.annualFeePaidAt = patch.annualFeePaid ? nowIso : null;
+  }
+
+  const existing = localStore.studentFeeLedgers.get(id);
+  const mergedLocal: StudentFeeLedgerDoc = {
+    ...(existing || { months: {}, createdAt: nowIso }),
+    ...partial,
+    months: { ...(existing?.months || {}), ...(partial.months || {}) },
+  } as StudentFeeLedgerDoc;
+  localStore.studentFeeLedgers.set(id, mergedLocal);
+
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("studentFeeLedgers").doc(id);
+      await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists && (snap.data() as StudentFeeLedgerDoc).schoolId !== key.schoolId) {
+          throw new Error("Unauthorized: fee ledger belongs to a different institution.");
+        }
+        tx.set(ref, snap.exists ? partial : { ...partial, months: partial.months || {}, createdAt: nowIso }, { merge: true });
+      });
+      const fresh = await ref.get();
+      return { id, ...fresh.data() } as StudentFeeLedgerDoc;
+    } catch (e) {
+      onFirestoreError(`updateStudentFeeLedgerServer(${id})`, e);
+      throw e;
+    }
+  }
+  return mergedLocal;
+}
+
+export async function getStudentChargesServer(schoolId: string, studentId: string): Promise<StudentChargeDoc[]> {
+  assertProductionDbReady();
+  const sort = (list: StudentChargeDoc[]) => list.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("studentCharges")
+        .where("schoolId", "==", schoolId)
+        .where("studentId", "==", studentId)
+        .limit(500)
+        .get();
+      return sort(snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentChargeDoc)));
+    } catch (e) {
+      onFirestoreError(`getStudentChargesServer(${studentId})`, e);
+      throw e;
+    }
+  }
+  return sort(
+    Array.from(localStore.studentCharges.values()).filter((c) => c.schoolId === schoolId && c.studentId === studentId)
+  );
+}
+
+export async function getStudentChargeByIdServer(schoolId: string, chargeId: string): Promise<StudentChargeDoc | null> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("studentCharges").doc(chargeId).get();
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as StudentChargeDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getStudentChargeByIdServer(${chargeId})`, e);
+      throw e;
+    }
+  }
+  const local = localStore.studentCharges.get(chargeId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+export async function saveStudentChargeServer(charge: StudentChargeDoc): Promise<StudentChargeDoc> {
+  assertProductionDbReady();
+  const data: StudentChargeDoc = { ...charge, updatedAt: new Date().toISOString() };
+  localStore.studentCharges.set(data.id, data);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("studentCharges").doc(data.id).set(cleanUndefined(data));
+    } catch (e) {
+      onFirestoreError(`saveStudentChargeServer(${data.id})`, e);
+      throw e;
+    }
+  }
+  return data;
+}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getUserByEmailServer, createAuditLogServer } from "@/lib/firebase/server-db";
+import { getUserByEmailServer, createAuditLogServer, getStudentByIdServer, getStudentByUserIdServer } from "@/lib/firebase/server-db";
 import { sendPasswordSetupLink } from "@/lib/account-email";
+import { UserProfile } from "@/lib/firebase/types";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
 import { getClientIp, rejectCrossSite } from "@/lib/request-security";
 import { securityLog } from "@/lib/security-log";
@@ -10,6 +11,31 @@ const PER_EMAIL_MAX = 5;
 const PER_EMAIL_WINDOW_SECONDS = 3600;
 
 export const dynamic = "force-dynamic";
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Where a reset link for `user` can actually be read. Staff and parents sign in with their own
+ * email address, so it goes there. A STUDENT signs in with an address the system generated at
+ * enrolment (student.<first>.<last>@<school domain>) — no mailbox exists behind it, so every
+ * student reset link was sent to a dead (or, on a shared domain, somebody else's) inbox and the
+ * flow could never complete. A student's link goes to the guardian email the admin recorded on
+ * the student record instead; with none on file nothing is sent (and the response is unchanged).
+ */
+async function resolveResetRecipient(
+  user: UserProfile
+): Promise<{ ok: true; deliverTo?: { email: string; name?: string } } | { ok: false; reason: string }> {
+  if (user.role !== "STUDENT") return { ok: true };
+  const student = user.studentId
+    ? await getStudentByIdServer(user.schoolId, user.studentId)
+    : await getStudentByUserIdServer(user.schoolId, user.uid);
+  if (!student || student.schoolId !== user.schoolId) return { ok: false, reason: "student record not found" };
+  const guardianEmail = (student.guardianEmail || "").trim().toLowerCase();
+  if (!guardianEmail || !EMAIL_RE.test(guardianEmail) || guardianEmail === user.email.toLowerCase()) {
+    return { ok: false, reason: "no guardian email on the student record" };
+  }
+  return { ok: true, deliverTo: { email: guardianEmail, name: student.guardianName || undefined } };
+}
 
 const GENERIC_SUCCESS_RESPONSE = {
   success: true,
@@ -79,10 +105,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
     }
 
-    const delivery = await sendPasswordSetupLink(user, "RESET", {
-      origin: req.headers.get("origin"),
-      host: req.headers.get("host"),
-    });
+    const recipient = await resolveResetRecipient(user);
+    if (!recipient.ok) {
+      securityLog("auth.reset_no_recipient", { subject: user.uid, role: user.role, schoolId: user.schoolId, reason: recipient.reason });
+      await createAuditLogServer(
+        user.schoolId, user.uid, user.email, user.role,
+        "PASSWORD_RESET_EMAIL_FAILED", "AUTH", user.uid,
+        `Password reset for ${user.email} was NOT sent: ${recipient.reason}. Add a guardian email to the student record.`
+      );
+      return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
+    }
+
+    const delivery = await sendPasswordSetupLink(
+      user,
+      "RESET",
+      { origin: req.headers.get("origin"), host: req.headers.get("host") },
+      process.env,
+      recipient.deliverTo
+    );
 
     await createAuditLogServer(
       user.schoolId,
@@ -93,7 +133,7 @@ export async function POST(req: NextRequest) {
       "AUTH",
       user.uid,
       delivery.delivered
-        ? `Password reset link emailed to ${user.email} via ${delivery.mode}.`
+        ? `Password reset link for ${user.email} emailed to ${recipient.deliverTo ? "the guardian email on file" : user.email} via ${delivery.mode}.`
         : `Password reset email to ${user.email} was NOT delivered (${delivery.mode}): ${delivery.message}`
     );
 

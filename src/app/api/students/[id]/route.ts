@@ -14,12 +14,12 @@ import {
   getSubjectsServer,
   getExamsServer
 } from "@/lib/firebase/server-db";
-import { assertCanViewStudent } from "@/lib/academic-access";
+import { assertCanViewStudent, canViewStudentAttendance } from "@/lib/academic-access";
 import { linkGuardianEmailToStudent } from "@/lib/link-parent";
 import { requireRecentAuth } from "@/lib/firebase/server-auth";
 import { syncLoginActive } from "@/lib/account-status";
 import { z } from "zod";
-import { documentsArray, idString, parseJsonBody, safeUrl } from "@/lib/input-validation";
+import { cnicNumber, documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
 
 const optText = (max: number) => z.string().trim().max(max).optional().or(z.literal(""));
 const optEmail = z.string().trim().max(254).email().optional().or(z.literal(""));
@@ -36,7 +36,7 @@ const studentFieldsSchema = {
   dob: optText(20),
   admissionDate: optText(20),
   bloodGroup: optText(20),
-  cnicBForm: optText(30),
+  cnicBForm: cnicNumber.optional(),
   contactNumber: optText(30),
   phone: optText(30),
   email: optEmail,
@@ -55,6 +55,8 @@ const studentFieldsSchema = {
 const studentUpdateSchema = z.object({
   ...studentFieldsSchema,
   status: z.enum(["ACTIVE", "INACTIVE", "ALUMNI", "EXPELLED"]).optional(),
+  monthlyFee: money.optional(),
+  annualFee: money.optional(),
 });
 
 export async function GET(
@@ -73,8 +75,10 @@ export async function GET(
     // teacher scoping is now consistent across the whole application rather than correct
     // everywhere except here. It also performs the school-isolation and 404 checks.
     const student = await assertCanViewStudent(authUser, id);
+    // Attendance is only for the class incharge: a subject teacher's dossier carries none.
+    const showAttendance = await canViewStudentAttendance(authUser, student);
 
-    const [attendances, challans, examResults, observations, classes, subjects, exams] = await Promise.all([
+    const [attendanceRecords, challans, examResults, observations, classes, subjects, exams] = await Promise.all([
       getStudentAttendanceServer(authUser.schoolId, id),
       getStudentFeeChallansServer(authUser.schoolId, id),
       getExamResultsServer(authUser.schoolId, undefined, undefined, id),
@@ -84,6 +88,7 @@ export async function GET(
       getExamsServer(authUser.schoolId)
     ]);
 
+    const attendances = showAttendance ? attendanceRecords : [];
     const targetClass = classes.find((c) => c.id === student.classId);
     const examNameById = new Map(exams.map((e) => [e.id, e.name]));
 
@@ -118,7 +123,10 @@ export async function GET(
       gender: student.gender === "MALE" ? "Male" : "Female",
       dob: student.dob,
       bloodGroup: student.bloodGroup || "Not Specified",
-      cnicBForm: student.cnic || student.bForm || "-",
+      cnicBForm: student.cnic || student.bForm || "",
+      ...(authUser.role === "ADMIN"
+        ? { monthlyFee: Number(student.monthlyFee) || 0, annualFee: Number(student.annualFee) || 0 }
+        : {}),
       contactNumber: student.phone,
       email: student.email || "Not Available",
       address: student.address || "Not Provided",
@@ -145,6 +153,7 @@ export async function GET(
           teacher: { firstName: sub.teacherName || "Faculty", lastName: "" }
         }))
       },
+      attendanceRestricted: !showAttendance,
       attendances: attendances.map((a) => ({
         id: a.id,
         date: a.date,
@@ -267,6 +276,12 @@ export async function PUT(
       status: body.status || existing.status,
       photoUrl: body.photoUrl !== undefined ? body.photoUrl : existing.photoUrl,
       documents: body.documents !== undefined ? body.documents : (existing.documents || []),
+      // CNIC was accepted by this schema but never written, so edits never persisted. The form
+      // has one "CNIC / B-Form" field: writing it replaces any legacy imported bForm value too,
+      // so a cleared or changed number can't fall back to a stale one on display.
+      ...(body.cnicBForm !== undefined ? { cnic: body.cnicBForm, bForm: "" } : {}),
+      monthlyFee: body.monthlyFee !== undefined ? Number(body.monthlyFee) : (Number(existing.monthlyFee) || 0),
+      annualFee: body.annualFee !== undefined ? Number(body.annualFee) : (Number(existing.annualFee) || 0),
       updatedAt: new Date().toISOString()
     };
 
@@ -307,7 +322,9 @@ export async function PUT(
       "UPDATE_STUDENT",
       "STUDENT",
       id,
-      `Updated profile for student ${updated.fullName} (${updated.admissionNo}).`
+      `Updated profile for student ${updated.fullName} (${updated.admissionNo}).` +
+        (updated.monthlyFee !== (Number(existing.monthlyFee) || 0) ? ` Monthly fee: Rs. ${Number(existing.monthlyFee) || 0} → Rs. ${updated.monthlyFee}.` : "") +
+        (updated.annualFee !== (Number(existing.annualFee) || 0) ? ` Annual fee: Rs. ${Number(existing.annualFee) || 0} → Rs. ${updated.annualFee}.` : "")
     );
 
     return NextResponse.json({ success: true, student: updated });

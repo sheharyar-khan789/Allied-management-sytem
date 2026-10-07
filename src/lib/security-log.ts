@@ -18,6 +18,7 @@ export type SecurityEvent =
   | "auth.password_change_failed"
   | "auth.password_reset_completed"
   | "auth.reset_rate_limited"
+  | "auth.reset_no_recipient"
   | "auth.register_rejected"
   | "auth.register_succeeded"
   | "authz.unauthenticated"

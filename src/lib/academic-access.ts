@@ -6,6 +6,7 @@ import {
   getSubjectByIdServer,
   getSubjectsServer,
   getTeacherByIdServer,
+  getStudentByUserIdServer,
   getUserByIdServer,
 } from "@/lib/firebase/server-db";
 import { FeeChallanDoc, StudentDoc, SubjectDoc, TeacherDoc } from "@/lib/firebase/types";
@@ -100,40 +101,84 @@ export async function assertTeacherOwnsClass(
 }
 
 /**
+ * Attendance is a class-incharge responsibility. A TEACHER may access a class's attendance only
+ * when `ClassDoc.classTeacherId` (the canonical class-incharge link, resolved here from the
+ * caller's own teacher record) names them. Teaching a subject in the class, or an admin-granted
+ * `assignedClassIds` entry, never grants attendance access.
+ */
+export async function assertTeacherIsClassIncharge(
+  authUser: AuthenticatedUser,
+  classId: string
+): Promise<TeacherAllocation> {
+  const allocation = await requireTeacherAllocation(authUser);
+  if (!allocation.inchargeClassIds.has(classId)) {
+    forbidden("Forbidden: only the class incharge can access this class's attendance.");
+  }
+  return allocation;
+}
+
+/**
  * Authorization gate for one attendance register. `subjectId` selects a subject register; null
  * selects the class's daily register. ADMIN passes for any register of their school. A TEACHER
- * may open a subject register only for a subject allocated to them in that same class, and the
- * daily register only for a class they are incharge of.
+ * passes only for a class they are incharge of (any register of that class).
  */
 export async function assertTeacherCanAccessAttendance(
   authUser: AuthenticatedUser,
   classId: string,
   subjectId: string | null
 ): Promise<{ subject: SubjectDoc | null }> {
-  if (authUser.role !== "TEACHER") {
-    if (!subjectId) return { subject: null };
-    const subject = await getSubjectByIdServer(authUser.schoolId, subjectId);
-    if (!subject || subject.classId !== classId) {
-      throw new Response(JSON.stringify({ error: "Subject not found for this class." }), {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    return { subject };
+  if (authUser.role === "TEACHER") {
+    await assertTeacherIsClassIncharge(authUser, classId);
   }
-
-  const allocation = await requireTeacherAllocation(authUser);
-  if (!subjectId) {
-    if (!allocation.inchargeClassIds.has(classId)) {
-      forbidden("Forbidden: only the class incharge can open this class's daily register.");
-    }
-    return { subject: null };
-  }
-  const subject = allocation.subjects.find((s) => s.id === subjectId);
+  if (!subjectId) return { subject: null };
+  const subject = await getSubjectByIdServer(authUser.schoolId, subjectId);
   if (!subject || subject.classId !== classId) {
-    forbidden("Forbidden: this subject is not allocated to you for this class.");
+    throw new Response(JSON.stringify({ error: "Subject not found for this class." }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
   }
   return { subject };
+}
+
+/**
+ * Whether `authUser` may see `student`'s attendance history. Callers must already have passed
+ * assertCanViewStudent (school isolation, student/parent ownership). For a TEACHER this
+ * additionally requires being the incharge of the student's class.
+ */
+export async function canViewStudentAttendance(
+  authUser: AuthenticatedUser,
+  student: StudentDoc
+): Promise<boolean> {
+  if (authUser.role !== "TEACHER") return true;
+  const allocation = await requireTeacherAllocation(authUser);
+  return allocation.inchargeClassIds.has(student.classId);
+}
+
+/** assertCanViewStudent plus the class-incharge rule for a teacher reading attendance. */
+export async function assertCanViewStudentAttendance(
+  authUser: AuthenticatedUser,
+  studentId: string
+): Promise<StudentDoc> {
+  const student = await assertCanViewStudent(authUser, studentId);
+  if (!(await canViewStudentAttendance(authUser, student))) {
+    forbidden("Forbidden: only the class incharge can access this student's attendance.");
+  }
+  return student;
+}
+
+/**
+ * The student record of a STUDENT session: the session's studentId, else the login profile's,
+ * else the student whose userId is this login. Always within the caller's own school.
+ */
+export async function resolveSessionStudent(authUser: AuthenticatedUser): Promise<StudentDoc | null> {
+  if (authUser.role !== "STUDENT") return null;
+  let studentId = authUser.studentId;
+  if (!studentId) studentId = (await getUserByIdServer(authUser.uid))?.studentId;
+  const student = studentId
+    ? await getStudentByIdServer(authUser.schoolId, studentId)
+    : await getStudentByUserIdServer(authUser.schoolId, authUser.uid);
+  return student && student.schoolId === authUser.schoolId ? student : null;
 }
 
 export async function assertCanViewStudent(

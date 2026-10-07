@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx scripts/p0-verification-test.ts && tsx scripts/production-fix-phase-test.ts && tsx scripts/teacher-allocation-timetable-auth-test.ts",
+    "test": "tsx scripts/p0-verification-test.ts && tsx scripts/production-fix-phase-test.ts && tsx scripts/teacher-allocation-timetable-auth-test.ts && tsx scripts/master-fix-phase-test.ts",
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed-firebase.ts",
     "test:p0": "tsx scripts/p0-verification-test.ts",
@@ -17,6 +17,7 @@
     "test:fix-phase": "tsx scripts/production-fix-phase-test.ts",
     "test:teacher-scoping": "tsx scripts/teacher-scoping-test.ts",
     "test:teacher-access": "tsx scripts/teacher-allocation-timetable-auth-test.ts",
+    "test:master-fix": "tsx scripts/master-fix-phase-test.ts",
     "postinstall": "patch-package",
     "test:rules": "firebase emulators:exec --project demo-allied-rules-test --only firestore,storage \"node --test tests/rules/firestore-storage.rules.test.mjs\""
   },

@@ -7,12 +7,15 @@ import { usePathname, useRouter } from "next/navigation";
 interface TeacherNavProps {
   teacherName?: string;
   designation?: string;
+  /** Class incharge of at least one class. Display only — /api/attendance enforces the rule. */
+  canTakeAttendance?: boolean;
 }
 
 export default function TeacherNav({
   teacherName = "Faculty Member",
   // Empty rather than an invented "Senior Faculty" title — see src/app/teacher/layout.tsx.
   designation = "",
+  canTakeAttendance = false,
 }: TeacherNavProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -30,7 +33,7 @@ export default function TeacherNav({
   const navLinks = [
     { label: "My Subjects", href: "/teacher", icon: "dashboard" },
     { label: "Timetable", href: "/teacher/timetable", icon: "calendar_month" },
-    { label: "Roll Call Register", href: "/teacher/attendance", icon: "how_to_reg" },
+    ...(canTakeAttendance ? [{ label: "Roll Call Register", href: "/teacher/attendance", icon: "how_to_reg" }] : []),
     { label: "Rapid Gradebook", href: "/teacher/gradebook", icon: "edit_note" },
     { label: "Students & Notes", href: "/teacher/students", icon: "assignment_ind" },
     { label: "Announcements", href: "/teacher/announcements", icon: "campaign" },

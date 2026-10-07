@@ -6,14 +6,16 @@ import { todayLocalISO } from "@/lib/date-utils";
 const DAILY_REGISTER = "__daily__";
 
 /**
- * The registers this teacher may open for a class (the server enforces the same rule): one per
- * subject allocated to them there, plus the daily register if they are the class incharge.
+ * The registers this teacher may open for a class (the server enforces the same rule): only a
+ * class they are incharge of — its daily register, plus their own subjects' registers there.
+ * Teaching a subject in a class they are not incharge of gives no attendance access.
  */
 function registersFor(cls: any): { value: string; label: string }[] {
-  if (!cls) return [];
-  const list = (cls.subjects || []).map((s: any) => ({ value: s.id, label: `${s.name} (${s.code})` }));
-  if (cls.isIncharge) list.push({ value: DAILY_REGISTER, label: "Daily Register (Class Incharge)" });
-  return list;
+  if (!cls?.isIncharge) return [];
+  return [
+    { value: DAILY_REGISTER, label: "Daily Register (Class Incharge)" },
+    ...(cls.subjects || []).map((s: any) => ({ value: s.id, label: `${s.name} (${s.code})` })),
+  ];
 }
 
 export default function TeacherAttendanceRegisterPage() {
@@ -333,7 +335,7 @@ export default function TeacherAttendanceRegisterPage() {
           </div>
         ) : classesLoaded && classes.length === 0 ? (
           <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">
-            No subject or class register has been allocated to you yet. Please contact the school admin.
+            Attendance is managed by class incharges. You are not the class incharge of any class.
           </div>
         ) : roster.length === 0 ? (
           <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">
