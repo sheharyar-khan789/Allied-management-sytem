@@ -12,6 +12,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { TimetableDoc } from "@/lib/firebase/types";
 import { requireTeacherAllocation, resolveSessionStudent } from "@/lib/academic-access";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -108,6 +109,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/timetable");
+    if (busy) return busy;
     console.error("Timetable GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve timetable records." },
@@ -232,6 +235,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, id, timetable: { ...doc, id } }, { status: 201 });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/timetable");
+    if (busy) return busy;
     console.error("Timetable POST error:", error);
     return NextResponse.json(
       { error: "Failed to create timetable slot." },
@@ -272,6 +277,8 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ success: true, timetable: updated });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/timetable");
+    if (busy) return busy;
     console.error("Timetable PUT error:", error);
     return NextResponse.json({ error: "Failed to update timetable slot." }, { status: 500 });
   }
@@ -297,6 +304,8 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ success: true });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/timetable");
+    if (busy) return busy;
     console.error("Timetable DELETE error:", error);
     return NextResponse.json({ error: "Failed to delete timetable slot." }, { status: 500 });
   }

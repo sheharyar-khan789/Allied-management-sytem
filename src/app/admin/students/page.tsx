@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import StudentImportModal from "@/components/StudentImportModal";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
 
 export default function StudentsManagementPage() {
   const router = useRouter();
@@ -14,11 +15,13 @@ export default function StudentsManagementPage() {
   const [selectedClass, setSelectedClass] = useState("all");
   const [selectedStatus, setSelectedStatus] = useState("all");
   const [importOpen, setImportOpen] = useState(false);
+  // One request per typed query, not one per keystroke.
+  const debouncedSearch = useDebouncedValue(search.trim(), 400);
 
   const fetchStudents = async () => {
     try {
       const params = new URLSearchParams();
-      if (search) params.append("search", search);
+      if (debouncedSearch) params.append("search", debouncedSearch);
       if (selectedClass !== "all") params.append("classId", selectedClass);
       if (selectedStatus !== "all") params.append("status", selectedStatus);
 
@@ -52,7 +55,7 @@ export default function StudentsManagementPage() {
 
   useEffect(() => {
     fetchStudents();
-  }, [search, selectedClass, selectedStatus]);
+  }, [debouncedSearch, selectedClass, selectedStatus]);
 
   const [editingStudent, setEditingStudent] = useState<any>(null);
   const [editModalOpen, setEditModalOpen] = useState(false);

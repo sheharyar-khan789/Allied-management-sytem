@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import bcrypt from "bcryptjs";
 import {
   getUserByIdServer,
@@ -91,6 +92,8 @@ export async function POST(req: NextRequest) {
         message: "Your password has been set successfully. You can now log in with your new password.",
       });
     } catch (error: any) {
+      const busy = serviceBusyResponseFor(error, "/api/auth/reset-password");
+      if (busy) return busy;
       console.error("Reset password (action code) error:", error?.code || error?.message || error);
       return NextResponse.json({ error: "Failed to reset password. Please try again." }, { status: 500 });
     }
@@ -140,6 +143,8 @@ export async function POST(req: NextRequest) {
         : "Your password has been reset successfully. You can now log in with your new password.",
     });
   } catch (error: any) {
+    const busy = serviceBusyResponseFor(error, "/api/auth/reset-password");
+    if (busy) return busy;
     console.error("Reset password error:", error?.code || error?.message || error);
     return NextResponse.json(
       { error: "Failed to reset password. Please try again." },

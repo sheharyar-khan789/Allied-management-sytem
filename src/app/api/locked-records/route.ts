@@ -6,6 +6,7 @@ import {
   getStudentByIdServer,
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -33,6 +34,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, records: formatted });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/locked-records");
+    if (busy) return busy;
     console.error("Locked records error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve locked records." },

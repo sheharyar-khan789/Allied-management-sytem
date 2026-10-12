@@ -16,7 +16,7 @@ export default function StudentFeesPage() {
   const [accountError, setAccountError] = useState("");
 
   useEffect(() => {
-    fetch("/api/student/me")
+    fetch("/api/student/me?view=fees")
       .then((res) => res.json())
       .then((d) => {
         if (d?.success) setData(d);

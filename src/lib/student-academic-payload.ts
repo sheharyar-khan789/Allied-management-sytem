@@ -1,5 +1,7 @@
 import {
   getStudentAttendanceServer,
+  getStudentAttendanceTotalsServer,
+  getStudentRecentAttendanceServer,
   getStudentFeeChallansServer,
   getExamResultsServer,
   getExamsServer,
@@ -14,10 +16,20 @@ import { schoolPrintIdentity } from "@/lib/school-display";
 export async function buildStudentAcademicPayload(
   schoolId: string,
   student: StudentDoc,
-  options?: { publishedResultsOnly?: boolean }
+  options?: {
+    publishedResultsOnly?: boolean;
+    /**
+     * "full" (default, printable reports): the whole session's attendance records.
+     * "recent" (parent portal): the last RECENT_ATTENDANCE_DAYS days on screen, with the session
+     * stats taken from the per-student totals summary instead of reading every record.
+     */
+    attendanceRecords?: "full" | "recent";
+  }
 ) {
-  const [attendances, challans, examResultsRaw, exams, payments, classes, school, settings] = await Promise.all([
-    getStudentAttendanceServer(schoolId, student.id),
+  const recentOnly = options?.attendanceRecords === "recent";
+  const [attendances, attendanceTotals, challans, examResultsRaw, exams, payments, classes, school, settings] = await Promise.all([
+    recentOnly ? getStudentRecentAttendanceServer(schoolId, student.id) : getStudentAttendanceServer(schoolId, student.id),
+    recentOnly ? getStudentAttendanceTotalsServer(schoolId, student.id) : Promise.resolve(null),
     getStudentFeeChallansServer(schoolId, student.id),
     getExamResultsServer(schoolId, undefined, undefined, student.id),
     getExamsServer(schoolId),
@@ -35,11 +47,13 @@ export async function buildStudentAcademicPayload(
   const targetClass = classes.find((c) => c.id === student.classId);
   const examNameById = new Map(exams.map((e) => [e.id, e.name]));
 
-  const totalAtt = attendances.length;
-  const presentAtt = attendances.filter((a) => a.status === "PRESENT").length;
-  const lateAtt = attendances.filter((a) => a.status === "LATE").length;
-  const leaveAtt = attendances.filter((a) => a.status === "LEAVE").length;
-  const absentAtt = attendances.filter((a) => a.status === "ABSENT").length;
+  const countOf = (status: "PRESENT" | "LATE" | "LEAVE" | "ABSENT") =>
+    attendanceTotals ? attendanceTotals[status] : attendances.filter((a) => a.status === status).length;
+  const presentAtt = countOf("PRESENT");
+  const lateAtt = countOf("LATE");
+  const leaveAtt = countOf("LEAVE");
+  const absentAtt = countOf("ABSENT");
+  const totalAtt = presentAtt + lateAtt + leaveAtt + absentAtt;
   const attPct = totalAtt > 0 ? parseFloat(((presentAtt / totalAtt) * 100).toFixed(1)) : 0;
 
   const totalExpectedFee = challans.reduce((s, c) => s + (c.totalExpected || 0), 0);

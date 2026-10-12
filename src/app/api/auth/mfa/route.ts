@@ -5,6 +5,7 @@ import { verifyAccountPasswordServer } from "@/lib/firebase/auth-password";
 import { generateTotpSecret, isAdminMfaEnabled, otpauthUri, verifyTotp } from "@/lib/totp";
 import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
 import { securityLog } from "@/lib/security-log";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ featureEnabled: isAdminMfaEnabled(), enrolled: Boolean(profile?.mfaEnabled) });
   } catch (error) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/auth/mfa");
+    if (busy) return busy;
     return NextResponse.json({ error: "Failed to read two-factor status." }, { status: 500 });
   }
 }
@@ -101,6 +104,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });
   } catch (error) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/auth/mfa");
+    if (busy) return busy;
     console.error("MFA route error:", (error as Error)?.message || "error");
     return NextResponse.json({ error: "Two-factor request failed." }, { status: 500 });
   }

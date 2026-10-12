@@ -7,6 +7,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { StudentObservationDoc } from "@/lib/firebase/types";
 import { assertTeacherOwnsClass } from "@/lib/academic-access";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 const ALLOWED_SENTIMENTS: StudentObservationDoc["sentiment"][] = ["POSITIVE", "NEUTRAL", "NEEDS_IMPROVEMENT"];
 
@@ -98,6 +99,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, observation: obsDoc }, { status: 201 });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/observations");
+    if (busy) return busy;
     console.error("Observation POST error:", error);
     return NextResponse.json({ error: "Failed to add observation note." }, { status: 500 });
   }

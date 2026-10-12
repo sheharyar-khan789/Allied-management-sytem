@@ -8,7 +8,8 @@ export async function POST(req: NextRequest) {
   const csrfBlocked = rejectCrossSite(req);
   if (csrfBlocked) return csrfBlocked;
   // Server-side revocation: the session id is recorded as revoked on the user's profile, so the
-  // token stops working everywhere immediately (requireAuth checks it), not just in this browser.
+  // token stops working everywhere (requireAuth checks it), not just in this browser: immediately on
+  // this server instance, and within the 30s session-profile cache TTL on any other instance.
   try {
     const claims = await verifySessionToken(req.cookies.get("allied_session")?.value);
     if (claims?.uid && claims.sid) {

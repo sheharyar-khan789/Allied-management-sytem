@@ -1,7 +1,7 @@
 ﻿import React from "react";
 import TeacherNav from "@/components/TeacherNav";
 import { requirePageRole } from "@/lib/page-auth";
-import { resolveTeacherAllocation } from "@/lib/academic-access";
+import { loadTeacherShellData } from "@/lib/layout-data";
 
 export default async function TeacherLayout({
   children,
@@ -10,25 +10,7 @@ export default async function TeacherLayout({
 }) {
   const session = await requirePageRole("TEACHER");
 
-  let teacherName = session?.name || "Faculty Member";
-  // No fabricated professional title. This previously defaulted to
-  // "Senior Educator • Academic Faculty" and rendered it beside the teacher's real name
-  // whenever their teacher record could not be resolved — presenting an invented seniority and
-  // department as though they were the school's own personnel data. When there is no real
-  // designation on file, nothing is shown.
-  let designation = "";
-  let canTakeAttendance = false;
-
-  // Falls back to the login profile's teacherId when the session token doesn't carry one.
-  if (session?.schoolId) {
-    const allocation = await resolveTeacherAllocation(session);
-    if (allocation) {
-      const t = allocation.teacher;
-      teacherName = t.fullName;
-      designation = [t.designation, t.department].filter(Boolean).join(" • ");
-      canTakeAttendance = allocation.inchargeClassIds.size > 0;
-    }
-  }
+  const { teacherName, designation, canTakeAttendance } = await loadTeacherShellData(session);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">

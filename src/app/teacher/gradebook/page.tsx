@@ -12,7 +12,8 @@ export default function TeacherGradebookPage() {
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
-    fetch("/api/exams")
+    // Only the first schedule's roster is loaded; others are fetched when selected.
+    fetch("/api/exams?rosters=one")
       .then((res) => res.json())
       .then((json) => {
         if (json.success && json.activeExam?.schedules) {
@@ -40,21 +41,37 @@ export default function TeacherGradebookPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleScheduleChange = (id: string) => {
+  const showMarks = (schedule: any) =>
+    setStudentMarks(
+      (schedule?.results || []).map((r: any) => ({
+        studentId: r.studentId,
+        name: `${r.student?.firstName} ${r.student?.lastName}`,
+        rollNumber: r.student?.rollNumber,
+        marksObtained: r.marksObtained,
+        maxMarks: r.maxMarks,
+        grade: r.grade,
+        gpa: r.gpa,
+      }))
+    );
+
+  const handleScheduleChange = async (id: string) => {
     setSelectedScheduleId(id);
     const found = schedules.find((s) => s.id === id);
     if (found?.results) {
-      setStudentMarks(
-        found.results.map((r: any) => ({
-          studentId: r.studentId,
-          name: `${r.student?.firstName} ${r.student?.lastName}`,
-          rollNumber: r.student?.rollNumber,
-          marksObtained: r.marksObtained,
-          maxMarks: r.maxMarks,
-          grade: r.grade,
-          gpa: r.gpa,
-        }))
-      );
+      showMarks(found);
+      return;
+    }
+    // Roster not loaded yet: fetch just this schedule's roster and marks.
+    setStudentMarks([]);
+    try {
+      const json = await fetch(`/api/exams?rosters=one&scheduleId=${encodeURIComponent(id)}`).then((res) => res.json());
+      const loaded = json?.activeExam?.schedules?.find((s: any) => s.id === id);
+      if (loaded) {
+        setSchedules((prev) => prev.map((s) => (s.id === id ? loaded : s)));
+        showMarks(loaded);
+      }
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -89,6 +106,9 @@ export default function TeacherGradebookPage() {
       if (res.ok) {
         setSaveSuccess(true);
         setTimeout(() => setSaveSuccess(false), 3000);
+        // The cached roster of this schedule is now stale: reload it if it is selected again.
+        const savedId = selectedScheduleId;
+        setSchedules((prev) => prev.map((s) => (s.id === savedId ? { ...s, results: null } : s)));
       }
     } catch (err) {
       console.error(err);

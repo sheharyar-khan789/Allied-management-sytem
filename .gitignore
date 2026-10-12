@@ -21,3 +21,8 @@ stitch_school_management_saas_system (3).zip
 *.key
 *.p12
 *.pfx
+
+# Firebase emulator logs
+firestore-debug.log
+firebase-debug.log
+ui-debug.log

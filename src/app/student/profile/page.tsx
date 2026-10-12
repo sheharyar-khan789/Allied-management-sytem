@@ -14,7 +14,7 @@ export default function StudentProfilePage() {
   const [savingPassword, setSavingPassword] = useState(false);
 
   useEffect(() => {
-    fetch("/api/student/me")
+    fetch("/api/student/me?view=profile")
       .then((res) => res.json())
       .then((d) => {
         if (d?.success) setStudent(d.student);

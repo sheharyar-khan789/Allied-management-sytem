@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import { getClassesServer } from "@/lib/firebase/server-db";
 import { getLinkedChildrenForParent } from "@/lib/parent-access";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -35,6 +36,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: unknown) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/parent/children");
+    if (busy) return busy;
     console.error("Parent children error:", error);
     return NextResponse.json({ error: "Failed to load linked children." }, { status: 500 });
   }

@@ -10,6 +10,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { SchoolSettingsDoc } from "@/lib/firebase/types";
 import { getDefaultAcademicYear } from "@/lib/school-display";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -71,6 +72,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, settings: formatted, sessions });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/settings");
+    if (busy) return busy;
     console.error("Settings GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve school settings." },
@@ -164,6 +167,8 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ success: true, settings: updated });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/settings");
+    if (busy) return busy;
     console.error("Settings PUT error:", error);
     return NextResponse.json(
       { error: "Failed to update settings." },

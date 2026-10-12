@@ -18,6 +18,7 @@ import {
   releaseOrphanedTeacherAuthAccount,
 } from "@/lib/teacher-lifecycle";
 import { sendPasswordSetupLink } from "@/lib/account-email";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -83,6 +84,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, teachers: teacherRecords });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/teachers");
+    if (busy) return busy;
     console.error("Teachers GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve teachers list." },
@@ -329,6 +332,8 @@ export async function POST(req: NextRequest) {
     );
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/teachers");
+    if (busy) return busy;
     console.error("Teacher POST error:", error);
     return NextResponse.json(
       { error: "Failed to create teacher record." },

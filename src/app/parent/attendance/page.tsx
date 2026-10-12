@@ -34,7 +34,7 @@ function ParentAttendanceInner() {
         <div>
           <h1 className="font-headline-lg text-xl sm:text-2xl font-bold text-on-surface">Child attendance</h1>
           <p className="text-xs text-on-surface-variant mt-0.5">
-            {payload?.student?.fullName || "Select a linked child"} • Present, absent, and leave records only for this student.
+            {payload?.student?.fullName || "Select a linked child"} • Present, absent, and leave records only for this student. The table shows the last 60 days; the totals cover the whole session.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

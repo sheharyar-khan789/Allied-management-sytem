@@ -1,7 +1,13 @@
 import { cookies } from "next/headers";
 import { NextRequest } from "next/server";
 import { UserProfile, UserRole } from "./types";
-import { getUserByIdServer } from "./server-db";
+import { getSessionProfileServer } from "./server-db";
+import {
+  isServiceUnavailableError,
+  logFirestoreOutage,
+  serviceBusyResponse,
+  ServiceUnavailableError,
+} from "./firestore-errors";
 import { hasAdminCredentials } from "./admin";
 import {
   SESSION_COOKIE_NAME,
@@ -86,12 +92,26 @@ export function evaluateSessionAgainstProfile(
   return "OK";
 }
 
-/** Fails closed: if the profile can't be read, the session is treated as revoked. */
+/**
+ * Fails closed: if the profile can't be read, the session is not accepted. When the reason is that
+ * Firestore is out of quota / unreachable, a ServiceUnavailableError is thrown (→ HTTP 503 and an
+ * error page) instead of treating the session as revoked: answering "signed out" there sent the
+ * user from /admin back to /login, where the still-valid cookie bounced them to /admin again.
+ *
+ * The profile comes from getSessionProfileServer (cached up to 30s per instance; every user write
+ * drops it immediately in the instance that made it). Revocation by password change/reset,
+ * logout, role or school change, deactivation or deletion is therefore enforced on the next
+ * request in that instance and within 30 seconds on any other instance.
+ */
 async function checkSession(user: AuthenticatedUser): Promise<SessionCheckResult> {
   try {
-    const profile = await getUserByIdServer(user.uid);
+    const profile = await getSessionProfileServer(user.schoolId, user.uid);
     return evaluateSessionAgainstProfile(user, profile, hasAdminCredentials);
   } catch (e) {
+    if (isServiceUnavailableError(e)) {
+      logFirestoreOutage("session check", e);
+      throw new ServiceUnavailableError(e);
+    }
     console.error("Session revocation check failed:", (e as Error)?.message || "error");
     return "PROFILE_MISSING";
   }
@@ -166,7 +186,14 @@ export async function requireAuth(
     throw jsonError(403, { error: "Forbidden: cross-site request blocked." });
   }
 
-  const user = await getAuthenticatedUser(req);
+  let user: AuthenticatedUser | null;
+  try {
+    user = await getAuthenticatedUser(req);
+  } catch (e) {
+    // Database out of quota/unreachable: 503 "temporarily busy", not 401 (which logs the user out).
+    if (e instanceof ServiceUnavailableError) throw serviceBusyResponse();
+    throw e;
+  }
 
   if (!user || !user.uid || !user.schoolId) {
     throw jsonError(401, {

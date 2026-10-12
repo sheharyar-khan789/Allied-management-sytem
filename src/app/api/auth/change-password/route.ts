@@ -10,6 +10,7 @@ import { setAuthPasswordServer } from "@/lib/firebase/auth-password";
 import { BCRYPT_COST, checkPasswordPolicy } from "@/lib/password-reset";
 import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
 import { securityLog } from "@/lib/security-log";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 /** Wrong current-password guesses allowed per account before a 15-minute cooldown. */
 const CHANGE_MAX_FAILURES = 5;
@@ -136,6 +137,8 @@ export async function POST(req: NextRequest) {
     return response;
   } catch (error: unknown) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/auth/change-password");
+    if (busy) return busy;
     console.error("Change password error:", (error as Error)?.message || "error");
     return NextResponse.json({ error: "Failed to change password." }, { status: 500 });
   }

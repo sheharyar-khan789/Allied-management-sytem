@@ -13,6 +13,7 @@ import { FEE_MONTHS, FeeChallanDoc, FeeMonth, StudentDoc, StudentFeeLedgerDoc } 
 import { idString, parseJsonBody, year as yearSchema } from "@/lib/input-validation";
 import { feeMonthOf } from "@/lib/fee-ledger";
 import { resolveSessionStudent } from "@/lib/academic-access";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -107,6 +108,8 @@ export async function GET(req: NextRequest) {
     );
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/fees/student-account");
+    if (busy) return busy;
     console.error("Student fee account GET error:", error);
     return jsonError("Failed to load the student's fee account.", 500);
   }
@@ -158,6 +161,8 @@ export async function PUT(req: NextRequest) {
     );
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/fees/student-account");
+    if (busy) return busy;
     console.error("Student fee account PUT error:", error);
     return jsonError("Failed to update the fee status.", 500);
   }

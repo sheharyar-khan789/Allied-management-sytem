@@ -39,7 +39,8 @@ export default function ExamsManagementPage() {
 
   const loadExams = useCallback((examId?: string) => {
     setLoading(true);
-    const qs = examId ? `?examId=${encodeURIComponent(examId)}` : "";
+    // Only the selected schedule's roster is loaded; others are fetched when selected.
+    const qs = `?rosters=one${examId ? `&examId=${encodeURIComponent(examId)}` : ""}`;
     return fetch(`/api/exams${qs}`)
       .then((res) => res.json())
       .then((json) => {
@@ -162,11 +163,27 @@ export default function ExamsManagementPage() {
     }
   };
 
-  const handleScheduleSelect = (schedId: string) => {
+  const handleScheduleSelect = async (schedId: string) => {
     setSelectedScheduleId(schedId);
     const sched = schedules.find((s) => s.id === schedId);
-    if (sched) {
+    if (!sched) return;
+    if (sched.results) {
       initStudentMarks(sched);
+      return;
+    }
+    // Roster not loaded yet: fetch just this schedule's roster and marks.
+    setStudentMarks([]);
+    try {
+      const params = new URLSearchParams({ rosters: "one", scheduleId: schedId });
+      if (selectedExamId) params.set("examId", selectedExamId);
+      const json = await fetch(`/api/exams?${params.toString()}`).then((res) => res.json());
+      const loaded = json?.activeExam?.schedules?.find((s: any) => s.id === schedId);
+      if (loaded) {
+        setSchedules((prev) => prev.map((s) => (s.id === schedId ? loaded : s)));
+        initStudentMarks(loaded);
+      }
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -207,6 +224,9 @@ export default function ExamsManagementPage() {
       if (res.ok) {
         setSaveSuccess(true);
         setTimeout(() => setSaveSuccess(false), 3000);
+        // The cached roster of this schedule is now stale: reload it if it is selected again.
+        const savedId = selectedScheduleId;
+        setSchedules((prev) => prev.map((s) => (s.id === savedId ? { ...s, results: null } : s)));
       }
     } catch (err) {
       console.error(err);

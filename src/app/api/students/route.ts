@@ -19,6 +19,7 @@ import { validateStudentDates } from "@/lib/date-utils";
 import { BCRYPT_COST, generateInitialPassword } from "@/lib/password-reset";
 import { z } from "zod";
 import { cnicNumber, documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 const optText = (max: number) => z.string().trim().max(max).optional().or(z.literal(""));
 const optEmail = z.string().trim().max(254).email().optional().or(z.literal(""));
@@ -121,6 +122,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, students: mapped });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/students");
+    if (busy) return busy;
     console.error("Students GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve students list." },
@@ -365,6 +368,8 @@ export async function POST(req: NextRequest) {
     );
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/students");
+    if (busy) return busy;
     console.error("Student enrollment error:", error);
     return NextResponse.json(
       { error: "Failed to enroll student." },

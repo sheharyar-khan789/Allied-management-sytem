@@ -17,6 +17,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { SubjectDoc } from "@/lib/firebase/types";
 import { requireTeacherAllocation } from "@/lib/academic-access";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -63,6 +64,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, subjects: formatted });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/subjects");
+    if (busy) return busy;
     console.error("Subjects GET error:", error);
     return NextResponse.json({ error: "Failed to retrieve subjects." }, { status: 500 });
   }
@@ -162,6 +165,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, subject: newSubject }, { status: 201 });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/subjects");
+    if (busy) return busy;
     console.error("Subject POST error:", error);
     return NextResponse.json({ error: "Failed to create subject." }, { status: 500 });
   }
@@ -281,6 +286,8 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ success: true, subject: updated });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/subjects");
+    if (busy) return busy;
     console.error("Subject PUT error:", error);
     return NextResponse.json({ error: "Failed to update subject." }, { status: 500 });
   }
@@ -376,6 +383,8 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ success: true, message: "Subject deleted successfully." });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/subjects");
+    if (busy) return busy;
     console.error("Subject DELETE error:", error);
     return NextResponse.json({ error: "Failed to delete subject." }, { status: 500 });
   }

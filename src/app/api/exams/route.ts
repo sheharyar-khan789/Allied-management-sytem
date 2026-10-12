@@ -18,6 +18,7 @@ import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic
 import { validateDateString } from "@/lib/date-utils";
 import { z } from "zod";
 import { idString, parseJsonBody, safeUrl } from "@/lib/input-validation";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 const examUpdateSchema = z.union([
   // Exam cycle metadata (ADMIN only).
@@ -77,6 +78,11 @@ export async function GET(req: NextRequest) {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     const { searchParams } = new URL(req.url);
     const examId = searchParams.get("examId");
+    // rosters=one: build the roster + marks only for `scheduleId` (default: the first schedule);
+    // the other schedules come back with results: null and are fetched when selected. Without
+    // it (older clients) every schedule's roster is built, as before.
+    const oneRoster = searchParams.get("rosters") === "one";
+    const requestedScheduleId = searchParams.get("scheduleId");
 
     // A TEACHER only ever sees schedules/results for subjects allocated to them — resolved
     // from the authenticated session, never from a client-supplied value. Fails closed.
@@ -106,17 +112,45 @@ export async function GET(req: NextRequest) {
     // Build the real roster + existing marks for each schedule, matching the exact shape the
     // admin and teacher gradebook pages expect (student.firstName/lastName/rollNumber/
     // admissionNumber, maxMarks, grade, gpa).
+    // A class's roster and marks are read once and shared by all of its subject schedules (they
+    // used to be read again for every schedule: ~8x the reads for an 8-subject class).
+    const classData = new Map<string, ReturnType<typeof loadClassData>>();
+    const loadClassData = (classId: string) =>
+      Promise.all([
+        getStudentsServer(authUser.schoolId, classId, undefined, undefined, "ACTIVE"),
+        getExamResultsServer(authUser.schoolId, activeExam!.id, classId),
+      ]);
+    const classDataFor = (classId: string) => {
+      let p = classData.get(classId);
+      if (!p) classData.set(classId, (p = loadClassData(classId)));
+      return p;
+    };
+    const rosterScheduleId = oneRoster
+      ? (visibleSchedules.find((s) => s.id === requestedScheduleId) || visibleSchedules[0])?.id
+      : null;
+
     const schedulesFormatted = await Promise.all(
       visibleSchedules.map(async (sched) => {
-        const [classStudents, existingResults] = await Promise.all([
-          getStudentsServer(authUser.schoolId, sched.classId, undefined, undefined, "ACTIVE"),
-          getExamResultsServer(authUser.schoolId, activeExam!.id, sched.classId),
-        ]);
+        const cls = classes.find((c) => c.id === sched.classId);
+        const subject = subjects.find((s) => s.id === sched.subjectId);
+        const header = {
+          id: sched.id,
+          examDate: sched.examDate,
+          startTime: sched.startTime,
+          endTime: sched.endTime,
+          maxMarks: sched.totalMarks,
+          passingMarks: sched.passingMarks,
+          classId: sched.classId,
+          subjectId: sched.subjectId,
+          class: cls ? { id: cls.id, name: cls.name, section: cls.section } : null,
+          subject: subject ? { id: subject.id, name: subject.name, code: subject.code } : null,
+        };
+        if (oneRoster && sched.id !== rosterScheduleId) return { ...header, results: null };
+
+        const [classStudents, existingResults] = await classDataFor(sched.classId);
         const resultsByStudent = new Map(
           existingResults.filter((r) => r.scheduleId === sched.id).map((r) => [r.studentId, r])
         );
-        const cls = classes.find((c) => c.id === sched.classId);
-        const subject = subjects.find((s) => s.id === sched.subjectId);
 
         const results = classStudents.map((st) => {
           const existing = resultsByStudent.get(st.id);
@@ -138,19 +172,7 @@ export async function GET(req: NextRequest) {
           };
         });
 
-        return {
-          id: sched.id,
-          examDate: sched.examDate,
-          startTime: sched.startTime,
-          endTime: sched.endTime,
-          maxMarks: sched.totalMarks,
-          passingMarks: sched.passingMarks,
-          classId: sched.classId,
-          subjectId: sched.subjectId,
-          class: cls ? { id: cls.id, name: cls.name, section: cls.section } : null,
-          subject: subject ? { id: subject.id, name: subject.name, code: subject.code } : null,
-          results,
-        };
+        return { ...header, results };
       })
     );
 
@@ -183,6 +205,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/exams");
+    if (busy) return busy;
     console.error("Exams GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve examination records." },
@@ -280,6 +304,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, exam: examDoc, schedulesCreated: createdSchedules }, { status: 201 });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/exams");
+    if (busy) return busy;
     console.error("Exam POST error:", error);
     return NextResponse.json({ error: "Failed to create exam cycle." }, { status: 500 });
   }
@@ -358,6 +384,8 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ success: true, schedule: scheduleDoc }, { status: 201 });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/exams");
+    if (busy) return busy;
     console.error("Exam schedule PATCH error:", error);
     return NextResponse.json({ error: "Failed to add exam schedule." }, { status: 500 });
   }
@@ -496,6 +524,8 @@ export async function PUT(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/exams");
+    if (busy) return busy;
     console.error("Marks entry error:", error);
     return NextResponse.json({ error: "Failed to record exam marks." }, { status: 500 });
   }

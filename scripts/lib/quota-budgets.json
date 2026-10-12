@@ -1,0 +1,134 @@
+{
+  "Login: Admin": {
+    "reads": 1,
+    "writes": 1
+  },
+  "Login: Teacher": {
+    "reads": 1,
+    "writes": 1
+  },
+  "Login: Student": {
+    "reads": 1,
+    "writes": 1
+  },
+  "Login: Parent": {
+    "reads": 1,
+    "writes": 1
+  },
+  "Session check (any authenticated API call)": {
+    "reads": 1,
+    "writes": 0
+  },
+  "/api/auth/me keep-alive": {
+    "reads": 1,
+    "writes": 0
+  },
+  "One-time: first admin dashboard after deploy (builds 31 daily attendance summaries)": {
+    "reads": 9569,
+    "writes": 33
+  },
+  "Admin: dashboard": {
+    "reads": 166,
+    "writes": 0
+  },
+  "Admin: page refresh (layout + header only)": {
+    "reads": 69,
+    "writes": 0
+  },
+  "Admin: students list": {
+    "reads": 597,
+    "writes": 0
+  },
+  "Admin: teachers list": {
+    "reads": 165,
+    "writes": 0
+  },
+  "Admin: fees page": {
+    "reads": 135,
+    "writes": 0
+  },
+  "Admin: fees search (1 request, as sent by the debounced search box)": {
+    "reads": 490,
+    "writes": 0
+  },
+  "Admin: fees search (8 requests, one per keystroke as the old page did)": {
+    "reads": 1902,
+    "writes": 0
+  },
+  "Admin: Student Fee Account tab": {
+    "reads": 112,
+    "writes": 0
+  },
+  "Admin: attendance": {
+    "reads": 237,
+    "writes": 0
+  },
+  "Admin: reports": {
+    "reads": 178,
+    "writes": 0
+  },
+  "Admin: timetable": {
+    "reads": 525,
+    "writes": 0
+  },
+  "Admin: audit log": {
+    "reads": 189,
+    "writes": 0
+  },
+  "Admin: announcements": {
+    "reads": 81,
+    "writes": 0
+  },
+  "Teacher: dashboard": {
+    "reads": 170,
+    "writes": 0
+  },
+  "Teacher: attendance": {
+    "reads": 238,
+    "writes": 0
+  },
+  "Teacher: mark attendance (30 students)": {
+    "reads": 210,
+    "writes": 38
+  },
+  "Admin: exams / gradebook (selected schedule)": {
+    "reads": 585,
+    "writes": 0
+  },
+  "Teacher: gradebook": {
+    "reads": 538,
+    "writes": 0
+  },
+  "Teacher: students": {
+    "reads": 202,
+    "writes": 0
+  },
+  "One-time: first student page after deploy (builds the student's attendance totals)": {
+    "reads": 76,
+    "writes": 3
+  },
+  "Student: dashboard": {
+    "reads": 39,
+    "writes": 0
+  },
+  "Student: fees": {
+    "reads": 34,
+    "writes": 0
+  },
+  "Student: results": {
+    "reads": 33,
+    "writes": 0
+  },
+  "Student: attendance": {
+    "reads": 60,
+    "writes": 0
+  },
+  "Student: timetable": {
+    "reads": 59,
+    "writes": 0
+  },
+  "Parent: dashboard": {
+    "reads": 94,
+    "writes": 0
+  }
+}

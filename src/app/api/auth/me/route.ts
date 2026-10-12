@@ -4,7 +4,8 @@ import {
   createSessionCookieServer,
   SESSION_COOKIE_OPTIONS,
 } from "@/lib/firebase/server-auth";
-import { getUserByIdServer } from "@/lib/firebase/server-db";
+import { getSessionProfileServer } from "@/lib/firebase/server-db";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -13,7 +14,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ user: null, session: null }, { status: 401 });
     }
 
-    const profile = await getUserByIdServer(authUser.uid);
+    // Same (≤30s cached) profile the session check just used: no second read.
+    const profile = await getSessionProfileServer(authUser.schoolId, authUser.uid);
     const resolved = profile || authUser;
     const {
       passwordHash: _omit,
@@ -54,6 +56,9 @@ export async function GET(req: NextRequest) {
     response.cookies.set("allied_session", token, SESSION_COOKIE_OPTIONS);
     return response;
   } catch (error) {
+    // 503 (not 401) while Firestore is out of quota: the client only signs out on 401.
+    const busy = serviceBusyResponseFor(error, "/api/auth/me");
+    if (busy) return busy;
     console.error("Session check error:", (error as Error)?.message || "error");
     return NextResponse.json({ user: null, session: null }, { status: 500 });
   }

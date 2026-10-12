@@ -3,6 +3,7 @@ import { requireAuth, requireRecentAuth } from "@/lib/firebase/server-auth";
 import { z } from "zod";
 import { idString, money, monthName, parseJsonBody, year as yearSchema } from "@/lib/input-validation";
 import { validateDateString } from "@/lib/date-utils";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 const payrollSchema = z.object({
   teacherId: idString,
@@ -106,6 +107,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/payroll");
+    if (busy) return busy;
     console.error("Payroll GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve payroll records." },
@@ -199,6 +202,8 @@ async function handleSavePayroll(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/payroll");
+    if (busy) return busy;
     console.error("Payroll update error:", error);
     return NextResponse.json(
       { error: "Failed to update payroll record." },

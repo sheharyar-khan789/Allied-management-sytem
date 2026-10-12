@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
 import StudentFeeAccount from "@/components/StudentFeeAccount";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -29,6 +30,10 @@ export default function FeeManagementPage() {
   const [payLoading, setPayLoading] = useState(false);
   const [payError, setPayError] = useState("");
   const [loadError, setLoadError] = useState("");
+  // The ledger is paged on the server (50 rows per request); "Load more" appends the next page.
+  const [loadingMore, setLoadingMore] = useState(false);
+  // One request per typed query, not one per keystroke.
+  const debouncedSearch = useDebouncedValue(search.trim(), 400);
 
   // Deep link from a student's dossier: /admin/fees?studentId=... opens that student's account.
   useEffect(() => {
@@ -39,18 +44,21 @@ export default function FeeManagementPage() {
     }
   }, []);
 
-  const fetchFees = async () => {
+  const fetchFees = async (cursor?: string) => {
     try {
       const params = new URLSearchParams();
-      if (search) params.append("search", search);
+      if (debouncedSearch) params.append("search", debouncedSearch);
       if (selectedClass !== "all") params.append("classId", selectedClass);
       if (selectedStatus !== "all") params.append("status", selectedStatus);
       if (selectedMonth !== "all") params.append("month", selectedMonth);
+      if (cursor) params.append("cursor", cursor);
 
       const res = await fetch(`/api/fees?${params.toString()}`, { cache: "no-store" });
       const json = await res.json().catch(() => ({}));
       if (res.ok && json.success) {
-        setData(json);
+        setData((prev: any) =>
+          cursor && prev ? { ...json, challans: [...(prev.challans || []), ...(json.challans || [])] } : json
+        );
         setLoadError("");
       } else {
         setLoadError(json.error || "Failed to load fee records.");
@@ -65,7 +73,17 @@ export default function FeeManagementPage() {
 
   useEffect(() => {
     fetchFees();
-  }, [search, selectedClass, selectedStatus, selectedMonth]);
+  }, [debouncedSearch, selectedClass, selectedStatus, selectedMonth]);
+
+  const loadMore = async () => {
+    if (!data?.nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      await fetchFees(data.nextCursor);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -378,6 +396,23 @@ export default function FeeManagementPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {data?.searchTruncated && (
+          <p className="px-4 py-3 text-xs text-on-surface-variant border-t border-outline-variant">
+            Many students match this search — showing challans of the first 50. Type more of the name or admission number to narrow it down.
+          </p>
+        )}
+        {data?.hasMore && (
+          <div className="flex justify-center px-4 py-3 border-t border-outline-variant">
+            <button
+              type="button"
+              onClick={loadMore}
+              disabled={loadingMore}
+              className="px-4 py-2 rounded-lg bg-surface-container text-xs font-semibold disabled:opacity-60"
+            >
+              {loadingMore ? "Loading..." : `Load more (showing ${challans.length} of ${stats.totalChallans})`}
+            </button>
           </div>
         )}
       </div>

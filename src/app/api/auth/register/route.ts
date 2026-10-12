@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import crypto from "crypto";
 import {
   saveSchoolServer,
@@ -313,6 +314,8 @@ export async function POST(req: NextRequest) {
 
     return response;
   } catch (error: any) {
+    const busy = serviceBusyResponseFor(error, "/api/auth/register");
+    if (busy) return busy;
     console.error("Registration route error:", error?.code || error?.message || "error");
     const duplicateEmail = error?.code === "auth/email-already-exists";
     return NextResponse.json(

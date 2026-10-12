@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { formatDisplayDate } from "@/lib/date-utils";
 import Link from "next/link";
 import FileUpload from "@/components/FileUpload";
+import { useDebouncedValue } from "@/lib/use-debounced-value";
 
 // Every field starts empty. These are real personnel records: the form previously opened
 // pre-filled with an invented designation ("Senior Science & Math Educator"), qualification
@@ -40,10 +41,12 @@ export default function TeachersManagementPage() {
   const [sendingActivationId, setSendingActivationId] = useState<string | null>(null);
 
   const [formData, setFormData] = useState(EMPTY_TEACHER_FORM);
+  // One request per typed query, not one per keystroke.
+  const debouncedSearch = useDebouncedValue(search.trim(), 400);
 
   const fetchTeachers = async () => {
     try {
-      const res = await fetch(`/api/teachers?search=${encodeURIComponent(search)}`);
+      const res = await fetch(`/api/teachers?search=${encodeURIComponent(debouncedSearch)}`);
       const json = await res.json();
       if (json.success) {
         setTeachers(json.teachers);
@@ -57,7 +60,7 @@ export default function TeachersManagementPage() {
 
   useEffect(() => {
     fetchTeachers();
-  }, [search]);
+  }, [debouncedSearch]);
 
   const openCreateModal = () => {
     setEditingTeacher(null);

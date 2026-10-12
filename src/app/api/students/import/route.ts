@@ -28,6 +28,7 @@ import {
   rowsToInputs,
   validateImportRows,
 } from "@/lib/student-import";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -409,6 +410,8 @@ export async function POST(req: NextRequest) {
     return await commit(authUser, req);
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/students/import");
+    if (busy) return busy;
     console.error("Student import error:", error?.message || error);
     return NextResponse.json({ error: "Student import failed. No further rows were processed." }, { status: 500 });
   }

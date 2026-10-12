@@ -7,6 +7,7 @@ import {
   saveClassServer,
   deleteClassServer,
   getStudentsServer,
+  getStudentCountsByClassServer,
   getSubjectsServer,
   getAttendanceServer,
   getExamResultsServer,
@@ -20,6 +21,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { ClassDoc, TeacherDoc } from "@/lib/firebase/types";
 import { requireTeacherAllocation } from "@/lib/academic-access";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -28,9 +30,11 @@ export async function GET(req: NextRequest) {
     // enumerate every class in the school together with its roster size and class-teacher
     // name. Restricted to the roles that actually use it.
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
-    const [classes, students, subjects, teachers] = await Promise.all([
+    // Roster sizes come from per-class count() aggregations (cached 60s) — this route is loaded
+    // by most admin/teacher pages and used to read every student document of the school.
+    const [classes, studentCounts, subjects, teachers] = await Promise.all([
       getClassesServer(authUser.schoolId),
-      getStudentsServer(authUser.schoolId),
+      getStudentCountsByClassServer(authUser.schoolId),
       getSubjectsServer(authUser.schoolId),
       getTeachersServer(authUser.schoolId),
     ]);
@@ -44,7 +48,7 @@ export async function GET(req: NextRequest) {
     const visibleClasses = allocation ? classes.filter((c) => allocation.classIds.has(c.id)) : classes;
 
     const formatted = visibleClasses.map((c) => {
-      const clsStudents = students.filter((s) => s.classId === c.id);
+      const counts = studentCounts.get(c.id);
       const clsSubjects = subjects.filter(
         (s) => s.classId === c.id && (!allocation || allocation.subjectIds.has(s.id))
       );
@@ -60,8 +64,8 @@ export async function GET(req: NextRequest) {
         displayName: `${c.name}-${c.section}`,
         roomNumber: c.roomNo || "Room",
         capacity: c.capacity,
-        studentCount: clsStudents.length,
-        activeStudentCount: clsStudents.filter((s) => s.status === "ACTIVE").length,
+        studentCount: counts?.total || 0,
+        activeStudentCount: counts?.active || 0,
         classTeacherId: c.classTeacherId || null,
         classTeacherName,
         ...(allocation ? { isIncharge: allocation.inchargeClassIds.has(c.id) } : {}),
@@ -84,6 +88,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, classes: formatted });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/classes");
+    if (busy) return busy;
     console.error("Classes GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve classes." },
@@ -190,6 +196,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, class: newClass }, { status: 201 });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/classes");
+    if (busy) return busy;
     console.error("Class POST error:", error);
     return NextResponse.json(
       { error: "Failed to create class." },
@@ -303,6 +311,8 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ success: true, class: updated });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/classes");
+    if (busy) return busy;
     console.error("Class PUT error:", error);
     return NextResponse.json(
       { error: "Failed to update class." },
@@ -435,6 +445,8 @@ export async function DELETE(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/classes");
+    if (busy) return busy;
     console.error("Class DELETE error:", error);
     return NextResponse.json(
       { error: "Failed to delete class." },
