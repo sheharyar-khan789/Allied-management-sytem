@@ -7,7 +7,7 @@ export default function StudentResultsReportCardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/student/me")
+    fetch("/api/student/me?view=results")
       .then((res) => res.json())
       .then((d) => {
         if (d?.success) setData(d);

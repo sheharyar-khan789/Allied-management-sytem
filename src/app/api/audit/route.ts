@@ -1,6 +1,7 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import { getAuditLogsServer } from "@/lib/firebase/server-db";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -43,6 +44,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ success: true, logs: mapped });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/audit");
+    if (busy) return busy;
     console.error("Audit GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve audit log history." },

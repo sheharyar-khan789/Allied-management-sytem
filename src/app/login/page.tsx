@@ -14,6 +14,8 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // Set when the server answered 503 (database busy / out of daily quota), shown as a notice.
+  const [serviceBusy, setServiceBusy] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   // Admin two-factor step (only when the server asks for it).
   const [mfaRequired, setMfaRequired] = useState(false);
@@ -34,6 +36,7 @@ export default function LoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setServiceBusy(false);
     setSuccessMessage("");
     setLoading(true);
 
@@ -72,6 +75,14 @@ export default function LoginPage() {
           res.status >= 500
             ? "Authentication service is currently unavailable. Please try again later."
             : `Authentication server returned unexpected response (${res.status}).`
+        );
+      }
+
+      if (res.status === 503) {
+        // The database is out of its daily quota or briefly unreachable. Not a credentials problem.
+        setServiceBusy(true);
+        throw new Error(
+          data?.error || "Service is temporarily busy. Please try again in a few minutes."
         );
       }
 
@@ -154,7 +165,17 @@ export default function LoginPage() {
           </div>
 
           {/* Error & Success Alerts */}
-          {error && (
+          {error && serviceBusy && (
+            <div
+              role="status"
+              className="mt-4 p-3 rounded-lg bg-tertiary-container/40 text-on-surface text-xs flex items-center gap-2 border border-tertiary/30"
+            >
+              <span className="material-symbols-outlined text-[18px] shrink-0">schedule</span>
+              <span>{error} Your account and password are fine.</span>
+            </div>
+          )}
+
+          {error && !serviceBusy && (
             <div className="mt-4 p-3 rounded-lg bg-error-container text-on-error-container text-xs flex items-center gap-2 border border-error/20">
               <span className="material-symbols-outlined text-[18px] shrink-0">error</span>
               <span>{error}</span>

@@ -8,6 +8,7 @@ import {
   MAX_DOCUMENT_SIZE_BYTES,
 } from "@/lib/storage";
 import { securityLog } from "@/lib/security-log";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -88,6 +89,8 @@ export async function POST(req: NextRequest) {
     return json({ success: true, ...uploadResult }, 201);
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/upload");
+    if (busy) return busy;
     console.error("File upload error:", error?.message || "error");
     securityLog("server.error", { route: "/api/upload", status: 500 });
     return json({ error: "Failed to upload file to storage." }, 500);

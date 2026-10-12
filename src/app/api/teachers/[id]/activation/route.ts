@@ -7,6 +7,7 @@ import {
   getUserByIdServer,
 } from "@/lib/firebase/server-db";
 import { sendPasswordSetupLink } from "@/lib/account-email";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +68,8 @@ export async function POST(
     );
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/teachers/[id]/activation");
+    if (busy) return busy;
     console.error("Teacher activation POST error:", error);
     return NextResponse.json({ error: "Failed to send the activation email." }, { status: 500 });
   }

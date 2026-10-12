@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { requireAuth, requireRecentAuth } from "@/lib/firebase/server-auth";
 import { z } from "zod";
 import { idString, money, parseJsonBody, safeUrl, year as yearSchema } from "@/lib/input-validation";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 const challanCreateSchema = z.object({
   studentId: idString,
@@ -36,10 +37,57 @@ import {
   getClassesServer,
   getStudentByIdServer,
   updateStudentFeeLedgerServer,
+  getStudentsServer,
+  getFeeChallansPageServer,
+  getFeeChallanStatsServer,
+  getFeeChallansForStudentsServer,
+  getFeeChallansByNumberServer,
+  computeFeeChallanStats,
+  FeeChallanListFilter,
 } from "@/lib/firebase/server-db";
 import { feeMonthOf } from "@/lib/fee-ledger";
-import { FeeChallanDoc, PaymentDoc } from "@/lib/firebase/types";
+import { FeeChallanDoc, FeeStatus, PaymentDoc } from "@/lib/firebase/types";
 import { validateDateString } from "@/lib/date-utils";
+
+/** Default / maximum rows per ledger page. */
+const FEE_PAGE_SIZE = 50;
+const FEE_PAGE_MAX = 200;
+/** A search lists the challans of at most this many matching students (refine to see others). */
+const SEARCH_MAX_STUDENTS = 50;
+
+function formatChallan(c: FeeChallanDoc) {
+  return {
+    id: c.id,
+    challanNumber: c.challanNo,
+    studentId: c.studentId,
+    studentName: c.studentName || "",
+    admissionNumber: c.admissionNo || "",
+    rollNumber: "",
+    classId: c.classId,
+    className: c.className || "",
+    month: c.month,
+    year: c.year,
+    dueDate: c.dueDate,
+    tuitionFee: c.tuitionFee,
+    admissionFee: c.admissionFee,
+    examFee: c.examFee,
+    otherFee: c.otherFee,
+    discount: c.discount,
+    totalExpected: c.totalExpected,
+    paidAmount: c.paidAmount,
+    balance: Math.max(0, c.totalExpected - c.paidAmount),
+    status: c.status,
+    receiptUrl: c.receiptUrl || undefined,
+    // `paymentDate`, `paymentMethod`, `receiptNumber` and `notes` used to be emitted here as
+    // fabricated values on a financial record: the receipt number was synthesised from the
+    // challan id (`REC-<challanId>`) and matched no real receipt ever issued, the method was
+    // always the literal "Cash Desk" regardless of how the money was actually taken, and the
+    // date was the challan's last-modified timestamp rather than when payment was received.
+    // The real values live on the PaymentDoc records written by recordFeePaymentServer. No
+    // caller in src/ ever read any of these four fields, so they are dropped rather than
+    // invented — an invoice table must not show a receipt number that cannot be reconciled.
+  };
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -47,95 +95,80 @@ export async function GET(req: NextRequest) {
     // totals). Only the admin fees console and the admin student dossier call this route;
     // a TEACHER has no legitimate need for the school's finances.
     const authUser = await requireAuth(req, ["ADMIN"]);
+    const schoolId = authUser.schoolId;
     const { searchParams } = new URL(req.url);
-    const classId = searchParams.get("classId") || undefined;
+    const classParam = searchParams.get("classId") || undefined;
+    const classId = classParam && classParam.toUpperCase() !== "ALL" ? classParam : undefined;
     const studentId = searchParams.get("studentId") || undefined;
     const status = searchParams.get("status") || undefined;
     const month = searchParams.get("month") || undefined;
-    const search = searchParams.get("search")?.toLowerCase() || "";
-    const limitParam = searchParams.get("limit");
-    const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
+    const rawSearch = (searchParams.get("search") || "").trim().slice(0, 100);
+    const search = rawSearch.toLowerCase();
+    const limitParam = parseInt(searchParams.get("limit") || "", 10);
+    const pageSize = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, FEE_PAGE_MAX) : FEE_PAGE_SIZE;
+    const cursor = searchParams.get("cursor");
 
     // "UNPAID" is a UI grouping of the stored PENDING and OVERDUE statuses — no challan is ever
     // stored as UNPAID, so passing it to the query used to return nothing at all.
-    const statusFilter = status && !["ALL", "UNPAID"].includes(status.toUpperCase()) ? status.toUpperCase() : undefined;
-    const [challans, classes] = await Promise.all([
-      getFeeChallansServer(authUser.schoolId, studentId, month, undefined, statusFilter, parsedLimit),
-      getClassesServer(authUser.schoolId)
-    ]);
+    const upperStatus = status ? status.toUpperCase() : "ALL";
+    const statuses: FeeStatus[] | undefined =
+      upperStatus === "ALL" ? undefined : upperStatus === "UNPAID" ? ["PENDING", "OVERDUE"] : [upperStatus as FeeStatus];
+    const filter: FeeChallanListFilter = { classId, month, statuses };
+    const matches = (c: FeeChallanDoc) =>
+      (!classId || c.classId === classId) && (!month || c.month === month) && (!statuses || statuses.includes(c.status));
 
-    let filtered = challans;
-    if (classId && classId !== "all" && classId !== "ALL") {
-      filtered = filtered.filter((c) => c.classId === classId);
-    }
-    if (status && status.toUpperCase() === "UNPAID") {
-      filtered = filtered.filter((c) => c.status === "PENDING" || c.status === "OVERDUE");
-    } else if (statusFilter) {
-      filtered = filtered.filter((c) => c.status.toUpperCase() === statusFilter);
-    }
-    if (search) {
-      filtered = filtered.filter((c) =>
-        c.challanNo.toLowerCase().includes(search) ||
-        (c.studentName && c.studentName.toLowerCase().includes(search)) ||
-        (c.admissionNo && c.admissionNo.toLowerCase().includes(search))
+    const classes = await getClassesServer(schoolId);
+    let challans: FeeChallanDoc[];
+    let stats;
+    let nextCursor: string | null = null;
+    let searchTruncated = false;
+
+    if (studentId) {
+      // One student's challans (a handful of documents).
+      challans = (await getFeeChallansServer(schoolId, studentId, month)).filter(matches);
+      stats = computeFeeChallanStats(challans);
+    } else if (search) {
+      // Search by student name / admission no / roll no (from the cached student list), plus an
+      // exact challan-number match — instead of reading every challan and filtering in memory.
+      const matchedStudents = (await getStudentsServer(schoolId)).filter(
+        (st) =>
+          st.fullName.toLowerCase().includes(search) ||
+          (st.admissionNo || "").toLowerCase().includes(search) ||
+          (st.rollNo || "").toLowerCase().includes(search)
       );
+      searchTruncated = matchedStudents.length > SEARCH_MAX_STUDENTS;
+      const [byStudent, byNumber] = await Promise.all([
+        getFeeChallansForStudentsServer(schoolId, matchedStudents.slice(0, SEARCH_MAX_STUDENTS).map((st) => st.id)),
+        getFeeChallansByNumberServer(schoolId, rawSearch),
+      ]);
+      const byId = new Map<string, FeeChallanDoc>();
+      for (const c of [...byNumber, ...byStudent]) if (matches(c)) byId.set(c.id, c);
+      challans = Array.from(byId.values()).sort((a, b) => (b.dueDate || "").localeCompare(a.dueDate || ""));
+      stats = computeFeeChallanStats(challans);
+    } else {
+      // The ledger: one page of challans plus totals from count/sum aggregations.
+      const [page, totals] = await Promise.all([
+        getFeeChallansPageServer(schoolId, filter, pageSize, cursor),
+        getFeeChallanStatsServer(schoolId, filter),
+      ]);
+      challans = page.challans;
+      nextCursor = page.nextCursor;
+      stats = totals;
     }
-
-    const totalExpected = filtered.reduce((s, c) => s + (c.totalExpected || 0), 0);
-    const totalCollected = filtered.reduce((s, c) => s + (c.paidAmount || 0), 0);
-    const totalOutstanding = filtered.reduce((s, c) => s + Math.max(0, (c.totalExpected || 0) - (c.paidAmount || 0)), 0);
-    const paidCount = filtered.filter((c) => c.status === "PAID").length;
-    const unpaidCount = filtered.filter((c) => c.status === "PENDING" || c.status === "OVERDUE").length;
-    const partialCount = filtered.filter((c) => c.status === "PARTIAL").length;
-
-    const formattedChallans = filtered.map((c) => ({
-      id: c.id,
-      challanNumber: c.challanNo,
-      studentId: c.studentId,
-      studentName: c.studentName || "",
-      admissionNumber: c.admissionNo || "",
-      rollNumber: "",
-      classId: c.classId,
-      className: c.className || "",
-      month: c.month,
-      year: c.year,
-      dueDate: c.dueDate,
-      tuitionFee: c.tuitionFee,
-      admissionFee: c.admissionFee,
-      examFee: c.examFee,
-      otherFee: c.otherFee,
-      discount: c.discount,
-      totalExpected: c.totalExpected,
-      paidAmount: c.paidAmount,
-      balance: Math.max(0, c.totalExpected - c.paidAmount),
-      status: c.status,
-      receiptUrl: c.receiptUrl || undefined,
-      // `paymentDate`, `paymentMethod`, `receiptNumber` and `notes` used to be emitted here as
-      // fabricated values on a financial record: the receipt number was synthesised from the
-      // challan id (`REC-<challanId>`) and matched no real receipt ever issued, the method was
-      // always the literal "Cash Desk" regardless of how the money was actually taken, and the
-      // date was the challan's last-modified timestamp rather than when payment was received.
-      // The real values live on the PaymentDoc records written by recordFeePaymentServer. No
-      // caller in src/ ever read any of these four fields, so they are dropped rather than
-      // invented — an invoice table must not show a receipt number that cannot be reconciled.
-    }));
 
     return NextResponse.json({
       success: true,
-      stats: {
-        totalExpected,
-        totalCollected,
-        totalOutstanding,
-        paidCount,
-        unpaidCount,
-        partialCount,
-        totalChallans: filtered.length,
-      },
-      challans: parsedLimit && parsedLimit > 0 ? formattedChallans.slice(0, parsedLimit) : formattedChallans,
+      stats,
+      challans: challans.map(formatChallan),
+      nextCursor,
+      hasMore: Boolean(nextCursor),
+      searchTruncated,
       classes,
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/fees");
+    if (busy) return busy;
     console.error("Fees GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve fee records." },
@@ -264,6 +297,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, challan: challanDoc }, { status: 201 });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/fees");
+    if (busy) return busy;
     console.error("Fee POST error:", error);
     return NextResponse.json({ error: "Failed to generate fee challan." }, { status: 500 });
   }
@@ -357,6 +392,8 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ success: true, receiptNumber: receiptNo });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/fees");
+    if (busy) return busy;
     console.error("Fee payment recording error:", error);
     return NextResponse.json(
       { error: "Failed to record fee payment." },

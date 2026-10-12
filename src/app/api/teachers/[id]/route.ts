@@ -10,6 +10,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { validateDateString, isDateBefore } from "@/lib/date-utils";
 import { deleteTeacherCompletely } from "@/lib/teacher-lifecycle";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(
   req: NextRequest,
@@ -105,6 +106,8 @@ export async function GET(
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/teachers/[id]");
+    if (busy) return busy;
     console.error("Teacher detail error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve teacher details." },
@@ -286,6 +289,8 @@ export async function PUT(
     return NextResponse.json({ success: true, teacher: updated });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/teachers/[id]");
+    if (busy) return busy;
     console.error("Teacher update error:", error);
     return NextResponse.json(
       { error: "Failed to update teacher profile." },
@@ -327,6 +332,8 @@ export async function DELETE(
     return NextResponse.json({ success: true, message: "Faculty member deleted successfully.", ...result });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/teachers/[id]");
+    if (busy) return busy;
     console.error("Teacher delete error:", error);
     return NextResponse.json(
       { error: "Failed to delete teacher record." },

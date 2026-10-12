@@ -1,9 +1,9 @@
 import { AuthenticatedUser } from "@/lib/firebase/server-auth";
 import {
+  getSessionProfileServer,
   getStudentByIdServer,
+  getStudentsByGuardianEmailServer,
   getStudentsByParentUserIdServer,
-  getStudentsServer,
-  getUserByIdServer,
 } from "@/lib/firebase/server-db";
 import { StudentDoc } from "@/lib/firebase/types";
 
@@ -22,7 +22,8 @@ export async function getLinkedChildrenForParent(
   schoolId: string,
   parentUid: string
 ): Promise<StudentDoc[]> {
-  const profile = await getUserByIdServer(parentUid);
+  // The same (≤30s cached) profile the session check uses.
+  const profile = await getSessionProfileServer(schoolId, parentUid);
   if (profile && profile.schoolId !== schoolId) {
     return [];
   }
@@ -49,8 +50,10 @@ export async function getLinkedChildrenForParent(
   if (profile?.email) {
     // Parent↔child links are identity, not session data (the relation lookup above spans all
     // sessions too); each child's attendance/fees/results are session-filtered when read.
-    const schoolStudents = await getStudentsServer(schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
-    for (const student of schoolStudents) {
+    // One equality query on the (lowercase) guardian email instead of reading every student of
+    // the school on every parent request.
+    const byGuardianEmail = await getStudentsByGuardianEmailServer(schoolId, profile.email);
+    for (const student of byGuardianEmail) {
       if (student.schoolId !== schoolId) continue;
       if (parentLinkedToStudent(parentUid, profile.email, student)) {
         byId.set(student.id, student);

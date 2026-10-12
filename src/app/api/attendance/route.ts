@@ -17,6 +17,7 @@ import {
   isAttendanceLockedForTeacher,
 } from "@/lib/attendance-lock";
 import { validateDateString } from "@/lib/date-utils";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
   try {
@@ -98,6 +99,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/attendance");
+    if (busy) return busy;
     console.error("Attendance GET error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve attendance roster." },
@@ -240,7 +243,9 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    await saveAttendanceBulkServer(attendanceDocs);
+    // existingRecords are the stored versions of these records (same class/date/register): passing
+    // them lets the attendance totals be adjusted without reading the records again.
+    await saveAttendanceBulkServer(attendanceDocs, existingRecords);
 
     await createAuditLogServer(
       authUser.schoolId,
@@ -262,6 +267,8 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/attendance");
+    if (busy) return busy;
     console.error("Attendance POST error:", error);
     return NextResponse.json(
       { error: "Failed to save attendance." },

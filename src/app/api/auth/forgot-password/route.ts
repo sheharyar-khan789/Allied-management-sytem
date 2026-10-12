@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import { getUserByEmailServer, createAuditLogServer, getStudentByIdServer, getStudentByUserIdServer } from "@/lib/firebase/server-db";
 import { sendPasswordSetupLink } from "@/lib/account-email";
 import { UserProfile } from "@/lib/firebase/types";
@@ -139,6 +140,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
   } catch (err: any) {
+    // Out of quota: 503 for everyone alike, so it reveals nothing about any account.
+    const busy = serviceBusyResponseFor(err, "/api/auth/forgot-password");
+    if (busy) return busy;
     console.error("Forgot password handler error:", err?.message || err);
     // Same response on internal errors to avoid revealing account existence.
     return NextResponse.json(GENERIC_SUCCESS_RESPONSE);

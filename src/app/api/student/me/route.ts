@@ -3,10 +3,12 @@ import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getStudentByIdServer,
   getStudentByUserIdServer,
-  getUserByIdServer,
+  getSessionProfileServer,
   getUserByEmailServer,
-  getStudentAttendanceServer,
+  getStudentAttendanceTotalsServer,
+  getStudentRecentAttendanceServer,
   getStudentFeeChallansServer,
+  RECENT_ATTENDANCE_DAYS,
   getExamResultsServer,
   getExamsServer,
   getStudentObservationsServer,
@@ -16,16 +18,42 @@ import {
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
 import { schoolPrintIdentity } from "@/lib/school-display";
+import { AttendanceDoc, ExamResultDoc, FeeChallanDoc, StudentObservationDoc, SubjectDoc } from "@/lib/firebase/types";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+
+/**
+ * `?view=` selects what a student page needs, so each page reads only its own data:
+ *  - dashboard: attendance/fee/academic stats, results, observations
+ *  - attendance: attendance stats + the last RECENT_ATTENDANCE_DAYS days of records
+ *  - fees: challans
+ *  - results: exam results
+ *  - profile: identity only
+ * No view (older clients) = everything. Attendance stats come from the per-student totals
+ * summary (1 read) instead of the student's whole attendance history.
+ */
+const VIEWS = ["dashboard", "attendance", "fees", "results", "profile", "all"] as const;
+type View = (typeof VIEWS)[number];
 
 export async function GET(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["STUDENT"]);
+    const viewParam = new URL(req.url).searchParams.get("view") || "all";
+    const view: View = (VIEWS as readonly string[]).includes(viewParam) ? (viewParam as View) : "all";
+    const wants = {
+      attendanceStats: view === "dashboard" || view === "attendance" || view === "all",
+      attendanceRecords: view === "attendance" || view === "all",
+      fees: view === "dashboard" || view === "fees" || view === "all",
+      results: view === "dashboard" || view === "results" || view === "all",
+      observations: view === "dashboard" || view === "all",
+      // No student page renders the class's subject list; only the full (view-less) payload has it.
+      subjects: view === "all",
+    };
 
     // 1. Resolve studentId from session claims or user record
     let studentId = authUser.studentId;
 
     if (!studentId && authUser.uid) {
-      const userProfile = await getUserByIdServer(authUser.uid);
+      const userProfile = await getSessionProfileServer(authUser.schoolId, authUser.uid);
       if (userProfile?.studentId) {
         studentId = userProfile.studentId;
       }
@@ -56,14 +84,15 @@ export async function GET(req: NextRequest) {
     const resolvedStudentId = student.id;
 
     // 3. Fetch related academic and financial datasets strictly for this student
-    const [attendances, challans, examResultsRaw, exams, observations, classes, subjects, school, settings] = await Promise.all([
-      getStudentAttendanceServer(authUser.schoolId, resolvedStudentId),
-      getStudentFeeChallansServer(authUser.schoolId, resolvedStudentId),
-      getExamResultsServer(authUser.schoolId, undefined, undefined, resolvedStudentId),
+    const [attendanceTotals, attendances, challans, examResultsRaw, exams, observations, classes, subjects, school, settings] = await Promise.all([
+      wants.attendanceStats ? getStudentAttendanceTotalsServer(authUser.schoolId, resolvedStudentId) : Promise.resolve(null),
+      wants.attendanceRecords ? getStudentRecentAttendanceServer(authUser.schoolId, resolvedStudentId) : Promise.resolve([] as AttendanceDoc[]),
+      wants.fees ? getStudentFeeChallansServer(authUser.schoolId, resolvedStudentId) : Promise.resolve([] as FeeChallanDoc[]),
+      wants.results ? getExamResultsServer(authUser.schoolId, undefined, undefined, resolvedStudentId) : Promise.resolve([] as ExamResultDoc[]),
       getExamsServer(authUser.schoolId),
-      getStudentObservationsServer(authUser.schoolId, resolvedStudentId),
+      wants.observations ? getStudentObservationsServer(authUser.schoolId, resolvedStudentId) : Promise.resolve([] as StudentObservationDoc[]),
       getClassesServer(authUser.schoolId),
-      getSubjectsServer(authUser.schoolId, student.classId),
+      wants.subjects ? getSubjectsServer(authUser.schoolId, student.classId) : Promise.resolve([] as SubjectDoc[]),
       getSchoolServer(authUser.schoolId),
       getSchoolSettingsServer(authUser.schoolId)
     ]);
@@ -73,12 +102,12 @@ export async function GET(req: NextRequest) {
 
     const targetClass = classes.find((c) => c.id === student.classId);
 
-    // Attendance statistics
-    const totalAtt = attendances.length;
-    const presentAtt = attendances.filter((a) => a.status === "PRESENT").length;
-    const lateAtt = attendances.filter((a) => a.status === "LATE").length;
-    const leaveAtt = attendances.filter((a) => a.status === "LEAVE").length;
-    const absentAtt = attendances.filter((a) => a.status === "ABSENT").length;
+    // Attendance statistics (whole active session, daily register)
+    const presentAtt = attendanceTotals?.PRESENT || 0;
+    const lateAtt = attendanceTotals?.LATE || 0;
+    const leaveAtt = attendanceTotals?.LEAVE || 0;
+    const absentAtt = attendanceTotals?.ABSENT || 0;
+    const totalAtt = presentAtt + lateAtt + leaveAtt + absentAtt;
     const attPct = totalAtt > 0 ? parseFloat(((presentAtt / totalAtt) * 100).toFixed(1)) : 0.0;
 
     // Fee statistics
@@ -197,10 +226,15 @@ export async function GET(req: NextRequest) {
           obtainedMarks: totalObtainedMarks
         }
       },
-      school: schoolPrintIdentity(school, settings)
+      school: schoolPrintIdentity(school, settings),
+      view,
+      // The on-screen list covers this many recent days; the stats cover the whole session.
+      attendanceRecordsDays: RECENT_ATTENDANCE_DAYS
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/student/me");
+    if (busy) return busy;
     console.error("Student /me route error:", error);
     return NextResponse.json(
       { error: "Failed to load student identity." },

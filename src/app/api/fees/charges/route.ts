@@ -11,6 +11,7 @@ import {
 import { STUDENT_CHARGE_TYPES, StudentChargeDoc } from "@/lib/firebase/types";
 import { idString, parseJsonBody } from "@/lib/input-validation";
 import { validateDateString } from "@/lib/date-utils";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -72,6 +73,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, charge }, { status: 201 });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/fees/charges");
+    if (busy) return busy;
     console.error("Student charge POST error:", error);
     return jsonError("Failed to add the payment.", 500);
   }
@@ -111,6 +114,8 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ success: true, charge });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/fees/charges");
+    if (busy) return busy;
     console.error("Student charge PUT error:", error);
     return jsonError("Failed to update the payment.", 500);
   }

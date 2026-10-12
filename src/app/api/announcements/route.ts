@@ -10,6 +10,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { announcementVisibleToRole } from "@/lib/announcements-visibility";
 import { AnnouncementAudience, AnnouncementDoc, AnnouncementStatus } from "@/lib/firebase/types";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 const audienceValues = ["EVERYONE", "TEACHERS", "STUDENTS", "PARENTS"] as const;
 const statusValues = ["DRAFT", "PUBLISHED"] as const;
@@ -52,6 +53,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: unknown) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/announcements");
+    if (busy) return busy;
     console.error("Announcements GET error:", error);
     return NextResponse.json({ error: "Failed to load announcements." }, { status: 500 });
   }
@@ -100,6 +103,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, announcement: serialize({ ...doc, id }, true) }, { status: 201 });
   } catch (error: unknown) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/announcements");
+    if (busy) return busy;
     console.error("Announcements POST error:", error);
     return NextResponse.json({ error: "Failed to create announcement." }, { status: 500 });
   }
@@ -150,6 +155,8 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ success: true, announcement: serialize(updated, true) });
   } catch (error: unknown) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/announcements");
+    if (busy) return busy;
     console.error("Announcements PUT error:", error);
     return NextResponse.json({ error: "Failed to update announcement." }, { status: 500 });
   }
@@ -188,6 +195,8 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/announcements");
+    if (busy) return busy;
     console.error("Announcements DELETE error:", error);
     return NextResponse.json({ error: "Failed to delete announcement." }, { status: 500 });
   }

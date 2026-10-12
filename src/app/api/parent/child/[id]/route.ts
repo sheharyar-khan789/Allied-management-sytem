@@ -4,6 +4,7 @@ import { getAnnouncementsServer } from "@/lib/firebase/server-db";
 import { announcementVisibleToRole } from "@/lib/announcements-visibility";
 import { assertParentOwnsStudent } from "@/lib/parent-access";
 import { buildStudentAcademicPayload } from "@/lib/student-academic-payload";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -12,6 +13,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const student = await assertParentOwnsStudent(authUser, id);
     const payload = await buildStudentAcademicPayload(authUser.schoolId, student, {
       publishedResultsOnly: true,
+      attendanceRecords: "recent",
     });
     const announcements = await getAnnouncementsServer(authUser.schoolId);
     const visible = announcements.filter((a) => announcementVisibleToRole(a, authUser.role));
@@ -29,6 +31,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     });
   } catch (error: unknown) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/parent/child/[id]");
+    if (busy) return busy;
     console.error("Parent child payload error:", error);
     return NextResponse.json({ error: "Failed to load child academic record." }, { status: 500 });
   }

@@ -7,7 +7,7 @@ import {
   getSubjectsServer,
   getTeacherByIdServer,
   getStudentByUserIdServer,
-  getUserByIdServer,
+  getSessionProfileServer,
 } from "@/lib/firebase/server-db";
 import { FeeChallanDoc, StudentDoc, SubjectDoc, TeacherDoc } from "@/lib/firebase/types";
 import { assertParentOwnsStudent } from "@/lib/parent-access";
@@ -28,7 +28,7 @@ export async function resolveAuthenticatedTeacher(
   authUser: AuthenticatedUser
 ): Promise<TeacherDoc | null> {
   if (authUser.role !== "TEACHER") return null;
-  const profile = authUser.teacherId ? null : await getUserByIdServer(authUser.uid);
+  const profile = authUser.teacherId ? null : await getSessionProfileServer(authUser.schoolId, authUser.uid);
   const teacherId = authUser.teacherId || profile?.teacherId;
   if (!teacherId) return null;
   return getTeacherByIdServer(authUser.schoolId, teacherId);
@@ -174,7 +174,7 @@ export async function assertCanViewStudentAttendance(
 export async function resolveSessionStudent(authUser: AuthenticatedUser): Promise<StudentDoc | null> {
   if (authUser.role !== "STUDENT") return null;
   let studentId = authUser.studentId;
-  if (!studentId) studentId = (await getUserByIdServer(authUser.uid))?.studentId;
+  if (!studentId) studentId = (await getSessionProfileServer(authUser.schoolId, authUser.uid))?.studentId;
   const student = studentId
     ? await getStudentByIdServer(authUser.schoolId, studentId)
     : await getStudentByUserIdServer(authUser.schoolId, authUser.uid);

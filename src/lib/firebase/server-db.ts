@@ -1,5 +1,22 @@
-import { FieldValue } from "firebase-admin/firestore";
+import { AggregateField, FieldPath, FieldValue } from "firebase-admin/firestore";
+import type { DocumentSnapshot, Query } from "firebase-admin/firestore";
 import { adminDb, hasAdminCredentials } from "./admin";
+import {
+  FIRESTORE_INDEX_MISSING,
+  isMissingIndexError,
+  isServiceUnavailableError,
+  logFirestoreOutage,
+  withFirestoreRetry,
+} from "./firestore-errors";
+import {
+  CACHE_TTL_MS,
+  cacheKeys,
+  cached,
+  invalidateCache,
+  invalidateCachePrefix,
+  invalidateUserProfileCache,
+  peekCached,
+} from "../server-cache";
 import { getDefaultAcademicYear } from "../school-display";
 import {
   AcademicSessionContext,
@@ -31,6 +48,7 @@ import {
   StudentFeeLedgerDoc,
   StudentChargeDoc,
   FeeMonth,
+  AttendanceStatus,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -91,9 +109,23 @@ export function assertProductionDbReady() {
 }
 
 export function onFirestoreError(operation: string, error: any): void {
-  console.error(`[Firestore Error] ${operation} failed:`, error);
+  if (isServiceUnavailableError(error)) {
+    // Quota exhausted / backend unreachable: tagged FIRESTORE_QUOTA_EXCEEDED or
+    // FIRESTORE_UNAVAILABLE so it stands out in the Vercel logs.
+    logFirestoreOutage(operation, error);
+  } else {
+    console.error(`[Firestore Error] ${operation} failed:`, error);
+  }
   if (process.env.NODE_ENV === "production") {
-    throw new Error(`Database error during ${operation}: ${error?.message || "Operation failed"}`);
+    // Keep the gRPC code (and the original error) so callers can tell "out of quota" (503)
+    // apart from a real failure (500).
+    const wrapped = new Error(`Database error during ${operation}: ${error?.message || "Operation failed"}`) as Error & {
+      code?: unknown;
+      cause?: unknown;
+    };
+    wrapped.code = error?.code;
+    wrapped.cause = error;
+    throw wrapped;
   }
 }
 
@@ -314,6 +346,41 @@ localStore.exams.set("ex-mid-2025", {
 }
 
 // ---------------------------------------------------------------------------
+// AGGREGATION HELPERS
+// ---------------------------------------------------------------------------
+/**
+ * Runs an aggregation/indexed query; if Firestore says a composite index is missing (not deployed
+ * yet), logs FIRESTORE_INDEX_MISSING and runs `fallback` (the older, more expensive but exact
+ * path) instead of failing the request.
+ */
+async function withIndexFallback<T>(label: string, run: () => Promise<T>, fallback: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    if (!isMissingIndexError(e)) throw e;
+    console.warn(`[${FIRESTORE_INDEX_MISSING}] ${label}: composite index not deployed, using fallback read`);
+    return fallback();
+  }
+}
+
+/** count() aggregation: 1 read per 1000 matching index entries instead of 1 read per document. */
+async function countQuery(label: string, query: Query): Promise<number> {
+  const snap = await withFirestoreRetry(label, () => query.count().get());
+  return snap.data().count;
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/** `field == value` for one value, `field in values` (max 30) for several. */
+function whereOneOf(query: Query, field: string, values: string[]): Query {
+  return values.length === 1 ? query.where(field, "==", values[0]) : query.where(field, "in", values);
+}
+
+// ---------------------------------------------------------------------------
 // AUDIT LOG
 // ---------------------------------------------------------------------------
 export async function createAuditLogServer(
@@ -355,11 +422,25 @@ export async function createAuditLogServer(
 export async function getAuditLogsServer(schoolId: string, maxLimit = 50): Promise<AuditLogDoc[]> {
   if (hasAdminCredentials) {
     try {
-      const snap = await adminDb.collection("auditLogs")
-        .where("schoolId", "==", schoolId)
-        .limit(maxLimit)
-        .get();
-      const logs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLogDoc));
+      let logs: AuditLogDoc[];
+      try {
+        // Newest first, bounded. Needs the auditLogs (schoolId ASC, timestamp DESC) index from
+        // firestore.indexes.json; until it is deployed the unordered bounded read below is used.
+        const snap = await adminDb.collection("auditLogs")
+          .where("schoolId", "==", schoolId)
+          .orderBy("timestamp", "desc")
+          .limit(maxLimit)
+          .get();
+        logs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLogDoc));
+      } catch (e) {
+        if (!isMissingIndexError(e)) throw e;
+        console.warn(`[${FIRESTORE_INDEX_MISSING}] auditLogs(schoolId, timestamp desc): using unordered read`);
+        const snap = await adminDb.collection("auditLogs")
+          .where("schoolId", "==", schoolId)
+          .limit(maxLimit)
+          .get();
+        logs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLogDoc));
+      }
       return logs.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     } catch (e) {
       onFirestoreError(`getAuditLogsServer(${schoolId})`, e);
@@ -376,8 +457,11 @@ export async function getAuditLogsServer(schoolId: string, maxLimit = 50): Promi
 export async function getSchoolServer(schoolId: string): Promise<School | null> {
   if (hasAdminCredentials) {
     try {
-      const doc = await adminDb.collection("schools").doc(schoolId).get();
-      if (doc.exists) return { id: doc.id, ...doc.data() } as School;
+      const school = await cached(cacheKeys.school(schoolId), CACHE_TTL_MS.SCHOOL_REFERENCE, async () => {
+        const doc = await withFirestoreRetry("getSchoolServer", () => adminDb.collection("schools").doc(schoolId).get());
+        return doc.exists ? ({ id: doc.id, ...doc.data() } as School) : null;
+      });
+      if (school) return school;
     } catch (e) {
       onFirestoreError(`getSchoolServer(${schoolId})`, e);
     }
@@ -386,6 +470,8 @@ export async function getSchoolServer(schoolId: string): Promise<School | null> 
 }
 
 export async function saveSchoolServer(school: School): Promise<void> {
+  invalidateCache(cacheKeys.school(school.id));
+  invalidateAcademicSessionCache(school.id);
   localStore.schools.set(school.id, school);
   if (hasAdminCredentials) {
     try {
@@ -402,8 +488,13 @@ export async function saveSchoolServer(school: School): Promise<void> {
 export async function getSchoolSettingsServer(schoolId: string): Promise<SchoolSettingsDoc | null> {
   if (hasAdminCredentials) {
     try {
-      const doc = await adminDb.collection("schoolSettings").doc(schoolId).get();
-      if (doc.exists) return { id: doc.id, ...doc.data() } as SchoolSettingsDoc;
+      const settings = await cached(cacheKeys.settings(schoolId), CACHE_TTL_MS.SCHOOL_REFERENCE, async () => {
+        const doc = await withFirestoreRetry("getSchoolSettingsServer", () =>
+          adminDb.collection("schoolSettings").doc(schoolId).get()
+        );
+        return doc.exists ? ({ id: doc.id, ...doc.data() } as SchoolSettingsDoc) : null;
+      });
+      if (settings) return settings;
     } catch (e) {
       onFirestoreError(`getSchoolSettingsServer(${schoolId})`, e);
     }
@@ -412,6 +503,7 @@ export async function getSchoolSettingsServer(schoolId: string): Promise<SchoolS
 }
 
 export async function updateSchoolSettingsServer(settings: SchoolSettingsDoc): Promise<void> {
+  invalidateCache(cacheKeys.settings(settings.schoolId));
   invalidateAcademicSessionCache(settings.schoolId);
   localStore.settings.set(settings.schoolId, settings);
   if (hasAdminCredentials) {
@@ -439,42 +531,58 @@ export interface SessionScope {
   allSessions?: boolean;
 }
 
-// Short-lived per-school memo so a single request that calls several list getters doesn't
-// re-read settings/classes/exams for each one. Invalidated in-process on every write that can
-// change it (settings, classes, exams).
-const SESSION_CONTEXT_TTL_MS = 5_000;
-const sessionContextCache = new Map<string, { at: number; promise: Promise<AcademicSessionContext> }>();
-
-export function invalidateAcademicSessionCache(schoolId: string): void {
-  sessionContextCache.delete(schoolId);
+// Per-school memo of the session context (settings, school, every class and exam). It used to be
+// kept for 5 seconds, so on a quiet serverless instance almost every request re-read all classes
+// and exams. It is now cached for SCHOOL_REFERENCE (60s) and invalidated in-process on every write
+// that can change it (settings, school, classes, exams); getClassesServer/getExamsServer reuse
+// the same lists instead of querying again.
+interface CachedSessionContext extends AcademicSessionContext {
+  classes: ClassDoc[];
+  exams: ExamDoc[];
 }
 
-export async function getAcademicSessionContextServer(schoolId: string): Promise<AcademicSessionContext> {
-  const cached = sessionContextCache.get(schoolId);
-  if (cached && Date.now() - cached.at < SESSION_CONTEXT_TTL_MS) return cached.promise;
+export function invalidateAcademicSessionCache(schoolId: string): void {
+  invalidateCache(cacheKeys.sessionContext(schoolId));
+  // Per-class aggregates are keyed by the active-session classes, so they go too.
+  invalidateCachePrefix(cacheKeys.studentCountsPrefix(schoolId));
+  invalidateCachePrefix(cacheKeys.feeAggregatesPrefix(schoolId));
+  invalidateCachePrefix(cacheKeys.examGradesPrefix(schoolId));
+}
 
-  const promise = (async () => {
+async function loadSessionContext(schoolId: string): Promise<CachedSessionContext> {
+  const load = async () => {
     const [settings, school, classes, exams] = await Promise.all([
       getSchoolSettingsServer(schoolId),
       getSchoolServer(schoolId),
       fetchClassesRaw(schoolId),
       fetchExamsRaw(schoolId),
     ]);
-    const academicYear = settings?.academicYear || school?.academicYear || null;
-    const classYears = new Map<string, string>();
-    for (const c of classes) {
-      if (c.academicYear) classYears.set(c.id, c.academicYear);
-    }
-    const examSessions = new Map<string, string>();
-    for (const e of exams) {
-      if (e.session) examSessions.set(e.id, e.session);
-    }
-    return { academicYear, classYears, examSessions };
-  })();
+    return { academicYear: settings?.academicYear || school?.academicYear || null, classes, exams };
+  };
+  // The in-memory development store is mutated directly by tests; only Firestore results are cached.
+  const raw = hasAdminCredentials
+    ? await cached(cacheKeys.sessionContext(schoolId), CACHE_TTL_MS.SCHOOL_REFERENCE, load)
+    : await load();
+  const classYears = new Map<string, string>();
+  for (const c of raw.classes) {
+    if (c.academicYear) classYears.set(c.id, c.academicYear);
+  }
+  const examSessions = new Map<string, string>();
+  for (const e of raw.exams) {
+    if (e.session) examSessions.set(e.id, e.session);
+  }
+  return { academicYear: raw.academicYear, classYears, examSessions, classes: raw.classes, exams: raw.exams };
+}
 
-  sessionContextCache.set(schoolId, { at: Date.now(), promise });
-  promise.catch(() => sessionContextCache.delete(schoolId));
-  return promise;
+export async function getAcademicSessionContextServer(schoolId: string): Promise<AcademicSessionContext> {
+  return loadSessionContext(schoolId);
+}
+
+/** Classes of the active session (or of `year`), in name order. */
+export async function getSessionClassesServer(schoolId: string, year?: string | null): Promise<ClassDoc[]> {
+  const ctx = await loadSessionContext(schoolId);
+  const target = year === undefined ? ctx.academicYear : year;
+  return ctx.classes.filter((c) => !target || (c.academicYear || ctx.academicYear) === target);
 }
 
 /** Resolves which session a list read should return; null means "don't filter". */
@@ -515,7 +623,9 @@ export async function getUserByEmailServer(email: string): Promise<UserProfile |
   const norm = email.toLowerCase().trim();
   if (hasAdminCredentials) {
     try {
-      const snap = await adminDb.collection("users").where("email", "==", norm).limit(1).get();
+      const snap = await withFirestoreRetry("getUserByEmailServer", () =>
+        adminDb.collection("users").where("email", "==", norm).limit(1).get()
+      );
       if (!snap.empty) {
         const d = snap.docs[0];
         return { uid: d.id, ...d.data() } as UserProfile;
@@ -537,7 +647,7 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
   assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
-      const doc = await adminDb.collection("users").doc(uid).get();
+      const doc = await withFirestoreRetry("getUserByIdServer", () => adminDb.collection("users").doc(uid).get());
       if (doc.exists) return { uid: doc.id, ...doc.data() } as UserProfile;
       if (process.env.NODE_ENV === "production") return null;
     } catch (e) {
@@ -552,11 +662,25 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
   return null;
 }
 
+/**
+ * The user profile behind a session (revocation check, /api/auth/me, layouts), cached per
+ * (schoolId, uid) for CACHE_TTL_MS.SESSION_PROFILE (30s). Every user write in this file
+ * (password change/reset, logout, role/status change, delete, import) drops the cached copy in
+ * this instance immediately; another serverless instance notices within the TTL. Use
+ * getUserByIdServer when the latest stored value is required (e.g. verifying a password).
+ */
+export async function getSessionProfileServer(schoolId: string, uid: string): Promise<UserProfile | null> {
+  if (!hasAdminCredentials) return getUserByIdServer(uid);
+  return cached(cacheKeys.sessionProfile(schoolId, uid), CACHE_TTL_MS.SESSION_PROFILE, () => getUserByIdServer(uid));
+}
+
 export async function createUserServer(user: UserProfile): Promise<void> {
+  invalidateUserProfileCache(user.uid);
   localStore.users.set(user.email.toLowerCase().trim(), user);
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("users").doc(user.uid).set(user);
+      invalidateUserProfileCache(user.uid);
     } catch (e) {
       onFirestoreError(`createUserServer(${user.uid})`, e);
     }
@@ -569,6 +693,7 @@ export async function updateUserServer(user: UserProfile): Promise<void> {
     email: user.email.toLowerCase().trim(),
     updatedAt: new Date().toISOString(),
   };
+  invalidateUserProfileCache(merged.uid);
 
   for (const [key, existing] of localStore.users.entries()) {
     if (existing.uid === merged.uid) {
@@ -580,6 +705,7 @@ export async function updateUserServer(user: UserProfile): Promise<void> {
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("users").doc(merged.uid).set(merged, { merge: true });
+      invalidateUserProfileCache(merged.uid);
     } catch (e) {
       onFirestoreError(`updateUserServer(${merged.uid})`, e);
     }
@@ -592,6 +718,7 @@ export async function updateUserServer(user: UserProfile): Promise<void> {
  * in Firestore. Fields that must really disappear (e.g. a spent reset token) go through here.
  */
 export async function deleteUserFieldsServer(uid: string, fields: (keyof UserProfile)[]): Promise<void> {
+  invalidateUserProfileCache(uid);
   for (const [key, existing] of localStore.users.entries()) {
     if (existing.uid === uid) {
       const next = { ...existing } as Record<string, unknown>;
@@ -604,6 +731,7 @@ export async function deleteUserFieldsServer(uid: string, fields: (keyof UserPro
       const patch: Record<string, unknown> = {};
       for (const f of fields) patch[f as string] = FieldValue.delete();
       await adminDb.collection("users").doc(uid).set(patch, { merge: true });
+      invalidateUserProfileCache(uid);
     } catch (e) {
       onFirestoreError(`deleteUserFieldsServer(${uid})`, e);
     }
@@ -612,12 +740,14 @@ export async function deleteUserFieldsServer(uid: string, fields: (keyof UserPro
 
 /** Hard-deletes a user profile document. Callers verify ownership/role before calling. */
 export async function deleteUserProfileServer(uid: string): Promise<void> {
+  invalidateUserProfileCache(uid);
   for (const [key, existing] of localStore.users.entries()) {
     if (existing.uid === uid) localStore.users.delete(key);
   }
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("users").doc(uid).delete();
+      invalidateUserProfileCache(uid);
     } catch (e) {
       onFirestoreError(`deleteUserProfileServer(${uid})`, e);
     }
@@ -664,10 +794,12 @@ export async function getUsersByEmailsServer(emails: string[]): Promise<Map<stri
  * requireAuth from then on.
  */
 export async function revokeUserSessionsServer(uid: string, atIso: string = new Date().toISOString()): Promise<void> {
+  invalidateUserProfileCache(uid);
   syncLocalUser(uid, { sessionsValidAfter: atIso });
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("users").doc(uid).set({ sessionsValidAfter: atIso, updatedAt: atIso }, { merge: true });
+      invalidateUserProfileCache(uid);
     } catch (e) {
       onFirestoreError(`revokeUserSessionsServer(${uid})`, e);
       throw e;
@@ -685,6 +817,7 @@ export async function revokeSessionIdServer(uid: string, sid: string): Promise<v
   const merge = (current: string[] | undefined) =>
     Array.from(new Set([...(current || []), sid])).slice(-MAX_KEPT);
 
+  invalidateUserProfileCache(uid);
   for (const existing of localStore.users.values()) {
     if (existing.uid === uid) syncLocalUser(uid, { revokedSessionIds: merge(existing.revokedSessionIds) });
   }
@@ -697,6 +830,7 @@ export async function revokeSessionIdServer(uid: string, sid: string): Promise<v
         const current = (snap.data()?.revokedSessionIds as string[] | undefined) || [];
         tx.set(ref, { revokedSessionIds: merge(current) }, { merge: true });
       });
+      invalidateUserProfileCache(uid);
     } catch (e) {
       onFirestoreError(`revokeSessionIdServer(${uid})`, e);
     }
@@ -822,6 +956,7 @@ export async function consumePasswordResetTokenServer(
   assertProductionDbReady();
   const nowMs = Date.parse(nowIso);
   const userPatch = { passwordHash, sessionsValidAfter: nowIso, updatedAt: nowIso };
+  invalidateUserProfileCache(uid);
 
   if (hasAdminCredentials) {
     try {
@@ -840,6 +975,7 @@ export async function consumePasswordResetTokenServer(
         );
         return status;
       });
+      invalidateUserProfileCache(uid);
       if (result === "OK") {
         const local = localStore.passwordResetTokens.get(tokenHash);
         if (local) local.usedAt = nowIso;
@@ -875,12 +1011,7 @@ async function fetchStudentsRaw(
   let students: StudentDoc[] = [];
   if (hasAdminCredentials) {
     try {
-      let ref = adminDb.collection("students").where("schoolId", "==", schoolId);
-      if (classId && classId !== "ALL") ref = ref.where("classId", "==", classId);
-      if (status && status.toUpperCase() !== "ALL") ref = ref.where("status", "==", status);
-      if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, 250));
-      const snap = await ref.get();
-      students = snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentDoc));
+      students = await queryStudentsFirestore(schoolId, classId, maxLimit, status);
     } catch (e) {
       if (process.env.NODE_ENV === "production") throw e;
     }
@@ -907,6 +1038,122 @@ async function fetchStudentsRaw(
   }
   const sorted = students.sort((a, b) => a.fullName.localeCompare(b.fullName));
   return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
+}
+
+/**
+ * Firestore student list read. Unbounded lists are cached per (school, class, status) for
+ * SCHOOL_REFERENCE and dropped on every student write in this instance; a class roster is cut
+ * from an already-cached whole-school list instead of being read again.
+ */
+async function queryStudentsFirestore(
+  schoolId: string,
+  classId?: string,
+  maxLimit?: number,
+  status?: string
+): Promise<StudentDoc[]> {
+  const cls = classId && classId !== "ALL" ? classId : "ALL";
+  const st = status && status.toUpperCase() !== "ALL" ? status : "ALL";
+  const run = async () => {
+    let ref: Query = adminDb.collection("students").where("schoolId", "==", schoolId);
+    if (cls !== "ALL") ref = ref.where("classId", "==", cls);
+    if (st !== "ALL") ref = ref.where("status", "==", st);
+    if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, 250));
+    const snap = await withFirestoreRetry("students", () => ref.get());
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentDoc));
+  };
+  if (maxLimit && maxLimit > 0) return run();
+  if (cls !== "ALL" || st !== "ALL") {
+    const whole =
+      peekCached<StudentDoc[]>(cacheKeys.students(schoolId, "ALL", st)) ??
+      peekCached<StudentDoc[]>(cacheKeys.students(schoolId, "ALL", "ALL"))?.filter((s) => st === "ALL" || s.status === st);
+    if (whole) return cls === "ALL" ? whole : whole.filter((s) => s.classId === cls);
+  }
+  return cached(cacheKeys.students(schoolId, cls, st), CACHE_TTL_MS.SCHOOL_REFERENCE, run);
+}
+
+function invalidateStudentCaches(schoolId: string): void {
+  invalidateCachePrefix(cacheKeys.studentsPrefix(schoolId));
+  invalidateCachePrefix(cacheKeys.studentCountsPrefix(schoolId));
+}
+
+export interface ClassStudentCounts {
+  total: number;
+  active: number;
+  male: number;
+  female: number;
+}
+
+/**
+ * Students per class of the active session, via count() aggregations (2 per class, 4 with
+ * `withGender`) instead of reading every student document. A student belongs to the session of
+ * the class they are in — the same rule session isolation applies to unstamped legacy records.
+ * Cached for AGGREGATES; dropped on every student write in this instance.
+ */
+export async function getStudentCountsByClassServer(
+  schoolId: string,
+  options: { withGender?: boolean } = {}
+): Promise<Map<string, ClassStudentCounts>> {
+  const classes = await getSessionClassesServer(schoolId);
+  const fromList = async () => {
+    const students = await getStudentsServer(schoolId);
+    const counts = new Map<string, ClassStudentCounts>();
+    for (const c of classes) counts.set(c.id, { total: 0, active: 0, male: 0, female: 0 });
+    for (const st of students) {
+      const entry = counts.get(st.classId);
+      if (!entry) continue;
+      entry.total++;
+      if (st.status === "ACTIVE") entry.active++;
+      if (st.gender === "MALE") entry.male++;
+      if (st.gender === "FEMALE") entry.female++;
+    }
+    return counts;
+  };
+  if (!hasAdminCredentials) return fromList();
+
+  const key = `${cacheKeys.studentCountsPrefix(schoolId)}${options.withGender ? "g" : "b"}`;
+  const rows = await cached(key, CACHE_TTL_MS.AGGREGATES, () =>
+    withIndexFallback(
+      "students count by class",
+      async () =>
+        Promise.all(
+          classes.map(async (c) => {
+            const base = adminDb.collection("students").where("schoolId", "==", schoolId).where("classId", "==", c.id);
+            const [total, active, male, female] = await Promise.all([
+              countQuery("students.count", base),
+              countQuery("students.countActive", base.where("status", "==", "ACTIVE")),
+              options.withGender ? countQuery("students.countMale", base.where("gender", "==", "MALE")) : Promise.resolve(0),
+              options.withGender ? countQuery("students.countFemale", base.where("gender", "==", "FEMALE")) : Promise.resolve(0),
+            ]);
+            return [c.id, { total, active, male, female }] as [string, ClassStudentCounts];
+          })
+        ),
+      async () => Array.from((await fromList()).entries())
+    )
+  );
+  return new Map(rows);
+}
+
+/**
+ * Students whose guardian email is `email` (stored lowercase by linkGuardianEmailToStudent), all
+ * sessions. One equality query instead of scanning the whole school.
+ */
+export async function getStudentsByGuardianEmailServer(schoolId: string, email: string): Promise<StudentDoc[]> {
+  const norm = email.trim().toLowerCase();
+  if (!norm) return [];
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("getStudentsByGuardianEmailServer", () =>
+        adminDb.collection("students").where("schoolId", "==", schoolId).where("guardianEmail", "==", norm).get()
+      );
+      const found = snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentDoc));
+      if (found.length > 0 || process.env.NODE_ENV === "production") return found;
+    } catch (e) {
+      onFirestoreError(`getStudentsByGuardianEmailServer(${schoolId})`, e);
+    }
+  }
+  return Array.from(localStore.students.values()).filter(
+    (st) => st.schoolId === schoolId && (st.guardianEmail || "").trim().toLowerCase() === norm
+  );
 }
 
 export async function getStudentsServer(
@@ -1004,12 +1251,15 @@ export async function saveStudentServer(student: StudentDoc): Promise<string> {
     createdAt: student.createdAt || new Date().toISOString()
   };
   localStore.students.set(id, data);
+  invalidateStudentCaches(data.schoolId);
 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("students").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveStudentServer(${id})`, e);
+    } finally {
+      invalidateStudentCaches(data.schoolId);
     }
   }
   return id;
@@ -1037,6 +1287,8 @@ export async function commitStudentImportBatchServer(
     }
   }
 
+  invalidateStudentCaches(schoolId);
+  for (const { user } of records) invalidateUserProfileCache(user.uid);
   if (hasAdminCredentials) {
     const batch = adminDb.batch();
     for (const { student, user } of records) {
@@ -1048,6 +1300,9 @@ export async function commitStudentImportBatchServer(
     } catch (e) {
       onFirestoreError(`commitStudentImportBatchServer(${records.length})`, e);
       throw e;
+    } finally {
+      invalidateStudentCaches(schoolId);
+      for (const { user } of records) invalidateUserProfileCache(user.uid);
     }
   }
 
@@ -1062,12 +1317,15 @@ export async function deleteStudentServer(schoolId: string, studentId: string): 
   if (!existing) return false;
 
   localStore.students.delete(studentId);
+  invalidateStudentCaches(schoolId);
 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("students").doc(studentId).delete();
     } catch (e) {
       onFirestoreError(`deleteStudentServer(${studentId})`, e);
+    } finally {
+      invalidateStudentCaches(schoolId);
     }
   }
   return true;
@@ -1080,16 +1338,19 @@ export async function getTeachersServer(schoolId: string, maxLimit?: number): Pr
   assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
-      let ref = adminDb.collection("teachers").where("schoolId", "==", schoolId);
-      // Bounded read (capped at 250, matching the same convention already used by
-      // getStudentsServer) instead of an unconditionally unbounded full-collection fetch.
-      if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, 250));
-      const snap = await ref.get();
-      const teachers = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherDoc));
+      // The faculty list is small and read by many pages (classes, timetable, dashboard), so the
+      // whole school's list is cached for SCHOOL_REFERENCE and the limit (max 250) applied here.
+      const teachers = await cached(cacheKeys.teachers(schoolId), CACHE_TTL_MS.SCHOOL_REFERENCE, async () => {
+        const snap = await withFirestoreRetry("getTeachersServer", () =>
+          adminDb.collection("teachers").where("schoolId", "==", schoolId).get()
+        );
+        return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherDoc));
+      });
       // Trust a real (possibly empty) Firestore result in production instead of
       // silently falling through to the in-memory dev fallback store.
       if (teachers.length > 0 || process.env.NODE_ENV === "production") {
-        return teachers.sort((a, b) => a.fullName.localeCompare(b.fullName));
+        const sorted = teachers.sort((a, b) => a.fullName.localeCompare(b.fullName));
+        return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
       }
     } catch (e) {
       onFirestoreError(`getTeachersServer(${schoolId})`, e);
@@ -1105,11 +1366,14 @@ export async function getTeachersServer(schoolId: string, maxLimit?: number): Pr
 export async function getTeacherByIdServer(schoolId: string, teacherId: string): Promise<TeacherDoc | null> {
   if (hasAdminCredentials) {
     try {
-      const doc = await adminDb.collection("teachers").doc(teacherId).get();
-      if (doc.exists) {
-        const data = { id: doc.id, ...doc.data() } as TeacherDoc;
-        if (data.schoolId === schoolId) return data;
-      }
+      const fromList = peekCached<TeacherDoc[]>(cacheKeys.teachers(schoolId))?.find((t) => t.id === teacherId);
+      const data =
+        fromList ||
+        (await cached(cacheKeys.teacher(schoolId, teacherId), CACHE_TTL_MS.SCHOOL_REFERENCE, async () => {
+          const doc = await withFirestoreRetry("getTeacherByIdServer", () => adminDb.collection("teachers").doc(teacherId).get());
+          return doc.exists ? ({ id: doc.id, ...doc.data() } as TeacherDoc) : null;
+        }));
+      if (data && data.schoolId === schoolId) return data;
     } catch (e) {
       onFirestoreError(`getTeacherByIdServer(${teacherId})`, e);
     }
@@ -1118,6 +1382,12 @@ export async function getTeacherByIdServer(schoolId: string, teacherId: string):
   const local = localStore.teachers.get(teacherId);
   if (local && local.schoolId === schoolId) return local;
   return null;
+}
+
+function invalidateTeacherCaches(schoolId: string, teacherId: string): void {
+  invalidateCache(cacheKeys.teachers(schoolId));
+  invalidateCache(cacheKeys.teacher(schoolId, teacherId));
+  invalidateCache(cacheKeys.teacherCounts(schoolId));
 }
 
 export async function saveTeacherServer(teacher: TeacherDoc): Promise<string> {
@@ -1129,12 +1399,15 @@ export async function saveTeacherServer(teacher: TeacherDoc): Promise<string> {
     createdAt: teacher.createdAt || new Date().toISOString()
   };
   localStore.teachers.set(id, data);
+  invalidateTeacherCaches(data.schoolId, id);
 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("teachers").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveTeacherServer(${id})`, e);
+    } finally {
+      invalidateTeacherCaches(data.schoolId, id);
     }
   }
   return id;
@@ -1145,12 +1418,15 @@ export async function deleteTeacherServer(schoolId: string, teacherId: string): 
   if (!existing) return false;
 
   localStore.teachers.delete(teacherId);
+  invalidateTeacherCaches(schoolId, teacherId);
 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("teachers").doc(teacherId).delete();
     } catch (e) {
       onFirestoreError(`deleteTeacherServer(${teacherId})`, e);
+    } finally {
+      invalidateTeacherCaches(schoolId, teacherId);
     }
   }
   return true;
@@ -1179,8 +1455,9 @@ async function fetchClassesRaw(schoolId: string): Promise<ClassDoc[]> {
 }
 
 export async function getClassesServer(schoolId: string, scope?: SessionScope): Promise<ClassDoc[]> {
-  const { ctx, year } = await resolveSessionScope(schoolId, scope);
-  const classes = await fetchClassesRaw(schoolId);
+  const ctx = await loadSessionContext(schoolId);
+  const year = scope?.allSessions ? null : scope?.academicYear || ctx.academicYear;
+  const classes = ctx.classes;
   if (!year) return classes;
   return classes.filter((c) => (c.academicYear || ctx.academicYear) === year);
 }
@@ -1252,10 +1529,29 @@ async function fetchSubjectsRaw(schoolId: string, classId?: string): Promise<Sub
   assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
-      let ref = adminDb.collection("subjects").where("schoolId", "==", schoolId);
-      if (classId && classId !== "ALL") ref = ref.where("classId", "==", classId);
-      const snap = await ref.get();
-      const subjects = snap.docs.map((d) => ({ id: d.id, ...d.data() } as SubjectDoc));
+      // Whole-school subject list cached for SCHOOL_REFERENCE (teacher allocation reads it on every
+      // teacher request); one class's subjects come from it when cached, else from a class query.
+      const forClass = classId && classId !== "ALL" ? classId : null;
+      const readAll = async () => {
+        const snap = await withFirestoreRetry("getSubjectsServer", () =>
+          adminDb.collection("subjects").where("schoolId", "==", schoolId).get()
+        );
+        return snap.docs.map((d) => ({ id: d.id, ...d.data() } as SubjectDoc));
+      };
+      let subjects: SubjectDoc[];
+      if (!forClass) {
+        subjects = await cached(cacheKeys.subjects(schoolId), CACHE_TTL_MS.SCHOOL_REFERENCE, readAll);
+      } else {
+        const whole = peekCached<SubjectDoc[]>(cacheKeys.subjects(schoolId));
+        if (whole) {
+          subjects = whole.filter((sb) => sb.classId === forClass);
+        } else {
+          const snap = await withFirestoreRetry("getSubjectsServer", () =>
+            adminDb.collection("subjects").where("schoolId", "==", schoolId).where("classId", "==", forClass).get()
+          );
+          subjects = snap.docs.map((d) => ({ id: d.id, ...d.data() } as SubjectDoc));
+        }
+      }
       if (subjects.length > 0 || process.env.NODE_ENV === "production") {
         return subjects.sort((a, b) => a.name.localeCompare(b.name));
       }
@@ -1310,12 +1606,15 @@ export async function saveSubjectServer(subject: SubjectDoc): Promise<string> {
     createdAt: subject.createdAt || new Date().toISOString(),
   };
   localStore.subjects.set(id, data);
+  invalidateCache(cacheKeys.subjects(data.schoolId));
 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("subjects").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveSubjectServer(${id})`, e);
+    } finally {
+      invalidateCache(cacheKeys.subjects(data.schoolId));
     }
   }
   return id;
@@ -1326,12 +1625,15 @@ export async function deleteSubjectServer(schoolId: string, subjectId: string): 
   if (!existing) return false;
 
   localStore.subjects.delete(subjectId);
+  invalidateCache(cacheKeys.subjects(schoolId));
 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("subjects").doc(subjectId).delete();
     } catch (e) {
       onFirestoreError(`deleteSubjectServer(${subjectId})`, e);
+    } finally {
+      invalidateCache(cacheKeys.subjects(schoolId));
     }
   }
   return true;
@@ -1348,12 +1650,32 @@ async function fetchTimetableRaw(
 ): Promise<TimetableDoc[]> {
   if (hasAdminCredentials) {
     try {
-      let ref = adminDb.collection("timetables").where("schoolId", "==", schoolId);
-      if (teacherId) ref = ref.where("teacherId", "==", teacherId);
-      if (classId) ref = ref.where("classId", "==", classId);
-      if (dayOfWeek && dayOfWeek !== "All") ref = ref.where("dayOfWeek", "==", dayOfWeek);
-      const snap = await ref.get();
-      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TimetableDoc));
+      const day = dayOfWeek && dayOfWeek !== "All" ? dayOfWeek : undefined;
+      const keep = (t: TimetableDoc) =>
+        (!teacherId || t.teacherId === teacherId) && (!classId || t.classId === classId) && (!day || t.dayOfWeek === day);
+      const readAll = async () => {
+        const snap = await withFirestoreRetry("getTimetableServer", () =>
+          adminDb.collection("timetables").where("schoolId", "==", schoolId).get()
+        );
+        return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TimetableDoc));
+      };
+      let items: TimetableDoc[];
+      if (!teacherId && !classId && !day) {
+        // Whole-school timetable (admin page): cached for SCHOOL_REFERENCE, dropped on slot writes.
+        items = await cached(cacheKeys.timetableAll(schoolId), CACHE_TTL_MS.SCHOOL_REFERENCE, readAll);
+      } else {
+        const whole = peekCached<TimetableDoc[]>(cacheKeys.timetableAll(schoolId));
+        if (whole) {
+          items = whole.filter(keep);
+        } else {
+          let ref: Query = adminDb.collection("timetables").where("schoolId", "==", schoolId);
+          if (teacherId) ref = ref.where("teacherId", "==", teacherId);
+          if (classId) ref = ref.where("classId", "==", classId);
+          if (day) ref = ref.where("dayOfWeek", "==", day);
+          const snap = await withFirestoreRetry("getTimetableServer", () => ref.get());
+          items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TimetableDoc));
+        }
+      }
       return items.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
     } catch (e) {
       onFirestoreError(`getTimetableServer(${schoolId})`, e);
@@ -1402,9 +1724,11 @@ export async function deleteTimetableEntryServer(schoolId: string, entryId: stri
   const existing = await getTimetableEntryByIdServer(schoolId, entryId);
   if (!existing) return false;
   localStore.timetables.delete(entryId);
+  invalidateCache(cacheKeys.timetableAll(schoolId));
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("timetables").doc(entryId).delete();
+      invalidateCache(cacheKeys.timetableAll(schoolId));
     } catch (e) {
       onFirestoreError(`deleteTimetableEntryServer(${entryId})`, e);
       if (process.env.NODE_ENV === "production") throw e;
@@ -1424,10 +1748,12 @@ export async function saveTimetableEntryServer(entry: TimetableDoc): Promise<str
     createdAt: entry.createdAt || new Date().toISOString()
   };
   localStore.timetables.set(id, data);
+  invalidateCache(cacheKeys.timetableAll(data.schoolId));
 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("timetables").doc(id).set(cleanUndefined(data), { merge: true });
+      invalidateCache(cacheKeys.timetableAll(data.schoolId));
     } catch (e) {
       onFirestoreError(`saveTimetableEntryServer(${id})`, e);
     }
@@ -1540,7 +1866,7 @@ export async function saveAttendanceRecordServer(record: AttendanceDoc): Promise
 
   if (hasAdminCredentials) {
     try {
-      await adminDb.collection("attendance").doc(id).set(data, { merge: true });
+      await writeAttendanceWithTotals([data]);
     } catch (e) {
       onFirestoreError(`saveAttendanceRecordServer(${id})`, e);
     }
@@ -1553,8 +1879,14 @@ export async function saveAttendanceRecordServer(record: AttendanceDoc): Promise
 // full AttendanceDoc objects itself and calls this with a single array argument). Removed the
 // same way the equivalent dead overload was removed from saveExamResultsBulkServer, rather
 // than leaving a second, unused code path a future caller could pick up by mistake.
+/**
+ * `previous`: the stored versions of these records the caller already read (the attendance route
+ * reads the day's register anyway). They let the attendance totals be adjusted without reading
+ * the records again; when omitted, they are read here.
+ */
 export async function saveAttendanceBulkServer(
-  records: AttendanceDoc[]
+  records: AttendanceDoc[],
+  previous?: AttendanceDoc[]
 ): Promise<{ count: number }> {
   const docs: AttendanceDoc[] = [];
   for (const record of records) {
@@ -1563,22 +1895,300 @@ export async function saveAttendanceBulkServer(
   }
 
   // One batched commit per chunk instead of one sequential write per student: a class register
-  // is saved in a single round trip, and a failure can no longer leave half the class written.
+  // is saved in a single round trip (with its attendance totals), and a failure can no longer
+  // leave half the class written.
   if (hasAdminCredentials) {
     try {
-      for (let i = 0; i < docs.length; i += FIRESTORE_BATCH_LIMIT) {
-        const batch = adminDb.batch();
-        for (const doc of docs.slice(i, i + FIRESTORE_BATCH_LIMIT)) {
-          batch.set(adminDb.collection("attendance").doc(doc.id), cleanUndefined(doc), { merge: true });
-        }
-        await batch.commit();
-      }
+      await writeAttendanceWithTotals(docs, previous);
     } catch (e) {
       onFirestoreError(`saveAttendanceBulkServer(${docs.length} records)`, e);
     }
   }
   for (const doc of docs) localStore.attendance.set(doc.id, doc);
   return { count: docs.length };
+}
+
+// ---------------------------------------------------------------------------
+// ATTENDANCE TOTALS (summary documents)
+// ---------------------------------------------------------------------------
+/**
+ * `attendance` is the largest collection (one document per student per school day), and the
+ * dashboard, reports and student/parent portals used to read it in full on every load. Two
+ * server-only summary collections now hold the counts those screens show:
+ *  - attendanceDailyTotals/{schoolId}_{date}
+ *      { schoolId, date, complete, classes: { [classId]: { PRESENT, LATE, ABSENT, LEAVE } } }
+ *    → the 30-day dashboard/report window is ~31 document reads instead of ~9,000;
+ *  - studentAttendanceTotals/{schoolId}_{studentId}
+ *      { schoolId, studentId, complete, sessions: { [academicYear]: { PRESENT, LATE, ABSENT, LEAVE } } }
+ *    → a student's session totals are 1 read instead of their whole history.
+ * Both count the daily register only (records without subjectId), like every attendance figure.
+ * Every attendance write adjusts them in the same batch (FieldValue.increment deltas computed from
+ * the previous status). A summary that is missing or predates this code is rebuilt once from the
+ * raw records inside a transaction and marked `complete`; the increments keep it exact afterwards.
+ * Firestore rules deny clients access to both collections (no rule matches them).
+ */
+export const ATTENDANCE_DAILY_TOTALS = "attendanceDailyTotals";
+export const STUDENT_ATTENDANCE_TOTALS = "studentAttendanceTotals";
+export type AttendanceCounts = Record<AttendanceStatus, number>;
+const ATTENDANCE_STATUSES: AttendanceStatus[] = ["PRESENT", "LATE", "ABSENT", "LEAVE"];
+const NO_SESSION_KEY = "none";
+
+export function emptyAttendanceCounts(): AttendanceCounts {
+  return { PRESENT: 0, LATE: 0, ABSENT: 0, LEAVE: 0 };
+}
+
+function isDailyRegister(a: Pick<AttendanceDoc, "subjectId">): boolean {
+  return !a.subjectId;
+}
+
+function addAttendanceCounts(target: AttendanceCounts, src?: Record<string, unknown> | null): void {
+  for (const st of ATTENDANCE_STATUSES) target[st] += Number(src?.[st]) || 0;
+}
+
+const dailyTotalsRef = (schoolId: string, date: string) =>
+  adminDb.collection(ATTENDANCE_DAILY_TOTALS).doc(`${schoolId}_${date}`);
+const studentTotalsRef = (schoolId: string, studentId: string) =>
+  adminDb.collection(STUDENT_ATTENDANCE_TOTALS).doc(`${schoolId}_${studentId}`);
+
+type NestedCounts = Map<string, Map<string, AttendanceCounts>>;
+
+function bumpCount(map: NestedCounts, k1: string, k2: string, status: AttendanceStatus, by: number): void {
+  if (!ATTENDANCE_STATUSES.includes(status)) return;
+  let inner = map.get(k1);
+  if (!inner) map.set(k1, (inner = new Map()));
+  let counts = inner.get(k2);
+  if (!counts) inner.set(k2, (counts = emptyAttendanceCounts()));
+  counts[status] += by;
+}
+
+/** Firestore set-merge payload of increments for the non-zero deltas, or null if none. */
+function incrementPayload(inner: Map<string, AttendanceCounts>): Record<string, Record<string, FieldValue>> | null {
+  const out: Record<string, Record<string, FieldValue>> = {};
+  for (const [key, counts] of inner) {
+    for (const st of ATTENDANCE_STATUSES) {
+      if (counts[st] !== 0) (out[key] ||= {})[st] = FieldValue.increment(counts[st]);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** Writes attendance records plus the matching totals deltas, in batches of FIRESTORE_BATCH_LIMIT. */
+async function writeAttendanceWithTotals(docs: AttendanceDoc[], previous?: AttendanceDoc[]): Promise<void> {
+  if (docs.length === 0) return;
+  const ids = new Set(docs.map((d) => d.id));
+  const prevById = new Map<string, AttendanceDoc>();
+  if (previous) {
+    for (const p of previous) if (ids.has(p.id)) prevById.set(p.id, p);
+  } else {
+    for (const part of chunk(docs, 300)) {
+      const snaps = await withFirestoreRetry("attendance.previous", () =>
+        adminDb.getAll(...part.map((d) => adminDb.collection("attendance").doc(d.id)))
+      );
+      for (const snap of snaps) if (snap.exists) prevById.set(snap.id, { id: snap.id, ...snap.data() } as AttendanceDoc);
+    }
+  }
+
+  const ops: Array<{ ref: FirebaseFirestore.DocumentReference; data: Record<string, unknown> }> = docs.map((d) => ({
+    ref: adminDb.collection("attendance").doc(d.id),
+    data: cleanUndefined(d) as unknown as Record<string, unknown>,
+  }));
+
+  for (const schoolId of new Set(docs.map((d) => d.schoolId))) {
+    const ctx = await getAcademicSessionContextServer(schoolId);
+    const sessionOf = (a: AttendanceDoc) => a.academicYear || resolveRecordSession(ctx, a) || NO_SESSION_KEY;
+    const daily: NestedCounts = new Map();
+    const perStudent: NestedCounts = new Map();
+    for (const doc of docs.filter((d) => d.schoolId === schoolId)) {
+      const prev = prevById.get(doc.id);
+      if (prev && isDailyRegister(prev)) {
+        bumpCount(daily, prev.date, prev.classId, prev.status, -1);
+        bumpCount(perStudent, prev.studentId, sessionOf(prev), prev.status, -1);
+      }
+      if (isDailyRegister(doc)) {
+        bumpCount(daily, doc.date, doc.classId, doc.status, 1);
+        bumpCount(perStudent, doc.studentId, sessionOf(doc), doc.status, 1);
+      }
+    }
+    for (const [date, classes] of daily) {
+      const inc = incrementPayload(classes);
+      if (inc) ops.push({ ref: dailyTotalsRef(schoolId, date), data: { schoolId, date, classes: inc } });
+    }
+    for (const [studentId, sessions] of perStudent) {
+      const inc = incrementPayload(sessions);
+      if (inc) ops.push({ ref: studentTotalsRef(schoolId, studentId), data: { schoolId, studentId, sessions: inc } });
+    }
+  }
+
+  const schools = new Set(docs.map((d) => d.schoolId));
+  for (const schoolId of schools) invalidateCachePrefix(cacheKeys.attendanceTotalsPrefix(schoolId));
+  try {
+    for (let i = 0; i < ops.length; i += FIRESTORE_BATCH_LIMIT) {
+      const batch = adminDb.batch();
+      for (const op of ops.slice(i, i + FIRESTORE_BATCH_LIMIT)) batch.set(op.ref, op.data, { merge: true });
+      await batch.commit();
+    }
+  } finally {
+    for (const schoolId of schools) invalidateCachePrefix(cacheKeys.attendanceTotalsPrefix(schoolId));
+  }
+}
+
+function calendarDates(fromDate: string, toDate: string): string[] {
+  const out: string[] = [];
+  const d = new Date(`${fromDate}T00:00:00Z`);
+  const end = new Date(`${toDate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || Number.isNaN(end.getTime())) return out;
+  while (d <= end && out.length < 400) {
+    out.push(d.toISOString().split("T")[0]);
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  return out;
+}
+
+/** Rebuilds one day's per-class totals from the raw records (once per day, ever). */
+async function rebuildDailyTotals(schoolId: string, date: string): Promise<Record<string, AttendanceCounts>> {
+  const ref = dailyTotalsRef(schoolId, date);
+  return adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (snap.exists && snap.data()?.complete) return (snap.data()?.classes || {}) as Record<string, AttendanceCounts>;
+    const records = await tx.get(
+      adminDb.collection("attendance").where("schoolId", "==", schoolId).where("date", "==", date)
+    );
+    const classes: Record<string, AttendanceCounts> = {};
+    for (const d of records.docs) {
+      const a = d.data() as AttendanceDoc;
+      if (!isDailyRegister(a) || !ATTENDANCE_STATUSES.includes(a.status) || !a.classId) continue;
+      (classes[a.classId] ||= emptyAttendanceCounts())[a.status]++;
+    }
+    tx.set(ref, { schoolId, date, complete: true, classes, rebuiltAt: new Date().toISOString() });
+    return classes;
+  });
+}
+
+/**
+ * Daily-register status counts per class over [fromDate, toDate] (YYYY-MM-DD, inclusive), from
+ * attendanceDailyTotals: one read per calendar day in the window.
+ */
+export async function getAttendanceTotalsByClassServer(
+  schoolId: string,
+  fromDate: string,
+  toDate: string
+): Promise<Map<string, AttendanceCounts>> {
+  const totals = new Map<string, AttendanceCounts>();
+  const add = (classId: string, counts: Record<string, unknown> | null | undefined) => {
+    let t = totals.get(classId);
+    if (!t) totals.set(classId, (t = emptyAttendanceCounts()));
+    addAttendanceCounts(t, counts);
+  };
+
+  if (!hasAdminCredentials) {
+    const records = (await getAttendanceServer(schoolId, undefined, undefined, undefined, fromDate)).filter((a) => a.date <= toDate);
+    for (const a of records) add(a.classId, { [a.status]: 1 });
+    return totals;
+  }
+
+  // Cached for AGGREGATES; every attendance write in this instance drops it.
+  const rows = await cached(`${cacheKeys.attendanceTotalsPrefix(schoolId)}${fromDate}:${toDate}`, CACHE_TTL_MS.AGGREGATES, async () =>
+    Array.from((await readAttendanceTotalsByClass(schoolId, fromDate, toDate)).entries())
+  );
+  return new Map(rows);
+}
+
+async function readAttendanceTotalsByClass(schoolId: string, fromDate: string, toDate: string): Promise<Map<string, AttendanceCounts>> {
+  const totals = new Map<string, AttendanceCounts>();
+  const add = (classId: string, counts: Record<string, unknown> | null | undefined) => {
+    let t = totals.get(classId);
+    if (!t) totals.set(classId, (t = emptyAttendanceCounts()));
+    addAttendanceCounts(t, counts);
+  };
+  const dates = calendarDates(fromDate, toDate);
+  if (dates.length === 0) return totals;
+  const snaps = await withFirestoreRetry("attendanceDailyTotals", () => adminDb.getAll(...dates.map((d) => dailyTotalsRef(schoolId, d))));
+  const missing: string[] = [];
+  snaps.forEach((snap: DocumentSnapshot, i: number) => {
+    const data = snap.exists ? snap.data() : null;
+    if (data?.complete) {
+      for (const [classId, counts] of Object.entries((data.classes || {}) as Record<string, Record<string, unknown>>)) add(classId, counts);
+    } else {
+      missing.push(dates[i]);
+    }
+  });
+  for (const part of chunk(missing, 5)) {
+    const rebuilt = await Promise.all(part.map((date) => rebuildDailyTotals(schoolId, date)));
+    for (const classes of rebuilt) for (const [classId, counts] of Object.entries(classes)) add(classId, counts as unknown as Record<string, unknown>);
+  }
+  return totals;
+}
+
+/** Rebuilds one student's per-session totals from their raw records (once per student, ever). */
+async function rebuildStudentTotals(schoolId: string, studentId: string): Promise<Record<string, AttendanceCounts>> {
+  const ctx = await getAcademicSessionContextServer(schoolId);
+  const ref = studentTotalsRef(schoolId, studentId);
+  return adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (snap.exists && snap.data()?.complete) return (snap.data()?.sessions || {}) as Record<string, AttendanceCounts>;
+    const records = await tx.get(
+      adminDb.collection("attendance").where("schoolId", "==", schoolId).where("studentId", "==", studentId)
+    );
+    const sessions: Record<string, AttendanceCounts> = {};
+    for (const d of records.docs) {
+      const a = { id: d.id, ...d.data() } as AttendanceDoc;
+      if (!isDailyRegister(a) || !ATTENDANCE_STATUSES.includes(a.status)) continue;
+      const key = resolveRecordSession(ctx, a) || NO_SESSION_KEY;
+      (sessions[key] ||= emptyAttendanceCounts())[a.status]++;
+    }
+    tx.set(ref, { schoolId, studentId, complete: true, sessions, rebuiltAt: new Date().toISOString() });
+    return sessions;
+  });
+}
+
+/** A student's daily-register status counts for the active session (all sessions if none is set). */
+export async function getStudentAttendanceTotalsServer(schoolId: string, studentId: string): Promise<AttendanceCounts> {
+  const counts = emptyAttendanceCounts();
+  if (!hasAdminCredentials) {
+    for (const a of await getStudentAttendanceServer(schoolId, studentId)) addAttendanceCounts(counts, { [a.status]: 1 });
+    return counts;
+  }
+  const { year } = await resolveSessionScope(schoolId);
+  const snap = await withFirestoreRetry("studentAttendanceTotals", () => studentTotalsRef(schoolId, studentId).get());
+  const data = snap.exists ? snap.data() : null;
+  const sessions = data?.complete
+    ? ((data.sessions || {}) as Record<string, Record<string, unknown>>)
+    : ((await rebuildStudentTotals(schoolId, studentId)) as unknown as Record<string, Record<string, unknown>>);
+  if (year) addAttendanceCounts(counts, sessions[year]);
+  else for (const v of Object.values(sessions)) addAttendanceCounts(counts, v);
+  return counts;
+}
+
+/** Recent days for on-screen attendance tables. */
+export const RECENT_ATTENDANCE_DAYS = 60;
+
+/**
+ * A student's daily-register records of the last `days` calendar days (active session), newest
+ * first — equality/`in` queries on the date, so only those records are read. The full history is
+ * still available in the printable attendance report.
+ */
+export async function getStudentRecentAttendanceServer(
+  schoolId: string,
+  studentId: string,
+  days = RECENT_ATTENDANCE_DAYS
+): Promise<AttendanceDoc[]> {
+  const to = new Date().toISOString().split("T")[0];
+  const fromD = new Date();
+  fromD.setUTCDate(fromD.getUTCDate() - (days - 1));
+  const from = fromD.toISOString().split("T")[0];
+  const byDateDesc = (a: AttendanceDoc, b: AttendanceDoc) => (b.date || "").localeCompare(a.date || "");
+  if (!hasAdminCredentials) {
+    return (await getStudentAttendanceServer(schoolId, studentId)).filter((a) => a.date >= from && a.date <= to).sort(byDateDesc);
+  }
+  const { ctx, year } = await resolveSessionScope(schoolId);
+  const out: AttendanceDoc[] = [];
+  for (const dates of chunk(calendarDates(from, to), 30)) {
+    const snap = await withFirestoreRetry("attendance.recent", () =>
+      adminDb.collection("attendance").where("schoolId", "==", schoolId).where("studentId", "==", studentId).where("date", "in", dates).get()
+    );
+    out.push(...snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceDoc)).filter(isDailyRegister));
+  }
+  return filterToSession(ctx, year, out).sort(byDateDesc);
 }
 
 // ---------------------------------------------------------------------------
@@ -1635,6 +2245,269 @@ export async function getFeeChallansServer(
   return maxLimit && maxLimit > 0 ? scoped.slice(0, Math.min(maxLimit, 250)) : scoped;
 }
 
+export interface FeeTotals {
+  count: number;
+  expected: number;
+  collected: number;
+}
+
+/**
+ * Challan count / expected / collected per class of the active session, via one count+sum
+ * aggregation per class instead of reading every challan. A challan belongs to the session of its
+ * class (challans always carry a classId and are stamped from it). Cached for AGGREGATES and
+ * dropped on every challan save / payment in this instance.
+ */
+export async function getFeeTotalsByClassServer(schoolId: string): Promise<Map<string, FeeTotals>> {
+  const classes = await getSessionClassesServer(schoolId);
+  const fromList = async () => {
+    const totals = new Map<string, FeeTotals>();
+    for (const c of classes) totals.set(c.id, { count: 0, expected: 0, collected: 0 });
+    for (const ch of await getFeeChallansServer(schoolId)) {
+      const t = totals.get(ch.classId);
+      if (!t) continue;
+      t.count++;
+      t.expected += ch.totalExpected || 0;
+      t.collected += ch.paidAmount || 0;
+    }
+    return totals;
+  };
+  if (!hasAdminCredentials) return fromList();
+  const rows = await cached(`${cacheKeys.feeAggregatesPrefix(schoolId)}byclass`, CACHE_TTL_MS.AGGREGATES, () =>
+    withIndexFallback(
+      "feeChallans totals by class",
+      () =>
+        Promise.all(
+          classes.map(async (c) => {
+            const q = adminDb.collection("feeChallans").where("schoolId", "==", schoolId).where("classId", "==", c.id);
+            const snap = await withFirestoreRetry("feeChallans.aggregate", () =>
+              q.aggregate({ count: AggregateField.count(), expected: AggregateField.sum("totalExpected"), collected: AggregateField.sum("paidAmount") }).get()
+            );
+            const d = snap.data();
+            return [c.id, { count: d.count || 0, expected: d.expected || 0, collected: d.collected || 0 }] as [string, FeeTotals];
+          })
+        ),
+      async () => Array.from((await fromList()).entries())
+    )
+  );
+  return new Map(rows);
+}
+
+export interface FeeChallanListFilter {
+  /** One class; omitted = every class of the active session. */
+  classId?: string;
+  month?: string;
+  /** Stored statuses to include (UNPAID = PENDING + OVERDUE); omitted = all. */
+  statuses?: FeeStatus[];
+}
+
+export interface FeeChallanStats {
+  totalExpected: number;
+  totalCollected: number;
+  totalOutstanding: number;
+  paidCount: number;
+  unpaidCount: number;
+  partialCount: number;
+  totalChallans: number;
+}
+
+const ALL_FEE_STATUSES: FeeStatus[] = ["PAID", "PENDING", "OVERDUE", "PARTIAL"];
+
+/** One query per chunk of classes; `in` disjunctions stay within Firestore's limit of 30. */
+function feeChallanQueries(schoolId: string, classIds: string[], filter: FeeChallanListFilter): Query[] {
+  const statuses = filter.statuses && filter.statuses.length < ALL_FEE_STATUSES.length ? filter.statuses : undefined;
+  const perChunk = statuses && statuses.length > 1 ? Math.max(1, Math.floor(30 / statuses.length)) : 30;
+  return chunk(classIds, perChunk).map((ids) => {
+    let q: Query = adminDb.collection("feeChallans").where("schoolId", "==", schoolId);
+    q = whereOneOf(q, "classId", ids);
+    if (filter.month) q = q.where("month", "==", filter.month);
+    if (statuses) q = whereOneOf(q, "status", statuses);
+    return q;
+  });
+}
+
+async function feeChallanScopeClassIds(schoolId: string, classId?: string): Promise<string[]> {
+  const sessionClassIds = (await getSessionClassesServer(schoolId)).map((c) => c.id);
+  if (!classId) return sessionClassIds;
+  // A class of another session is still listable explicitly (its challans belong to it).
+  const all = (await loadSessionContext(schoolId)).classes.map((c) => c.id);
+  return all.includes(classId) ? [classId] : [];
+}
+
+function encodeCursor(value: { q: number; after: string }): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function decodeCursor(cursor?: string | null): { q: number; after: string } | null {
+  if (!cursor) return null;
+  try {
+    const v = JSON.parse(Buffer.from(cursor, "base64url").toString("utf-8"));
+    return typeof v?.q === "number" && typeof v?.after === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function filterChallansInMemory(list: FeeChallanDoc[], classIds: string[], filter: FeeChallanListFilter): FeeChallanDoc[] {
+  const allowed = new Set(classIds);
+  return list.filter(
+    (c) =>
+      allowed.has(c.classId) &&
+      (!filter.month || c.month === filter.month) &&
+      (!filter.statuses || filter.statuses.includes(c.status))
+  );
+}
+
+/**
+ * One page of challans (default 50) for the admin fee ledger, reading only that page instead of
+ * every challan of the school. Ordered by document id; `nextCursor` continues the listing.
+ */
+export async function getFeeChallansPageServer(
+  schoolId: string,
+  filter: FeeChallanListFilter,
+  pageSize = 50,
+  cursor?: string | null
+): Promise<{ challans: FeeChallanDoc[]; nextCursor: string | null }> {
+  const size = Math.max(1, Math.min(pageSize, 200));
+  const classIds = await feeChallanScopeClassIds(schoolId, filter.classId);
+  if (classIds.length === 0) return { challans: [], nextCursor: null };
+
+  const legacyPage = async () => {
+    const all = filterChallansInMemory(await getFeeChallansServer(schoolId, undefined, undefined, undefined, undefined, undefined, { allSessions: true }), classIds, filter)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const start = decodeCursor(cursor);
+    const from = start ? all.findIndex((c) => c.id > start.after) : 0;
+    const page = from < 0 ? [] : all.slice(from, from + size);
+    const more = from >= 0 && from + size < all.length;
+    return { challans: page, nextCursor: more ? encodeCursor({ q: 0, after: page[page.length - 1].id }) : null };
+  };
+  if (!hasAdminCredentials) return legacyPage();
+
+  return withIndexFallback("feeChallans page", async () => {
+    const queries = feeChallanQueries(schoolId, classIds, filter);
+    const start = decodeCursor(cursor) || { q: 0, after: "" };
+    const out: FeeChallanDoc[] = [];
+    let qi = Math.min(start.q, queries.length);
+    let after = start.after;
+    while (qi < queries.length && out.length < size) {
+      let q = queries[qi].orderBy(FieldPath.documentId());
+      if (after) q = q.startAfter(after);
+      const need = size - out.length;
+      const snap = await withFirestoreRetry("feeChallans.page", () => q.limit(need + 1).get());
+      const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeChallanDoc));
+      out.push(...docs.slice(0, need));
+      if (docs.length > need) {
+        return { challans: out, nextCursor: encodeCursor({ q: qi, after: out[out.length - 1].id }) };
+      }
+      qi++;
+      after = "";
+    }
+    return { challans: out, nextCursor: null };
+  }, legacyPage);
+}
+
+export function computeFeeChallanStats(list: FeeChallanDoc[]): FeeChallanStats {
+  const totalExpected = list.reduce((s, c) => s + (c.totalExpected || 0), 0);
+  const totalCollected = list.reduce((s, c) => s + (c.paidAmount || 0), 0);
+  return {
+    totalExpected,
+    totalCollected,
+    totalOutstanding: list.reduce((s, c) => s + Math.max(0, (c.totalExpected || 0) - (c.paidAmount || 0)), 0),
+    paidCount: list.filter((c) => c.status === "PAID").length,
+    unpaidCount: list.filter((c) => c.status === "PENDING" || c.status === "OVERDUE").length,
+    partialCount: list.filter((c) => c.status === "PARTIAL").length,
+    totalChallans: list.length,
+  };
+}
+
+/**
+ * Ledger totals for the same filter as getFeeChallansPageServer, via count/sum aggregations
+ * (about 4 aggregation reads per 30 classes) instead of reading the challans. Outstanding is
+ * expected minus collected: a payment is always capped at the challan's balance.
+ */
+export async function getFeeChallanStatsServer(schoolId: string, filter: FeeChallanListFilter): Promise<FeeChallanStats> {
+  const classIds = await feeChallanScopeClassIds(schoolId, filter.classId);
+  const empty: FeeChallanStats = { totalExpected: 0, totalCollected: 0, totalOutstanding: 0, paidCount: 0, unpaidCount: 0, partialCount: 0, totalChallans: 0 };
+  if (classIds.length === 0) return empty;
+  const fromList = async () =>
+    computeFeeChallanStats(
+      filterChallansInMemory(await getFeeChallansServer(schoolId, undefined, undefined, undefined, undefined, undefined, { allSessions: true }), classIds, filter)
+    );
+  if (!hasAdminCredentials) return fromList();
+
+  const key = `${cacheKeys.feeAggregatesPrefix(schoolId)}stats:${JSON.stringify([filter.classId || "", filter.month || "", filter.statuses || []])}`;
+  return cached(key, CACHE_TTL_MS.AGGREGATES, () =>
+    withIndexFallback("feeChallans stats", async () => {
+      const wanted = filter.statuses || ALL_FEE_STATUSES;
+      const totals = await Promise.all(
+        feeChallanQueries(schoolId, classIds, filter).map(async (q) => {
+          const snap = await withFirestoreRetry("feeChallans.stats", () =>
+            q.aggregate({ count: AggregateField.count(), expected: AggregateField.sum("totalExpected"), collected: AggregateField.sum("paidAmount") }).get()
+          );
+          return snap.data();
+        })
+      );
+      const bucket = async (statuses: FeeStatus[]) => {
+        const effective = statuses.filter((st) => wanted.includes(st));
+        if (effective.length === 0) return 0;
+        const counts = await Promise.all(
+          feeChallanQueries(schoolId, classIds, { ...filter, statuses: effective }).map((q) => countQuery("feeChallans.bucket", q))
+        );
+        return counts.reduce((a, b) => a + b, 0);
+      };
+      const [paidCount, unpaidCount, partialCount] = await Promise.all([
+        bucket(["PAID"]),
+        bucket(["PENDING", "OVERDUE"]),
+        bucket(["PARTIAL"]),
+      ]);
+      const totalExpected = totals.reduce((a, t) => a + (t.expected || 0), 0);
+      const totalCollected = totals.reduce((a, t) => a + (t.collected || 0), 0);
+      return {
+        totalExpected,
+        totalCollected,
+        totalOutstanding: Math.max(0, totalExpected - totalCollected),
+        paidCount,
+        unpaidCount,
+        partialCount,
+        totalChallans: totals.reduce((a, t) => a + (t.count || 0), 0),
+      };
+    }, fromList)
+  );
+}
+
+/** Challans of specific students (active session), e.g. the students matching a ledger search. */
+export async function getFeeChallansForStudentsServer(schoolId: string, studentIds: string[]): Promise<FeeChallanDoc[]> {
+  const ids = Array.from(new Set(studentIds.filter(Boolean)));
+  if (ids.length === 0) return [];
+  if (!hasAdminCredentials) {
+    const wanted = new Set(ids);
+    return (await getFeeChallansServer(schoolId)).filter((c) => wanted.has(c.studentId));
+  }
+  const { ctx, year } = await resolveSessionScope(schoolId);
+  const out: FeeChallanDoc[] = [];
+  for (const part of chunk(ids, 30)) {
+    const snap = await withFirestoreRetry("feeChallans.forStudents", () =>
+      whereOneOf(adminDb.collection("feeChallans").where("schoolId", "==", schoolId), "studentId", part).get()
+    );
+    out.push(...snap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeChallanDoc)));
+  }
+  return filterToSession(ctx, year, out);
+}
+
+/** Challans with this exact challan number (search box), active session. */
+export async function getFeeChallansByNumberServer(schoolId: string, challanNo: string): Promise<FeeChallanDoc[]> {
+  const raw = challanNo.trim();
+  if (!raw) return [];
+  const variants = Array.from(new Set([raw, raw.toUpperCase()]));
+  if (!hasAdminCredentials) {
+    return (await getFeeChallansServer(schoolId)).filter((c) => variants.includes(c.challanNo));
+  }
+  const { ctx, year } = await resolveSessionScope(schoolId);
+  const snap = await withFirestoreRetry("feeChallans.byNumber", () =>
+    whereOneOf(adminDb.collection("feeChallans").where("schoolId", "==", schoolId), "challanNo", variants).get()
+  );
+  return filterToSession(ctx, year, snap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeChallanDoc)));
+}
+
 export async function getStudentFeeChallansServer(schoolId: string, studentId: string): Promise<FeeChallanDoc[]> {
   return getFeeChallansServer(schoolId, studentId);
 }
@@ -1677,12 +2550,15 @@ export async function saveFeeChallanServer(challan: FeeChallanDoc): Promise<stri
     createdAt: challan.createdAt || new Date().toISOString()
   };
   localStore.feeChallans.set(id, data);
+  invalidateCachePrefix(cacheKeys.feeAggregatesPrefix(data.schoolId));
 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("feeChallans").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
       onFirestoreError(`saveFeeChallanServer(${id})`, e);
+    } finally {
+      invalidateCachePrefix(cacheKeys.feeAggregatesPrefix(data.schoolId));
     }
   }
   return id;
@@ -1699,6 +2575,8 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
   const challanId = payment.challanId;
   const amount = Number(payment.amount);
   const sessionCtx = await getAcademicSessionContextServer(schoolId);
+  invalidateCachePrefix(cacheKeys.feeAggregatesPrefix(schoolId));
+  invalidateCachePrefix(cacheKeys.recentPayments(schoolId));
   // A payment belongs to the same session as the challan it settles.
   const stampPaymentSession = (challan: FeeChallanDoc) => {
     const academicYear = resolveRecordSession(sessionCtx, challan);
@@ -1749,6 +2627,8 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
         localStore.payments.set(payment.id, payment);
         localStore.feeChallans.set(challanId, { ...challanData, ...updatedChallan });
       });
+      invalidateCachePrefix(cacheKeys.feeAggregatesPrefix(schoolId));
+      invalidateCachePrefix(cacheKeys.recentPayments(schoolId));
 
       return payment;
     } catch (e: any) {
@@ -1836,6 +2716,47 @@ export async function getPaymentsServer(
     .slice(0, effectiveLimit);
 }
 
+/**
+ * The `n` most recent payments of the active session (dashboard). Newest-first via the
+ * payments (schoolId ASC, paymentDate DESC) index; until that index is deployed a bounded read of
+ * 100 payments is used instead of the old 500-payment + every-challan read.
+ */
+export async function getRecentPaymentsServer(schoolId: string, n = 6): Promise<PaymentDoc[]> {
+  if (!hasAdminCredentials) return (await getPaymentsServer(schoolId, undefined, 50)).slice(0, n);
+  // Cached for AGGREGATES; dropped when a payment is recorded in this instance.
+  return cached(`${cacheKeys.recentPayments(schoolId)}:${n}`, CACHE_TTL_MS.AGGREGATES, () => readRecentPayments(schoolId, n));
+}
+
+async function readRecentPayments(schoolId: string, n: number): Promise<PaymentDoc[]> {
+  const { ctx, year } = await resolveSessionScope(schoolId);
+  const candidates = await withIndexFallback(
+    "payments recent",
+    async () => {
+      const snap = await withFirestoreRetry("payments.recent", () =>
+        adminDb.collection("payments").where("schoolId", "==", schoolId).orderBy("paymentDate", "desc").limit(n * 4).get()
+      );
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as PaymentDoc));
+    },
+    () => fetchPaymentsRaw(schoolId, undefined, 100)
+  );
+  if (!year) return candidates.slice(0, n);
+  // Unstamped (legacy) payments follow the challan they settled: read just those challans.
+  const unstampedChallanIds = Array.from(new Set(candidates.filter((p) => !p.academicYear).map((p) => p.challanId).filter(Boolean)));
+  const challanSession = new Map<string, string | null>();
+  if (unstampedChallanIds.length > 0) {
+    const snaps = await withFirestoreRetry("payments.recent.challans", () =>
+      adminDb.getAll(...unstampedChallanIds.map((id) => adminDb.collection("feeChallans").doc(id)))
+    );
+    for (const snap of snaps) {
+      if (snap.exists) challanSession.set(snap.id, resolveRecordSession(ctx, snap.data() as FeeChallanDoc));
+    }
+  }
+  return candidates
+    .filter((p) => (p.academicYear || challanSession.get(p.challanId) || ctx.academicYear) === year)
+    .sort((a, b) => (b.paymentDate || "").localeCompare(a.paymentDate || ""))
+    .slice(0, n);
+}
+
 export async function getPaymentsByStudentServer(schoolId: string, studentId: string): Promise<PaymentDoc[]> {
   return getPaymentsServer(schoolId, studentId);
 }
@@ -1863,8 +2784,9 @@ async function fetchExamsRaw(schoolId: string): Promise<ExamDoc[]> {
 }
 
 export async function getExamsServer(schoolId: string, scope?: SessionScope): Promise<ExamDoc[]> {
-  const { ctx, year } = await resolveSessionScope(schoolId, scope);
-  const exams = await fetchExamsRaw(schoolId);
+  const ctx = await loadSessionContext(schoolId);
+  const year = scope?.allSessions ? null : scope?.academicYear || ctx.academicYear;
+  const exams = ctx.exams;
   if (!year) return exams;
   return exams.filter((e) => (e.session || ctx.academicYear) === year);
 }
@@ -1977,6 +2899,43 @@ export async function getExamResultsServer(
   return filterToSession(ctx, year, await fetchExamResultsRaw(schoolId, examId, classId, studentId));
 }
 
+/**
+ * Result counts per grade for the exams of the active session (reports), via count()
+ * aggregations instead of reading every result. Cached for AGGREGATES; dropped on result writes.
+ */
+export async function getExamGradeCountsServer(
+  schoolId: string,
+  grades: string[]
+): Promise<{ total: number; byGrade: Record<string, number> }> {
+  const fromList = async () => {
+    const results = await getExamResultsServer(schoolId);
+    const byGrade: Record<string, number> = {};
+    for (const g of grades) byGrade[g] = results.filter((r) => r.grade === g).length;
+    return { total: results.length, byGrade };
+  };
+  if (!hasAdminCredentials) return fromList();
+  const examIds = (await getExamsServer(schoolId)).map((e) => e.id);
+  const zero = () => Object.fromEntries(grades.map((g) => [g, 0])) as Record<string, number>;
+  if (examIds.length === 0) return { total: 0, byGrade: zero() };
+  const key = `${cacheKeys.examGradesPrefix(schoolId)}${grades.join(",")}`;
+  return cached(key, CACHE_TTL_MS.AGGREGATES, () =>
+    withIndexFallback("examResults grade counts", async () => {
+      const byGrade = zero();
+      let total = 0;
+      for (const ids of chunk(examIds, 30)) {
+        const base = whereOneOf(adminDb.collection("examResults").where("schoolId", "==", schoolId), "examId", ids);
+        const [t, ...perGrade] = await Promise.all([
+          countQuery("examResults.count", base),
+          ...grades.map((g) => countQuery("examResults.countGrade", base.where("grade", "==", g))),
+        ]);
+        total += t;
+        grades.forEach((g, i) => (byGrade[g] += perGrade[i]));
+      }
+      return { total, byGrade };
+    }, fromList)
+  );
+}
+
 export async function saveExamResultServer(result: ExamResultDoc): Promise<string> {
   const id = result.id || `${result.schoolId}_${result.examId}_${result.studentId}_${result.subjectId}`;
   const academicYear = await sessionForWrite(result.schoolId, result);
@@ -1988,6 +2947,7 @@ export async function saveExamResultServer(result: ExamResultDoc): Promise<strin
     createdAt: result.createdAt || new Date().toISOString()
   };
   localStore.examResults.set(id, data);
+  invalidateCachePrefix(cacheKeys.examGradesPrefix(data.schoolId));
 
   if (hasAdminCredentials) {
     try {
@@ -2015,6 +2975,7 @@ export async function saveExamResultsBulkServer(
   results: ExamResultDoc[]
 ): Promise<{ count: number }> {
   let count = 0;
+  for (const schoolId of new Set(results.map((r) => r.schoolId))) invalidateCachePrefix(cacheKeys.examGradesPrefix(schoolId));
   for (const result of results) {
     const academicYear = await sessionForWrite(result.schoolId, result);
     const doc: ExamResultDoc = { ...result, ...(academicYear ? { academicYear } : {}) };
@@ -2028,6 +2989,7 @@ export async function saveExamResultsBulkServer(
     }
     count++;
   }
+  for (const schoolId of new Set(results.map((r) => r.schoolId))) invalidateCachePrefix(cacheKeys.examGradesPrefix(schoolId));
   return { count };
 }
 
@@ -2136,31 +3098,31 @@ export async function createLockedRecordServer(rec: LockedRecordDoc): Promise<st
 // ---------------------------------------------------------------------------
 // DASHBOARD STATS
 // ---------------------------------------------------------------------------
+/** School totals from aggregates (count()/sum() per class, cached) — no document scans. */
 export async function getDashboardStatsServer(schoolId: string) {
-  const students = await getStudentsServer(schoolId);
-  const teachers = await getTeachersServer(schoolId);
-  const classes = await getClassesServer(schoolId);
-  const challans = await getFeeChallansServer(schoolId);
+  const [classes, studentCounts, teachers, feeTotals] = await Promise.all([
+    getSessionClassesServer(schoolId),
+    getStudentCountsByClassServer(schoolId),
+    getTeachersServer(schoolId),
+    getFeeTotalsByClassServer(schoolId),
+  ]);
 
-  const activeStudents = students.filter((s: StudentDoc) => s.status === "ACTIVE").length;
-  const activeTeachers = teachers.filter((t: TeacherDoc) => t.status === "ACTIVE").length;
-  const totalClasses = classes.length;
-
+  let activeStudents = 0;
   let totalExpectedFees = 0;
   let totalCollectedFees = 0;
-
-  challans.forEach((c: FeeChallanDoc) => {
-    totalExpectedFees += c.totalExpected || 0;
-    totalCollectedFees += c.paidAmount || 0;
-  });
-
+  for (const c of classes) {
+    activeStudents += studentCounts.get(c.id)?.active || 0;
+    totalExpectedFees += feeTotals.get(c.id)?.expected || 0;
+    totalCollectedFees += feeTotals.get(c.id)?.collected || 0;
+  }
+  const activeTeachers = teachers.filter((t: TeacherDoc) => t.status === "ACTIVE").length;
   const outstandingFees = Math.max(0, totalExpectedFees - totalCollectedFees);
   const collectionRate = totalExpectedFees > 0 ? Math.round((totalCollectedFees / totalExpectedFees) * 100) : 0;
 
   return {
     totalStudents: activeStudents,
     totalTeachers: activeTeachers,
-    totalClasses,
+    totalClasses: classes.length,
     totalExpectedFees,
     totalCollectedFees,
     outstandingFees,

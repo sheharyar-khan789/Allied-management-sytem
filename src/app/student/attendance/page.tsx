@@ -8,7 +8,7 @@ export default function StudentAttendancePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/student/me")
+    fetch("/api/student/me?view=attendance")
       .then((res) => res.json())
       .then((d) => {
         if (d?.success) setData(d);
@@ -96,6 +96,11 @@ export default function StudentAttendancePage() {
       <div className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">
         <div className="p-4 border-b border-surface-container-low">
           <h3 className="font-headline-md text-sm font-bold text-on-surface">Daily Attendance Log</h3>
+          {data?.attendanceRecordsDays && (
+            <p className="text-[11px] text-on-surface-variant mt-0.5">
+              Last {data.attendanceRecordsDays} days. The totals above cover the whole session; use the print report for the full log.
+            </p>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">

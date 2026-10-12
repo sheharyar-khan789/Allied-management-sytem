@@ -1,7 +1,7 @@
 ﻿import React from "react";
 import AdminShell from "@/components/AdminShell";
 import { requirePageRole } from "@/lib/page-auth";
-import { getStudentsServer, getTeachersServer, getSchoolSettingsServer } from "@/lib/firebase/server-db";
+import { loadAdminShellData } from "@/lib/layout-data";
 export const dynamic = 'force-dynamic';
 export default async function AdminLayout({
   children,
@@ -25,16 +25,7 @@ export default async function AdminLayout({
     if (!schoolId) {
       throw new Error("No authenticated school context available for the admin layout.");
     }
-    const [students, teachers, settings] = await Promise.all([
-      getStudentsServer(schoolId),
-      getTeachersServer(schoolId),
-      getSchoolSettingsServer(schoolId)
-    ]);
-    totalStudents = students.filter((s) => s.status === "ACTIVE").length;
-    totalTeachers = teachers.filter((t) => t.status === "ACTIVE").length;
-    if (settings?.academicYear) {
-      sessionName = `Session ${settings.academicYear} | ${settings.campusName || "Main Campus"}`;
-    }
+    ({ totalStudents, totalTeachers, sessionName } = await loadAdminShellData(schoolId));
   } catch (e) {
     // Previously this was a silent no-op ("Graceful fallback") that let 0/0 counts and a
     // hardcoded fake session label render as if they were real data, with no record of the

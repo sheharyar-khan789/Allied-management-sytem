@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import { assertCanViewStudentAttendance } from "@/lib/academic-access";
 import { buildStudentAcademicPayload } from "@/lib/student-academic-payload";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(
   req: NextRequest,
@@ -40,6 +41,8 @@ export async function GET(
     });
   } catch (error: unknown) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/print/attendance/[studentId]");
+    if (busy) return busy;
     console.error("Print attendance error:", error);
     return NextResponse.json({ error: "Failed to load attendance report." }, { status: 500 });
   }

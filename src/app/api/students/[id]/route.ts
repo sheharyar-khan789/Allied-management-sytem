@@ -20,6 +20,7 @@ import { requireRecentAuth } from "@/lib/firebase/server-auth";
 import { syncLoginActive } from "@/lib/account-status";
 import { z } from "zod";
 import { cnicNumber, documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 const optText = (max: number) => z.string().trim().max(max).optional().or(z.literal(""));
 const optEmail = z.string().trim().max(254).email().optional().or(z.literal(""));
@@ -230,6 +231,8 @@ export async function GET(
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/students/[id]");
+    if (busy) return busy;
     console.error("Student detail error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve student details." },
@@ -336,6 +339,8 @@ export async function PUT(
     return NextResponse.json({ success: true, student: updated });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/students/[id]");
+    if (busy) return busy;
     console.error("Student update error:", error);
     return NextResponse.json(
       { error: "Failed to update student profile." },
@@ -397,6 +402,8 @@ export async function DELETE(
     return NextResponse.json({ success: true, message: "Student archived successfully." });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/students/[id]");
+    if (busy) return busy;
     console.error("Student archive error:", error);
     return NextResponse.json(
       { error: "Failed to archive student record." },

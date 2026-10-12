@@ -9,6 +9,8 @@ import { getClientIp, rejectCrossSite } from "@/lib/request-security";
 import { isRealDeployment } from "@/lib/session-token";
 import { securityLog } from "@/lib/security-log";
 import { isAdminMfaEnabled, verifyTotp } from "@/lib/totp";
+import { isServiceUnavailableError, logFirestoreOutage, SERVICE_BUSY_MESSAGE } from "@/lib/firebase/firestore-errors";
+import { invalidateUserProfileCache } from "@/lib/server-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -43,6 +45,17 @@ const json = (body: Record<string, unknown>, status = 200, headers: Record<strin
   NextResponse.json(body, { status, headers: { "Content-Type": "application/json", ...headers } });
 
 const INVALID_CREDENTIALS = "Invalid email or password.";
+
+/**
+ * Firestore out of quota (RESOURCE_EXHAUSTED) or unreachable: 503 with a "temporarily busy"
+ * message. Deliberately NOT a login failure — the IP/account counters are not touched, so nobody
+ * gets locked out because the database had a bad afternoon.
+ */
+function serviceBusy(operation: string, error: unknown, clientIp: string) {
+  logFirestoreOutage(`login: ${operation}`, error);
+  securityLog("server.error", { ip: clientIp, route: "/api/auth/login", status: 503, reason: "firestore_unavailable" });
+  return json({ error: SERVICE_BUSY_MESSAGE, serviceBusy: true }, 503, { "Retry-After": "120" });
+}
 
 export async function POST(req: NextRequest) {
   const csrfBlocked = rejectCrossSite(req);
@@ -160,10 +173,12 @@ export async function POST(req: NextRequest) {
 
     // Profile lookup (also needed to bind the Firebase uid). If the database is unavailable and
     // nothing has proven the credentials yet, the answer is the same 401 as a wrong password.
+    // Exactly one users lookup per login (it is the only Firestore read on this path).
     let user: Awaited<ReturnType<typeof getUserByEmailServer>> = null;
     try {
       user = await getUserByEmailServer(identifier);
     } catch (lookupErr) {
+      if (isServiceUnavailableError(lookupErr)) return serviceBusy("profile lookup", lookupErr, clientIp);
       if (!firebaseUid && !devAuthenticated) return fail("lookup_unavailable");
       throw lookupErr;
     }
@@ -192,6 +207,7 @@ export async function POST(req: NextRequest) {
           };
           const { adminDb } = await import("@/lib/firebase/admin");
           await adminDb.collection("users").doc(fbUserRecord.uid).set(user, { merge: true });
+          invalidateUserProfileCache(fbUserRecord.uid);
         }
       } catch (adminErr) {
         console.warn("Could not auto-provision user from Firebase Auth:", (adminErr as Error)?.message || "error");
@@ -293,6 +309,7 @@ export async function POST(req: NextRequest) {
     response.cookies.set("allied_session", token, SESSION_COOKIE_OPTIONS);
     return response;
   } catch (error: any) {
+    if (isServiceUnavailableError(error)) return serviceBusy("request", error, clientIp);
     console.error("Login route error:", error?.message || "error");
     securityLog("server.error", { route: "/api/auth/login", status: 500 });
     return json({ error: "Authentication service error. Please try again." }, 500);

@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
-  getStudentsServer,
+  getSessionClassesServer,
+  getStudentCountsByClassServer,
   getTeachersServer,
-  getClassesServer,
-  getFeeChallansServer,
-  getExamResultsServer,
-  getAttendanceServer,
+  getFeeTotalsByClassServer,
+  getExamGradeCountsServer,
+  getAttendanceTotalsByClassServer,
   analyticsAttendanceWindowStart,
-  ANALYTICS_ATTENDANCE_WINDOW_DAYS
+  ANALYTICS_ATTENDANCE_WINDOW_DAYS,
+  emptyAttendanceCounts,
 } from "@/lib/firebase/server-db";
+import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+
+const GRADES = ["A+", "A", "B+", "B", "C", "D", "F"] as const;
 
 export async function GET(req: NextRequest) {
   try {
@@ -18,83 +22,81 @@ export async function GET(req: NextRequest) {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const schoolId = authUser.schoolId;
 
-    // See getAttendanceServer: school-wide analytics read a bounded recent window rather than
-    // the entire (fastest-growing) attendance collection. The window is reported to the client.
+    // Every figure comes from aggregates (count()/sum() per class, per-grade counts, the
+    // attendanceDailyTotals summaries for the 30-day window) instead of reading every student,
+    // challan, exam result and attendance record (~16,000 reads per load before).
     const attendanceWindowStart = analyticsAttendanceWindowStart();
+    const today = new Date().toISOString().split("T")[0];
 
-    const [classes, students, teachers, challans, examResults, attendanceRecords] = await Promise.all([
-      getClassesServer(schoolId),
-      getStudentsServer(schoolId),
+    const [classes, studentCounts, teachers, feeTotals, grades, attendanceTotals] = await Promise.all([
+      getSessionClassesServer(schoolId),
+      getStudentCountsByClassServer(schoolId, { withGender: true }),
       getTeachersServer(schoolId),
-      getFeeChallansServer(schoolId),
-      getExamResultsServer(schoolId),
-      getAttendanceServer(schoolId, undefined, undefined, undefined, attendanceWindowStart)
+      getFeeTotalsByClassServer(schoolId),
+      getExamGradeCountsServer(schoolId, [...GRADES]),
+      getAttendanceTotalsByClassServer(schoolId, attendanceWindowStart, today),
     ]);
 
-    // 1. Real Attendance Report by Class
+    // 1. Real Attendance Report by Class (daily register, last ANALYTICS_ATTENDANCE_WINDOW_DAYS)
     const attendanceByClass = classes.map((cls) => {
-      const clsStudents = students.filter((s) => s.classId === cls.id);
-      const clsAtt = attendanceRecords.filter((a) => a.classId === cls.id);
-      const totalDays = clsAtt.length;
-      const present = clsAtt.filter((a) => a.status === "PRESENT").length;
-      const late = clsAtt.filter((a) => a.status === "LATE").length;
-      const leave = clsAtt.filter((a) => a.status === "LEAVE").length;
-      const absent = clsAtt.filter((a) => a.status === "ABSENT").length;
-      const attendanceRate = totalDays > 0 ? Number((((present + late) / totalDays) * 100).toFixed(1)) : 0;
+      const counts = attendanceTotals.get(cls.id) || emptyAttendanceCounts();
+      const totalDays = counts.PRESENT + counts.LATE + counts.LEAVE + counts.ABSENT;
+      const attendanceRate =
+        totalDays > 0 ? Number((((counts.PRESENT + counts.LATE) / totalDays) * 100).toFixed(1)) : 0;
 
       return {
         classId: cls.id,
         className: `${cls.name}-${cls.section}`,
-        studentCount: clsStudents.length,
+        studentCount: studentCounts.get(cls.id)?.total || 0,
         attendanceRate,
-        present,
-        late,
-        leave,
-        absent,
+        present: counts.PRESENT,
+        late: counts.LATE,
+        leave: counts.LEAVE,
+        absent: counts.ABSENT,
       };
     });
 
-    // 2. Fee Collection Report by Class
+    // 2. Fee collection by class
     const feeByClass = classes.map((cls) => {
-      const clsChallans = challans.filter((c) => c.classId === cls.id);
-      const expected = clsChallans.reduce((s, f) => s + (f.totalExpected || 0), 0);
-      const collected = clsChallans.reduce((s, f) => s + (f.paidAmount || 0), 0);
-      const outstanding = Math.max(0, expected - collected);
-      const collectionRate = expected > 0 ? ((collected / expected) * 100).toFixed(1) : "0.0";
+      const t = feeTotals.get(cls.id) || { count: 0, expected: 0, collected: 0 };
+      const outstanding = Math.max(0, t.expected - t.collected);
+      const collectionRate = t.expected > 0 ? ((t.collected / t.expected) * 100).toFixed(1) : "0.0";
 
       return {
         classId: cls.id,
         className: `${cls.name}-${cls.section}`,
-        studentCount: students.filter((s) => s.classId === cls.id).length,
-        expected,
-        collected,
+        studentCount: studentCounts.get(cls.id)?.total || 0,
+        expected: t.expected,
+        collected: t.collected,
         outstanding,
         collectionRate: Number(collectionRate),
       };
     });
 
-    // 3. Academic Grade Distribution
-    const gradeDistribution = {
-      "A+": examResults.filter((r) => r.grade === "A+").length,
-      A: examResults.filter((r) => r.grade === "A").length,
-      "B+": examResults.filter((r) => r.grade === "B+").length,
-      B: examResults.filter((r) => r.grade === "B").length,
-      C: examResults.filter((r) => r.grade === "C").length,
-      D: examResults.filter((r) => r.grade === "D").length,
-      F: examResults.filter((r) => r.grade === "F").length,
-    };
-
-    const totalResults = examResults.length;
-    const passedResults = examResults.filter((r) => r.grade !== "F").length;
+    // 3. Grade distribution (exams of the active session)
+    const gradeDistribution = Object.fromEntries(GRADES.map((g) => [g, grades.byGrade[g] || 0])) as Record<
+      (typeof GRADES)[number],
+      number
+    >;
+    const totalResults = grades.total;
+    const passedResults = totalResults - (grades.byGrade.F || 0);
     const passPercentage = totalResults > 0 ? ((passedResults / totalResults) * 100).toFixed(1) : "0.0";
 
-    const femaleStudents = students.filter((s) => s.gender === "FEMALE").length;
-    const maleStudents = students.filter((s) => s.gender === "MALE").length;
+    let totalStudents = 0;
+    let femaleStudents = 0;
+    let maleStudents = 0;
+    for (const cls of classes) {
+      const c = studentCounts.get(cls.id);
+      if (!c) continue;
+      totalStudents += c.total;
+      femaleStudents += c.female;
+      maleStudents += c.male;
+    }
 
     return NextResponse.json({
       success: true,
       summary: {
-        totalStudents: students.length,
+        totalStudents,
         totalTeachers: teachers.length,
         totalClasses: classes.length,
         femaleStudents,
@@ -108,6 +110,8 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/reports");
+    if (busy) return busy;
     console.error("Reports error:", error);
     return NextResponse.json(
       { error: "Failed to generate report analytics." },

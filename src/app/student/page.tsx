@@ -9,7 +9,7 @@ export default function StudentDashboardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/student/me")
+    fetch("/api/student/me?view=dashboard")
       .then((res) => res.json())
       .then((d) => {
         if (d?.success) setData(d);

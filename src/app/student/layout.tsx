@@ -1,7 +1,7 @@
 import React from "react";
 import StudentNav from "@/components/StudentNav";
 import { requirePageRole } from "@/lib/page-auth";
-import { getStudentByIdServer } from "@/lib/firebase/server-db";
+import { loadStudentShellData } from "@/lib/layout-data";
 
 export default async function StudentLayout({
   children,
@@ -10,20 +10,7 @@ export default async function StudentLayout({
 }) {
   const session = await requirePageRole("STUDENT");
 
-  let studentName = session?.name || "Student";
-  let admissionNo = "";
-  let className = "";
-  let rollNo = "";
-
-  if (session?.studentId && session?.schoolId) {
-    const st = await getStudentByIdServer(session.schoolId, session.studentId);
-    if (st) {
-      studentName = st.fullName;
-      admissionNo = st.admissionNo;
-      className = st.className || "";
-      rollNo = st.rollNo || "";
-    }
-  }
+  const { studentName, admissionNo, className, rollNo } = await loadStudentShellData(session);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
