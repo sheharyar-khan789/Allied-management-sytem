@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx scripts/p0-verification-test.ts && tsx scripts/production-fix-phase-test.ts && tsx scripts/teacher-allocation-timetable-auth-test.ts && tsx scripts/master-fix-phase-test.ts && tsx scripts/firestore-quota-unit-test.ts",
+    "test": "tsx scripts/p0-verification-test.ts && tsx scripts/production-fix-phase-test.ts && tsx scripts/teacher-allocation-timetable-auth-test.ts && tsx scripts/master-fix-phase-test.ts && tsx scripts/firestore-quota-unit-test.ts && tsx scripts/timetable-import-phone-admin-test.ts",
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed-firebase.ts",
     "test:p0": "tsx scripts/p0-verification-test.ts",
@@ -21,9 +21,11 @@
     "postinstall": "patch-package",
     "test:rules": "firebase emulators:exec --project demo-allied-rules-test --only firestore,storage \"node --test tests/rules/firestore-storage.rules.test.mjs\"",
     "test:quota": "npx --yes firebase-tools@15 emulators:exec --project demo-allied-quota --only firestore,auth \"tsx scripts/firestore-quota-budget-test.ts && tsx scripts/firestore-quota-resilience-test.ts\"",
-    "test:quota-unit": "tsx scripts/firestore-quota-unit-test.ts"
+    "test:quota-unit": "tsx scripts/firestore-quota-unit-test.ts",
+    "test:timetable-import": "tsx scripts/timetable-import-phone-admin-test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
     "bcryptjs": "^3.0.2",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
@@ -39,6 +41,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.13.10",
     "@types/nodemailer": "^8.0.2",

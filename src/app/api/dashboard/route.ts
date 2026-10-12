@@ -8,6 +8,7 @@ import {
   getRecentPaymentsServer,
   getAuditLogsServer,
   getSchoolSettingsServer,
+  getSessionProfileServer,
   getAttendanceTotalsByClassServer,
   analyticsAttendanceWindowStart,
   ANALYTICS_ATTENDANCE_WINDOW_DAYS,
@@ -63,6 +64,8 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // The signed-in admin's display name, from their stored profile (cached; usually no read).
+    const viewerProfile = await getSessionProfileServer(schoolId, authUser.uid).catch(() => null);
     const classes = classesRes.status === "fulfilled" ? classesRes.value : [];
     const studentCounts = studentCountsRes.status === "fulfilled" ? studentCountsRes.value : new Map();
     const teachers = teachersRes.status === "fulfilled" ? teachersRes.value : [];
@@ -141,6 +144,7 @@ export async function GET(req: NextRequest) {
         collectionRate,
       },
       classWiseSnapshots,
+      viewer: { name: viewerProfile?.name?.trim() || authUser.name || "Administrator" },
       recentAuditLogs: auditLogs,
       recentPayments: payments.slice(0, 6),
       settings: settings || {

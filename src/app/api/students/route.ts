@@ -276,7 +276,8 @@ export async function POST(req: NextRequest) {
       gender: gender === "Male" ? "MALE" : "FEMALE",
       dob: dates.dob || undefined,
       admissionDate: dates.admissionDate || new Date().toISOString().split("T")[0],
-      phone: contactNumber || guardianPhone,
+      // Only the student's own number; the guardian's number stays in guardianPhone.
+      phone: contactNumber?.trim() || undefined,
       address: body.address?.trim() || "Not Provided",
       email: studentEmail,
       classId,

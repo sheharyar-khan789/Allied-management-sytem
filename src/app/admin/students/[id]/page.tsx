@@ -535,6 +535,16 @@ export default function StudentDossierPage({
                 <p className="font-semibold text-on-surface font-mono">{student.guardianPhone}</p>
               </div>
               <div>
+                <span className="text-on-surface-variant">Student Phone</span>
+                {student.contactNumber ? (
+                  <p className="font-semibold text-on-surface font-mono">
+                    <a href={`tel:${student.contactNumber}`} className="hover:underline">{student.contactNumber}</a>
+                  </p>
+                ) : (
+                  <p className="text-on-surface-variant italic">Not provided</p>
+                )}
+              </div>
+              <div>
                 <span className="text-on-surface-variant">Guardian Email</span>
                 <p className="font-semibold text-on-surface truncate">{student.guardianEmail || "N/A"}</p>
               </div>

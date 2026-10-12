@@ -74,7 +74,7 @@ export default function AdminDashboardPage() {
               </span>
             </div>
             <h1 className="font-headline-lg text-2xl sm:text-3xl font-bold tracking-tight text-on-primary">
-              Welcome back, Administrator
+              Welcome back, {data?.viewer?.name || "Administrator"}
             </h1>
             <p className="font-body-md text-xs sm:text-sm text-on-primary-container italic font-medium">
               “Better Education, Brighter Future” — Allied School Management System

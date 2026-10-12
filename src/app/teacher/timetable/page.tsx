@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import TimetableImages from "@/components/TimetableImages";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -41,6 +42,9 @@ export default function TeacherTimetablePage() {
           </span>
         )}
       </div>
+
+      {/* School timetables uploaded as images by the administration (read-only). */}
+      <TimetableImages />
 
       {loading && (
         <div className="flex flex-col items-center justify-center p-8 bg-surface-container-lowest rounded-xl border border-surface-container-high/40 space-y-2">

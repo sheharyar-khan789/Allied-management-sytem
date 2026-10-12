@@ -163,8 +163,35 @@ export interface TimetableDoc {
   roomNo?: string;
   topic?: string;
   academicYear?: string;
+  /** Set on periods created by a timetable import (see TimetableImportDoc). */
+  importId?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+/**
+ * One timetable import. STRUCTURED: periods were created from a file (CSV/XLSX, or an image/PDF
+ * read automatically and confirmed by an admin); they carry `importId`. IMAGE: the file itself is
+ * the timetable (stored in Firebase Storage and displayed as-is; no editable periods).
+ */
+export interface TimetableImportDoc {
+  id: string;
+  schoolId: string;
+  kind: "STRUCTURED" | "IMAGE";
+  title: string;
+  source: "csv" | "xlsx" | "image" | "pdf";
+  fileName?: string;
+  /** Original file (image/PDF), if stored. */
+  fileUrl?: string;
+  storagePath?: string;
+  contentType?: string;
+  /** Date printed on the timetable, as written (optional). */
+  printedDate?: string;
+  slotCount: number;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type AttendanceStatus = "PRESENT" | "LATE" | "ABSENT" | "LEAVE";

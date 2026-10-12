@@ -150,6 +150,14 @@ export default function TeacherStudentsPage() {
                   <span>Admission:</span>
                   <span className="font-mono text-on-surface">{st.admissionNumber}</span>
                 </div>
+                <div className="flex justify-between">
+                  <span>Student Phone:</span>
+                  {st.contactNumber ? (
+                    <a href={`tel:${st.contactNumber}`} className="font-mono text-on-surface hover:underline">{st.contactNumber}</a>
+                  ) : (
+                    <span className="italic">Not provided</span>
+                  )}
+                </div>
               </div>
 
               <div className="pt-2 border-t border-surface-container-low space-y-2">

@@ -19,13 +19,14 @@ export default async function AdminLayout({
   let totalStudents = 0;
   let totalTeachers = 0;
   let sessionName = "Session not configured";
+  let profileName: string | null = null;
   let dataLoadError = false;
 
   try {
     if (!schoolId) {
       throw new Error("No authenticated school context available for the admin layout.");
     }
-    ({ totalStudents, totalTeachers, sessionName } = await loadAdminShellData(schoolId));
+    ({ totalStudents, totalTeachers, sessionName, userName: profileName } = await loadAdminShellData(schoolId, session?.uid));
   } catch (e) {
     // Previously this was a silent no-op ("Graceful fallback") that let 0/0 counts and a
     // hardcoded fake session label render as if they were real data, with no record of the
@@ -41,7 +42,7 @@ export default async function AdminLayout({
     <AdminShell
       totalStudents={totalStudents}
       totalTeachers={totalTeachers}
-      userName={session?.name || "Administrator"}
+      userName={profileName || session?.name || "Administrator"}
       userRole={session?.role === "ADMIN" ? "Super Admin" : "Staff"}
       sessionName={sessionName}
       dataLoadError={dataLoadError}

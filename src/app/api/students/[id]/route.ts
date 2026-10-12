@@ -274,7 +274,12 @@ export async function PUT(
       dob: dates.dob || existing.dob,
       admissionDate: dates.admissionDate || existing.admissionDate,
       bloodGroup: body.bloodGroup || existing.bloodGroup,
-      phone: body.contactNumber || body.phone || existing.phone,
+      phone:
+        body.contactNumber !== undefined
+          ? String(body.contactNumber).trim() || undefined
+          : body.phone !== undefined
+            ? String(body.phone).trim() || undefined
+            : existing.phone,
       address: body.address !== undefined ? body.address : existing.address,
       fatherName: body.fatherName || body.guardianName || existing.fatherName,
       guardianName: body.guardianName || existing.guardianName,

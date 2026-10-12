@@ -1,6 +1,7 @@
 import { AuthenticatedUser } from "@/lib/firebase/server-auth";
 import {
   getSchoolSettingsServer,
+  getSessionProfileServer,
   getStudentByIdServer,
   getStudentCountsByClassServer,
   getTeachersServer,
@@ -14,6 +15,8 @@ import { resolveTeacherAllocation } from "@/lib/academic-access";
  */
 
 export interface AdminShellData {
+  /** Display name from the admin's stored profile (null if it can't be resolved). */
+  userName: string | null;
   totalStudents: number;
   totalTeachers: number;
   sessionName: string;
@@ -24,13 +27,17 @@ export interface AdminShellData {
  * sidebar count; it now uses per-class count() aggregations (cached 60s) plus the cached teacher
  * list and settings.
  */
-export async function loadAdminShellData(schoolId: string): Promise<AdminShellData> {
-  const [studentCounts, teachers, settings] = await Promise.all([
+export async function loadAdminShellData(schoolId: string, uid?: string): Promise<AdminShellData> {
+  const [studentCounts, teachers, settings, profile] = await Promise.all([
     getStudentCountsByClassServer(schoolId),
     getTeachersServer(schoolId),
     getSchoolSettingsServer(schoolId),
+    // The name shown in the sidebar comes from the stored profile (the same cached copy the
+    // session check reads), so a renamed admin sees the new name without signing in again.
+    uid ? getSessionProfileServer(schoolId, uid) : Promise.resolve(null),
   ]);
   return {
+    userName: profile?.name?.trim() || null,
     totalStudents: Array.from(studentCounts.values()).reduce((sum, c) => sum + c.active, 0),
     totalTeachers: teachers.filter((t) => t.status === "ACTIVE").length,
     sessionName: settings?.academicYear
