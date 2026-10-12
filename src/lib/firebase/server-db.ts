@@ -1176,9 +1176,13 @@ export async function getStudentByIdServer(schoolId: string, studentId: string):
   assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
-      const doc = await adminDb.collection("students").doc(studentId).get();
-      if (doc.exists) {
-        const data = { id: doc.id, ...doc.data() } as StudentDoc;
+      // The student layout and the page's API both need the record on every student page view:
+      // cached for SESSION_PROFILE (30s), dropped on every student write in this instance.
+      const data = await cached(`${cacheKeys.studentsPrefix(schoolId)}id:${studentId}`, CACHE_TTL_MS.SESSION_PROFILE, async () => {
+        const doc = await withFirestoreRetry("getStudentByIdServer", () => adminDb.collection("students").doc(studentId).get());
+        return doc.exists ? ({ id: doc.id, ...doc.data() } as StudentDoc) : null;
+      });
+      if (data) {
         if (data.schoolId === schoolId) return data;
       }
       if (process.env.NODE_ENV === "production") return null;
@@ -1668,12 +1672,19 @@ async function fetchTimetableRaw(
         if (whole) {
           items = whole.filter(keep);
         } else {
-          let ref: Query = adminDb.collection("timetables").where("schoolId", "==", schoolId);
-          if (teacherId) ref = ref.where("teacherId", "==", teacherId);
-          if (classId) ref = ref.where("classId", "==", classId);
-          if (day) ref = ref.where("dayOfWeek", "==", day);
-          const snap = await withFirestoreRetry("getTimetableServer", () => ref.get());
-          items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TimetableDoc));
+          // One class's / teacher's slots (student and teacher timetables), cached the same way.
+          items = await cached(
+            `${cacheKeys.timetableAll(schoolId)}:${teacherId || ""}:${classId || ""}:${day || ""}`,
+            CACHE_TTL_MS.SCHOOL_REFERENCE,
+            async () => {
+              let ref: Query = adminDb.collection("timetables").where("schoolId", "==", schoolId);
+              if (teacherId) ref = ref.where("teacherId", "==", teacherId);
+              if (classId) ref = ref.where("classId", "==", classId);
+              if (day) ref = ref.where("dayOfWeek", "==", day);
+              const snap = await withFirestoreRetry("getTimetableServer", () => ref.get());
+              return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TimetableDoc));
+            }
+          );
         }
       }
       return items.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
@@ -1724,11 +1735,11 @@ export async function deleteTimetableEntryServer(schoolId: string, entryId: stri
   const existing = await getTimetableEntryByIdServer(schoolId, entryId);
   if (!existing) return false;
   localStore.timetables.delete(entryId);
-  invalidateCache(cacheKeys.timetableAll(schoolId));
+  invalidateCachePrefix(cacheKeys.timetableAll(schoolId));
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("timetables").doc(entryId).delete();
-      invalidateCache(cacheKeys.timetableAll(schoolId));
+      invalidateCachePrefix(cacheKeys.timetableAll(schoolId));
     } catch (e) {
       onFirestoreError(`deleteTimetableEntryServer(${entryId})`, e);
       if (process.env.NODE_ENV === "production") throw e;
@@ -1748,12 +1759,12 @@ export async function saveTimetableEntryServer(entry: TimetableDoc): Promise<str
     createdAt: entry.createdAt || new Date().toISOString()
   };
   localStore.timetables.set(id, data);
-  invalidateCache(cacheKeys.timetableAll(data.schoolId));
+  invalidateCachePrefix(cacheKeys.timetableAll(data.schoolId));
 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("timetables").doc(id).set(cleanUndefined(data), { merge: true });
-      invalidateCache(cacheKeys.timetableAll(data.schoolId));
+      invalidateCachePrefix(cacheKeys.timetableAll(data.schoolId));
     } catch (e) {
       onFirestoreError(`saveTimetableEntryServer(${id})`, e);
     }

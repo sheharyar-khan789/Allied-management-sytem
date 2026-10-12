@@ -128,7 +128,9 @@ async function main() {
   // ---------------------------------------------------------------------------------------------
   // 3. Authenticated APIs under quota exhaustion: 503 (not 401 → client would sign the user out).
   // ---------------------------------------------------------------------------------------------
-  const adminToken = await createSessionCookieServer({ uid: ids.admin.uid, email: ids.admin.email, role: "ADMIN", schoolId: SCHOOL, name: "Admin" });
+  // Session cookies idle out after 5 minutes: mint a fresh one per section.
+  const mintAdmin = () => createSessionCookieServer({ uid: ids.admin.uid, email: ids.admin.email, role: "ADMIN", schoolId: SCHOOL, name: "Admin" });
+  let adminToken = await mintAdmin();
   {
     resetServerCaches();
     const fault = injectFirestoreFault({ match: () => true, makeError: quotaError });
@@ -246,6 +248,7 @@ async function main() {
   // ---------------------------------------------------------------------------------------------
   {
     resetServerCaches();
+    adminToken = await mintAdmin();
     const before = (await (await dashboard.GET(req(adminToken, "/api/dashboard"))).json()).stats.totalStudents;
     await db.saveStudentServer({
       id: "std-new-1", schoolId: SCHOOL, admissionNo: "A9999", fullName: "New Student", fatherName: "F", gender: "MALE",
