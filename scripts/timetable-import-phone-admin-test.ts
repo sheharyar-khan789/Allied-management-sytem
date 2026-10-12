@@ -148,7 +148,7 @@ async function run() {
     },
   };
   const extracted = await extractTimetableFromFile(PNG, "image/png", { classNames: ["Grade 1-A"], subjectNames: [], teacherNames: [] }, { client: fake as any });
-  assert(sentParams?.model === "claude-opus-5" && sentParams?.output_config?.format?.type === "json_schema" && sentParams?.messages?.[0]?.content?.[0]?.type === "image", "Reader sends the image with a JSON schema to claude-opus-5");
+  assert(sentParams?.model === "claude-sonnet-5-5" && sentParams?.output_config?.format?.type === "json_schema" && sentParams?.messages?.[0]?.content?.[0]?.type === "image", "Reader sends the image with a JSON schema to claude-sonnet-5-5");
   assert(extracted.rows.length === 2 && extracted.rows[0].startTime === "07:40" && extracted.rows[0].fridayStartTime === "07:30" && extracted.date === "September 23, 2026", "Reader output joined with period times (incl. Friday timings) and printed date");
   const extractedPreview = buildPreviewRows(extracted.rows.map((r) => ({ ...r, days: ["Mon-Sat"] })), ctx);
   assert(extractedPreview[0].classId === oneA.id && extractedPreview[0].subjectId === maths1a.id && extractedPreview[0].teacherId === "tch-ti-esha" && extractedPreview[0].issues.length === 0, "Confident row is matched to real class/subject/teacher with no issues");

@@ -11,7 +11,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ImportRowInput } from "@/lib/timetable-import";
 
-export const EXTRACTION_MODEL = "claude-opus-5";
+// Claude Sonnet 5.5: vision + structured outputs, fast and lower cost — enough for reading a printed timetable.
+export const EXTRACTION_MODEL = "claude-sonnet-5-5";
 /** The Messages API accepts images up to 5 MB each. */
 export const MAX_EXTRACTION_IMAGE_BYTES = 5 * 1024 * 1024;
 
