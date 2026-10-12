@@ -2,6 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import TimetableGrid from "@/components/TimetableGrid";
+import TimetableImport from "@/components/TimetableImport";
+import TimetableImages from "@/components/TimetableImages";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -35,6 +37,8 @@ export default function TimetableManagementPage() {
   // "grid" mirrors the school's printed timetable: one day, classes as rows, periods as columns.
   const [layout, setLayout] = useState<"list" | "grid">("list");
   const [gridDay, setGridDay] = useState("Monday");
+  const [importOpen, setImportOpen] = useState(false);
+  const [importsVersion, setImportsVersion] = useState(0);
 
   const fetchSlots = async () => {
     const res = await fetch("/api/timetable", { cache: "no-store" });
@@ -139,6 +143,7 @@ export default function TimetableManagementPage() {
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error || "Failed to delete the timetable slot.");
       setSlots((prev) => prev.filter((s) => s.id !== t.id));
+      if (modalOpen && form.id === t.id) setModalOpen(false);
     } catch (err: any) {
       alert(err?.message || "Failed to delete the timetable slot.");
     } finally {
@@ -166,16 +171,45 @@ export default function TimetableManagementPage() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={openCreate}
-          disabled={loading || !!loadError}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 shadow-sm transition-all self-start sm:self-auto disabled:opacity-50"
-        >
-          <span className="material-symbols-outlined text-[18px]">add</span>
-          <span>Add Period</span>
-        </button>
+        <div className="flex gap-2 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            disabled={loading || !!loadError}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container text-on-surface font-label-md text-xs font-semibold hover:bg-surface-container-high shadow-sm transition-all disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[18px]">upload_file</span>
+            <span>Import Timetable</span>
+          </button>
+          <button
+            type="button"
+            onClick={openCreate}
+            disabled={loading || !!loadError}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 shadow-sm transition-all disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            <span>Add Period</span>
+          </button>
+        </div>
       </div>
+
+      {importOpen && (
+        <TimetableImport
+          onClose={() => setImportOpen(false)}
+          onImported={() => {
+            setImportsVersion((v) => v + 1);
+            fetchSlots().catch(() => undefined);
+          }}
+        />
+      )}
+
+      {!loading && !loadError && (
+        <TimetableImages
+          admin
+          refreshKey={importsVersion}
+          onChanged={() => fetchSlots().catch(() => undefined)}
+        />
+      )}
 
       {loadError && (
         <div role="alert" className="p-3 rounded-lg bg-error-container text-on-error-container text-xs font-bold flex items-center gap-2">
@@ -479,6 +513,19 @@ export default function TimetableManagementPage() {
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-surface-container-low">
+                {form.id && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const slot = slots.find((s) => s.id === form.id);
+                      if (slot) handleDelete(slot);
+                    }}
+                    disabled={deletingId === form.id}
+                    className="mr-auto px-3.5 py-2 rounded-lg bg-surface-container text-error font-semibold hover:bg-error-container disabled:opacity-50"
+                  >
+                    Delete Period
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setModalOpen(false)}

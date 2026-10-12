@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import TimetableGrid, { TimetableEntry } from "@/components/TimetableGrid";
+import TimetableImages from "@/components/TimetableImages";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -40,6 +41,9 @@ export default function StudentTimetablePage() {
           </span>
         )}
       </div>
+
+      {/* School timetables uploaded as images by the administration (read-only). */}
+      <TimetableImages />
 
       {loading && (
         <div className="flex flex-col items-center justify-center p-8 bg-surface-container-lowest rounded-xl border border-surface-container-high/40 space-y-2">

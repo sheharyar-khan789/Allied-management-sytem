@@ -6,7 +6,8 @@ export type AllowedFolder =
   | "documents"
   | "fee-receipts"
   | "result-cards"
-  | "school-logo";
+  | "school-logo"
+  | "timetables";
 
 export interface UploadOptions {
   buffer: Buffer;
@@ -179,4 +180,20 @@ export async function uploadFileToStorage(options: UploadOptions): Promise<Uploa
     contentType,
     size: buffer.length,
   };
+}
+
+/**
+ * Deletes a stored file. Only paths inside the caller's own school folder are ever touched, so a
+ * stored path from another tenant (or a crafted one) can't be removed.
+ */
+export async function deleteFileFromStorage(storagePath: string | undefined, schoolId: string): Promise<boolean> {
+  if (!storagePath || !storagePath.startsWith(`schools/${schoolId}/`) || storagePath.includes("..")) return false;
+  if (!hasAdminCredentials) return false;
+  try {
+    await adminBucket.file(storagePath).delete({ ignoreNotFound: true });
+    return true;
+  } catch (err) {
+    console.error("[storage] delete failed:", (err as Error)?.message || "error");
+    return false;
+  }
 }

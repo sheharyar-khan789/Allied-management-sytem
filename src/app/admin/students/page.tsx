@@ -304,6 +304,9 @@ export default function StudentsManagementPage() {
                     <td className="py-3 px-4">
                       <div className="font-medium text-on-surface">{st.guardianName}</div>
                       <div className="text-[10px] text-on-surface-variant">{st.guardianPhone}</div>
+                      <div className="text-[10px] text-on-surface-variant">
+                        Student: {st.contactNumber ? <span className="font-mono">{st.contactNumber}</span> : <span className="italic">Not provided</span>}
+                      </div>
                     </td>
 
                     {/* Attendance */}

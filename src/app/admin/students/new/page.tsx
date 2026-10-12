@@ -323,6 +323,19 @@ export default function AddNewStudentPage() {
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
               />
             </div>
+
+            <div>
+              <label htmlFor="new-student-phone" className="block font-semibold text-on-surface mb-1">Student Phone</label>
+              <input id="new-student-phone"
+                type="tel"
+                name="contactNumber"
+                value={formData.contactNumber}
+                onChange={handleChange}
+                maxLength={30}
+                placeholder="Student's own number (optional)"
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+              />
+            </div>
           </div>
         </div>
 

@@ -42,6 +42,7 @@ import {
   AuditLogDoc,
   SchoolSettingsDoc,
   TimetableDoc,
+  TimetableImportDoc,
   AnnouncementDoc,
   PayrollRecordDoc,
   PasswordResetTokenDoc,
@@ -70,6 +71,7 @@ const localStore: {
   lockedRecords: Map<string, LockedRecordDoc>;
   auditLogs: Map<string, AuditLogDoc>;
   timetables: Map<string, TimetableDoc>;
+  timetableImports: Map<string, TimetableImportDoc>;
   announcements: Map<string, AnnouncementDoc>;
   payrollRecords: Map<string, PayrollRecordDoc>;
   passwordResetTokens: Map<string, PasswordResetTokenDoc>;
@@ -93,6 +95,7 @@ const localStore: {
   lockedRecords: new Map(),
   auditLogs: new Map(),
   timetables: new Map(),
+  timetableImports: new Map(),
   announcements: new Map(),
   payrollRecords: new Map(),
   passwordResetTokens: new Map(),
@@ -1770,6 +1773,124 @@ export async function saveTimetableEntryServer(entry: TimetableDoc): Promise<str
     }
   }
   return id;
+}
+
+/**
+ * Saves several periods in batched commits (an import). Each is stamped with its class's session
+ * like a single save.
+ */
+export async function saveTimetableEntriesBulkServer(entries: TimetableDoc[]): Promise<number> {
+  if (entries.length === 0) return 0;
+  const docs: TimetableDoc[] = [];
+  for (const entry of entries) {
+    const academicYear = await sessionForWrite(entry.schoolId, entry);
+    docs.push({ ...entry, ...(academicYear ? { academicYear } : {}) });
+  }
+  const schools = new Set(docs.map((d) => d.schoolId));
+  for (const schoolId of schools) invalidateCachePrefix(cacheKeys.timetableAll(schoolId));
+  if (hasAdminCredentials) {
+    try {
+      for (const part of chunk(docs, FIRESTORE_BATCH_LIMIT)) {
+        const batch = adminDb.batch();
+        for (const d of part) batch.set(adminDb.collection("timetables").doc(d.id), cleanUndefined(d));
+        await batch.commit();
+      }
+    } catch (e) {
+      onFirestoreError(`saveTimetableEntriesBulkServer(${docs.length})`, e);
+      throw e;
+    } finally {
+      for (const schoolId of schools) invalidateCachePrefix(cacheKeys.timetableAll(schoolId));
+    }
+  }
+  for (const d of docs) localStore.timetables.set(d.id, d);
+  return docs.length;
+}
+
+/** Deletes the given periods of `schoolId` (ids of another school are ignored). */
+export async function deleteTimetableEntriesServer(schoolId: string, ids: string[]): Promise<number> {
+  const own = (await getTimetableServer(schoolId, undefined, undefined, undefined, { allSessions: true }))
+    .filter((t) => ids.includes(t.id))
+    .map((t) => t.id);
+  if (own.length === 0) return 0;
+  invalidateCachePrefix(cacheKeys.timetableAll(schoolId));
+  if (hasAdminCredentials) {
+    try {
+      for (const part of chunk(own, FIRESTORE_BATCH_LIMIT)) {
+        const batch = adminDb.batch();
+        for (const id of part) batch.delete(adminDb.collection("timetables").doc(id));
+        await batch.commit();
+      }
+    } catch (e) {
+      onFirestoreError(`deleteTimetableEntriesServer(${own.length})`, e);
+      throw e;
+    } finally {
+      invalidateCachePrefix(cacheKeys.timetableAll(schoolId));
+    }
+  }
+  for (const id of own) localStore.timetables.delete(id);
+  return own.length;
+}
+
+// ---------------------------------------------------------------------------
+// TIMETABLE IMPORTS (server-only collection)
+// ---------------------------------------------------------------------------
+export async function getTimetableImportsServer(schoolId: string): Promise<TimetableImportDoc[]> {
+  const byNewest = (a: TimetableImportDoc, b: TimetableImportDoc) => (b.createdAt || "").localeCompare(a.createdAt || "");
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("getTimetableImportsServer", () =>
+        adminDb.collection("timetableImports").where("schoolId", "==", schoolId).limit(200).get()
+      );
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as TimetableImportDoc)).sort(byNewest);
+    } catch (e) {
+      onFirestoreError(`getTimetableImportsServer(${schoolId})`, e);
+    }
+  }
+  return Array.from(localStore.timetableImports.values()).filter((t) => t.schoolId === schoolId).sort(byNewest);
+}
+
+export async function getTimetableImportByIdServer(schoolId: string, id: string): Promise<TimetableImportDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getTimetableImportByIdServer", () => adminDb.collection("timetableImports").doc(id).get());
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as TimetableImportDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getTimetableImportByIdServer(${id})`, e);
+      return null;
+    }
+  }
+  const local = localStore.timetableImports.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+export async function saveTimetableImportServer(rec: TimetableImportDoc): Promise<void> {
+  const data: TimetableImportDoc = { ...rec, updatedAt: new Date().toISOString() };
+  localStore.timetableImports.set(data.id, data);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("timetableImports").doc(data.id).set(cleanUndefined(data));
+    } catch (e) {
+      onFirestoreError(`saveTimetableImportServer(${data.id})`, e);
+      throw e;
+    }
+  }
+}
+
+export async function deleteTimetableImportServer(schoolId: string, id: string): Promise<boolean> {
+  const existing = await getTimetableImportByIdServer(schoolId, id);
+  if (!existing) return false;
+  localStore.timetableImports.delete(id);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("timetableImports").doc(id).delete();
+    } catch (e) {
+      onFirestoreError(`deleteTimetableImportServer(${id})`, e);
+      throw e;
+    }
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------

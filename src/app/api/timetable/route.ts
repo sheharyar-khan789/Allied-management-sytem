@@ -13,33 +13,14 @@ import {
 import { TimetableDoc } from "@/lib/firebase/types";
 import { requireTeacherAllocation, resolveSessionStudent } from "@/lib/academic-access";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { SlotResult, TIMETABLE_DAYS, toMinutes, validateTimetableSlot } from "@/lib/timetable-import";
 
 export const dynamic = "force-dynamic";
-
-const DAYS: TimetableDoc["dayOfWeek"][] = [
-  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
-];
-
-/** "HH:MM" (24h) → minutes since midnight; also accepts legacy "hh:mm AM/PM". */
-function toMinutes(value: string | undefined): number | null {
-  const m = /^\s*(\d{1,2}):(\d{2})\s*(AM|PM)?\s*$/i.exec(value || "");
-  if (!m) return null;
-  let h = Number(m[1]);
-  const min = Number(m[2]);
-  if (min > 59) return null;
-  if (m[3]) {
-    if (h < 1 || h > 12) return null;
-    h = (h % 12) + (m[3].toUpperCase() === "PM" ? 12 : 0);
-  } else if (h > 23) {
-    return null;
-  }
-  return h * 60 + min;
-}
 
 function sortEntries(items: TimetableDoc[]): TimetableDoc[] {
   return [...items].sort(
     (a, b) =>
-      DAYS.indexOf(a.dayOfWeek) - DAYS.indexOf(b.dayOfWeek) ||
+      TIMETABLE_DAYS.indexOf(a.dayOfWeek) - TIMETABLE_DAYS.indexOf(b.dayOfWeek) ||
       (toMinutes(a.startTime) ?? 0) - (toMinutes(b.startTime) ?? 0)
   );
 }
@@ -119,94 +100,23 @@ export async function GET(req: NextRequest) {
   }
 }
 
-type SlotResult = { ok: true; slot: Omit<TimetableDoc, "id" | "createdAt" | "updatedAt"> } | { ok: false; error: string; status: number };
-
 /**
- * Validates an admin-submitted slot against this school's own records. Names are always taken
- * from the referenced documents, never from the request, and the slot may not clash with
- * another slot of the same teacher, class or room on that day.
+ * Validates an admin-submitted slot against this school's own records (shared with the timetable
+ * import, see src/lib/timetable-import.ts). Names are always taken from the referenced
+ * documents, never from the request, and the slot may not clash with another slot of the same
+ * teacher, class or room on that day.
  */
 async function buildSlot(authUser: AuthenticatedUser, body: any, editingId?: string): Promise<SlotResult> {
-  const classId = String(body?.classId || "").trim();
-  const subjectId = String(body?.subjectId || "").trim();
-  const dayOfWeek = String(body?.dayOfWeek || "").trim() as TimetableDoc["dayOfWeek"];
-  const periodName = String(body?.periodName || "").trim();
-  const startTime = String(body?.startTime || "").trim();
-  const endTime = String(body?.endTime || "").trim();
-  const roomNo = String(body?.roomNo || "").trim();
-  const topic = String(body?.topic || "").trim();
-  const requestedTeacherId = String(body?.teacherId || "").trim();
-
-  if (!classId || !subjectId || !dayOfWeek || !periodName || !startTime || !endTime) {
-    return { ok: false, status: 400, error: "Class, Subject, Day, Period, Start Time, and End Time are required." };
-  }
-  if ([classId, subjectId, requestedTeacherId].some((v) => v.length > 128) || periodName.length > 60 || roomNo.length > 40 || topic.length > 200) {
-    return { ok: false, status: 400, error: "One or more fields are too long (period max 60, room max 40, topic max 200 characters)." };
-  }
-  if (!DAYS.includes(dayOfWeek)) return { ok: false, status: 400, error: "Day must be a weekday name (Monday–Sunday)." };
-  const start = toMinutes(startTime);
-  const end = toMinutes(endTime);
-  if (start === null || end === null) return { ok: false, status: 400, error: "Start and end time must be valid times (HH:MM)." };
-  if (end <= start) return { ok: false, status: 400, error: "End time must be after start time." };
-
+  const dayOfWeek = String(body?.dayOfWeek || "").trim();
   const [classes, subjects, teachers] = await Promise.all([
     getClassesServer(authUser.schoolId),
     getSubjectsServer(authUser.schoolId),
     getTeachersServer(authUser.schoolId),
   ]);
-  const cls = classes.find((c) => c.id === classId);
-  if (!cls) return { ok: false, status: 404, error: "Class not found for this school." };
-  const subject = subjects.find((s) => s.id === subjectId);
-  if (!subject || subject.classId !== classId) {
-    return { ok: false, status: 404, error: "Subject not found for this class." };
-  }
-
-  // Defaults to the subject's allocated teacher; an explicit teacher must belong to this school.
-  const teacherId = requestedTeacherId || subject.teacherId || "";
-  const teacher = teacherId ? teachers.find((t) => t.id === teacherId) : null;
-  if (teacherId && !teacher) return { ok: false, status: 404, error: "Teacher not found for this school." };
-
-  const sameDay = (await getTimetableServer(authUser.schoolId, undefined, undefined, dayOfWeek)).filter(
-    (t) => t.id !== editingId
-  );
-  const overlaps = (t: TimetableDoc) => {
-    const s = toMinutes(t.startTime);
-    const e = toMinutes(t.endTime);
-    return s !== null && e !== null && s < end && start < e;
-  };
-  const clash =
-    (teacher && sameDay.find((t) => t.teacherId === teacher.id && overlaps(t))) ||
-    sameDay.find((t) => t.classId === classId && overlaps(t)) ||
-    (roomNo && roomNo !== "-" && sameDay.find((t) => t.roomNo === roomNo && overlaps(t)));
-  if (clash) {
-    const who =
-      teacher && clash.teacherId === teacher.id ? `${teacher.fullName} is` :
-      clash.classId === classId ? "This class is" : `Room ${roomNo} is`;
-    return {
-      ok: false,
-      status: 409,
-      error: `${who} already scheduled on ${dayOfWeek} ${clash.startTime}–${clash.endTime} (${clash.subjectName}, ${clash.className}).`,
-    };
-  }
-
-  return {
-    ok: true,
-    slot: {
-      schoolId: authUser.schoolId,
-      teacherId: teacher ? teacher.id : "",
-      teacherName: teacher ? teacher.fullName : "Unassigned",
-      classId: cls.id,
-      className: `${cls.name}-${cls.section}`,
-      subjectId: subject.id,
-      subjectName: subject.name,
-      dayOfWeek,
-      periodName,
-      startTime,
-      endTime,
-      roomNo: roomNo || cls.roomNo || "",
-      topic,
-    },
-  };
+  const sameDay = TIMETABLE_DAYS.includes(dayOfWeek as TimetableDoc["dayOfWeek"])
+    ? (await getTimetableServer(authUser.schoolId, undefined, undefined, dayOfWeek)).filter((t) => t.id !== editingId)
+    : [];
+  return validateTimetableSlot(authUser.schoolId, body, { classes, subjects, teachers }, sameDay);
 }
 
 export async function POST(req: NextRequest) {
