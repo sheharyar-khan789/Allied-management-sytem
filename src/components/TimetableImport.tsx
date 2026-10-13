@@ -166,9 +166,13 @@ export default function TimetableImport({ onClose, onImported }: { onClose: () =
         const byRow: Record<string, string[]> = {};
         for (const e of json.rowErrors || []) (byRow[e.key] ||= []).push(e.message);
         setServerErrors(byRow);
-        throw new Error(json.error || "The timetable could not be saved.");
+        throw new Error(
+          `${json.error || "The timetable could not be saved."}${json.failedRows ? ` (${json.failedRows} of ${json.rows} rows need attention.)` : ""}`
+        );
       }
-      setDone(`Saved ${json.created} periods${json.replaced ? `, replacing ${json.replaced} existing periods` : ""}.`);
+      setDone(
+        `Imported ${json.rows} rows as ${json.created} periods (0 skipped, 0 failed)${json.replaced ? `, replacing ${json.replaced} existing periods` : ""}.`
+      );
       onImported();
     } catch (e: any) {
       setError(e?.message || "The timetable could not be saved.");

@@ -205,7 +205,10 @@ async function commit(authUser: AuthenticatedUser, form: FormData) {
   for (const r of clean) {
     for (const issue of rowIssues(r, ctx)) if (issue.level === "error") rowErrors.push({ key: r.key, message: issue.message });
   }
-  if (rowErrors.length > 0) return bad("Some rows still need corrections.", 422, { rowErrors });
+  const failedRows = () => new Set(rowErrors.map((e) => e.key)).size;
+  if (rowErrors.length > 0) {
+    return bad("Some rows still need corrections. Nothing was saved.", 422, { rowErrors, rows: clean.length, failedRows: failedRows(), created: 0 });
+  }
 
   // The active session's timetable, as the manual add/edit form checks against.
   const existing = await getTimetableServer(authUser.schoolId);
@@ -235,7 +238,11 @@ async function commit(authUser: AuthenticatedUser, form: FormData) {
     }
   }
   if (rowErrors.length > 0) {
-    return bad("Some periods clash with each other or with the existing timetable. Fix them or choose to replace the existing periods.", 409, { rowErrors });
+    return bad(
+      "Some periods clash with each other or with the existing timetable. Nothing was saved — fix them or choose to replace the existing periods.",
+      409,
+      { rowErrors, rows: clean.length, failedRows: failedRows(), created: 0 }
+    );
   }
 
   // The original image/PDF of an automatically read timetable is kept for reference.
@@ -272,7 +279,10 @@ async function commit(authUser: AuthenticatedUser, form: FormData) {
     "IMPORT_TIMETABLE", "TIMETABLE", importId,
     `Imported ${accepted.length} timetable periods ("${title}", ${source})${toReplace.length ? `, replacing ${toReplace.length} existing periods` : ""}.`
   );
-  return NextResponse.json({ success: true, importId, created: accepted.length, replaced: toReplace.length }, { status: 201 });
+  return NextResponse.json(
+    { success: true, importId, rows: clean.length, created: accepted.length, skipped: 0, failedRows: 0, replaced: toReplace.length },
+    { status: 201 }
+  );
 }
 
 // ---------------------------------------------------------------------------------------------

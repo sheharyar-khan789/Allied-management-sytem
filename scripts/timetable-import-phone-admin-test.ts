@@ -18,7 +18,7 @@ import {
 } from "../src/lib/firebase/server-db";
 import { ClassDoc, SubjectDoc, TeacherDoc } from "../src/lib/firebase/types";
 import { GET as importGet, POST as importPost, DELETE as importDelete } from "../src/app/api/timetable/import/route";
-import { GET as timetableGet, PUT as timetablePut, DELETE as timetableDelete } from "../src/app/api/timetable/route";
+import { GET as timetableGet, POST as timetablePost, PUT as timetablePut, DELETE as timetableDelete } from "../src/app/api/timetable/route";
 import { POST as studentsPost, GET as studentsGet } from "../src/app/api/students/route";
 import { GET as studentGet, PUT as studentPut } from "../src/app/api/students/[id]/route";
 import { GET as dashboardGet } from "../src/app/api/dashboard/route";
@@ -198,9 +198,12 @@ async function run() {
   assert(badRes.status === 422 && badJson.rowErrors?.[0]?.key === pvJson.rows[0].key, "An invalid time range is refused (422) with the row identified; nothing saved");
   assert((await getTimetableServer(A)).length === 0, "No partial import after a refused commit");
 
-  const clashRows = pvJson.rows.map((r: any, i: number) => (i === 2 ? { ...r, startTime: "07:50", endTime: "08:30" } : r));
+  // Same teacher in two overlapping periods is a genuine clash (a class running parallel periods is not).
+  const clashRows = pvJson.rows.map((r: any, i: number) => (i === 2 ? { ...r, teacherId: "tch-ti-esha", startTime: "07:50", endTime: "08:30" } : r));
   const clashRes = await commit(clashRows);
-  assert(clashRes.status === 409 && /already scheduled/.test(JSON.stringify(await json(clashRes))), "Two imported periods of the same class that overlap are reported as a clash (409)");
+  const clashJson = await json(clashRes);
+  assert(clashRes.status === 409 && /Esha Khan is already scheduled/.test(JSON.stringify(clashJson)) && clashJson.created === 0, "A teacher booked in two overlapping imported periods is reported as a clash (409), nothing saved");
+  assert((await getTimetableServer(A)).length === 0, "No partial import after a clash");
 
   const okRes = await commit(pvJson.rows);
   const okJson = await json(okRes);
@@ -236,6 +239,108 @@ async function run() {
   const delImportJson = await json(delImport);
   assert(delImport.status === 200 && delImportJson.removedPeriods === 11 && (await getTimetableServer(A)).length === 0, "Deleting an import removes exactly its periods");
   assert((await importDelete(req(ADMIN_B, `http://x/api/timetable/import?id=${okJson.importId}`, "DELETE"))).status === 404, "Another school's admin cannot see or delete this school's imports");
+
+  // ======================================================================
+  // 4b. Several periods of the SAME class in the SAME slot (different subjects / teachers)
+  // ======================================================================
+  const class5 = cls("cls-ti-5", A, "Class 5", "A", null);
+  await saveClassServer(class5);
+  const c5Subjects = [
+    subj("sb-ti-5-math", class5.id, "Mathematics", null),
+    subj("sb-ti-5-eng", class5.id, "English", null),
+    subj("sb-ti-5-sci", class5.id, "Science", null),
+    subj("sb-ti-5-urdu", class5.id, "Urdu", null),
+  ];
+  for (const sb of c5Subjects) await saveSubjectServer(sb);
+  for (const [id, name] of [["tch-ti-5a", "Teacher Alpha"], ["tch-ti-5b", "Teacher Bravo"], ["tch-ti-5c", "Teacher Charlie"], ["tch-ti-5d", "Teacher Delta"]]) {
+    await saveTeacherServer(teacher(id, name, [class5.id]));
+  }
+  const parallelCsv = [
+    "Class,Day,Start,End,Subject,Teacher,Period,Room",
+    "Class 5,Monday,09:00,09:40,Mathematics,Teacher Alpha,Period 3,R-5",
+    "Class 5,Monday,09:00,09:40,English,Teacher Bravo,Period 3,R-5",
+    "Class 5,Monday,09:00,09:40,Science,Teacher Charlie,Period 3,R-5",
+    "Class 5,Monday,09:00,09:40,Urdu,Teacher Delta,Period 3,R-5",
+  ].join(String.fromCharCode(10));
+  const pFile = () => new File([parallelCsv], "class5.csv", { type: "text/csv" });
+  const pPreview = await json(await importPost(req(ADMIN, "http://x/api/timetable/import", "POST", form({ action: "preview", file: pFile() }))));
+  assert(
+    pPreview.rows?.length === 4 && pPreview.rows.every((r: any) => r.classId === class5.id && r.subjectId && r.teacherId && r.issues.length === 0) &&
+      new Set(pPreview.rows.map((r: any) => r.subjectId)).size === 4,
+    "Preview shows all 4 rows for Class 5 Monday 09:00-09:40 (4 subjects, 4 teachers), none flagged"
+  );
+  // The exact columns from the requirement (no Period column): still 4 clean rows.
+  const plainCsv = [
+    "Class,Day,Start,End,Subject,Teacher",
+    "Class 5,Monday,09:00,09:40,Mathematics,Teacher Alpha",
+    "Class 5,Monday,09:00,09:40,English,Teacher Bravo",
+    "Class 5,Monday,09:00,09:40,Science,Teacher Charlie",
+    "Class 5,Monday,09:00,09:40,Urdu,Teacher Delta",
+  ].join(String.fromCharCode(10));
+  const plainPreview = await json(await importPost(req(ADMIN, "http://x/api/timetable/import", "POST", form({ action: "preview", file: new File([plainCsv], "plain.csv", { type: "text/csv" }) }))));
+  assert(
+    plainPreview.rows?.length === 4 && plainPreview.rows.every((r: any) => r.issues.length === 0 && r.periodName === "09:00–09:40"),
+    "A sheet without a Period column: all 4 rows clean, period labelled by its time (09:00–09:40)"
+  );
+  const before5 = (await getTimetableServer(A)).length;
+  const pCommit = await commit(pPreview.rows, { title: "Class 5 parallel" });
+  const pCommitJson = await json(pCommit);
+  assert(pCommit.status === 201 && pCommitJson.rows === 4 && pCommitJson.created === 4 && pCommitJson.skipped === 0 && pCommitJson.failedRows === 0, "All 4 parallel periods are imported (4 rows -> 4 created, 0 skipped, 0 failed)");
+  const saved5 = (await getTimetableServer(A)).filter((t) => t.classId === class5.id && t.dayOfWeek === "Monday" && t.startTime === "09:00" && t.endTime === "09:40");
+  assert(saved5.length === 4 && (await getTimetableServer(A)).length === before5 + 4, "All 4 are saved for the same class/day/time (none overwritten or merged)");
+  assert(new Set(saved5.map((t) => t.id)).size === 4, "The 4 periods have 4 distinct IDs");
+  assert(new Set(saved5.map((t) => t.subjectName)).size === 4 && new Set(saved5.map((t) => t.teacherId)).size === 4, "Each keeps its own subject and teacher");
+  const refetched = await json(await timetableGet(req(ADMIN, `http://x/api/timetable?classId=${class5.id}`)));
+  assert(refetched.timetable?.filter((t: any) => t.dayOfWeek === "Monday" && t.startTime === "09:00").length === 4, "All 4 are returned again when the timetable is reloaded");
+
+  // Genuine conflicts are still refused.
+  const dupRes = await commit([pPreview.rows[0]]);
+  const dupJson = await json(dupRes);
+  assert(dupRes.status === 409 && /duplicate/.test(JSON.stringify(dupJson)), "Re-adding the exact same period (same class, subject, teacher, time) is refused as a duplicate");
+  const busyTeacher = await commit([{ ...pPreview.rows[0], key: "x1", classId: oneB.id, subjectId: maths1b.id, teacherId: "tch-ti-5a", roomNo: "" }]);
+  assert(busyTeacher.status === 409 && /Teacher Alpha is already scheduled/.test(JSON.stringify(await json(busyTeacher))), "A teacher of one parallel period can't be booked elsewhere at the same time");
+  const roomTaken = await commit([{ ...pPreview.rows[0], key: "x2", classId: oneB.id, subjectId: comp1b.id, teacherId: "", roomNo: "R-5" }]);
+  assert(roomTaken.status === 409 && /Room R-5/.test(JSON.stringify(await json(roomTaken))), "Another class can't use the same room at the same time");
+  const atomicRows = [
+    { ...pPreview.rows[0], key: "a1", days: ["Tuesday"] },
+    { ...pPreview.rows[1], key: "a2", days: ["Tuesday"] },
+    { ...pPreview.rows[2], key: "a3", days: ["Tuesday"], teacherId: "tch-ti-5a" },
+  ];
+  const atomicRes = await commit(atomicRows);
+  assert(atomicRes.status === 409 && (await getTimetableServer(A)).filter((t) => t.classId === class5.id && t.dayOfWeek === "Tuesday").length === 0, "One clashing row fails the whole import: no Tuesday periods saved (atomic)");
+
+  // Manual add / edit / delete act on individual parallel records.
+  const fifth = await timetablePost(req(ADMIN, "http://x/api/timetable", "POST", {
+    classId: class5.id, subjectId: c5Subjects[0].id, teacherId: "tch-ti-esha", dayOfWeek: "Monday", periodName: "Period 3", startTime: "09:00", endTime: "09:40",
+  }));
+  assert(fifth.status === 201, "A 5th parallel period can be added manually (Mathematics, second group, another teacher)");
+  const target = saved5.find((t) => t.subjectName === "English")!;
+  const editParallel = await timetablePut(req(ADMIN, "http://x/api/timetable", "PUT", {
+    id: target.id, classId: class5.id, subjectId: target.subjectId, teacherId: "tch-ti-tehreem", dayOfWeek: "Monday", periodName: "Period 3", startTime: "09:00", endTime: "09:40",
+  }));
+  const afterEdit = (await getTimetableServer(A)).filter((t) => t.classId === class5.id && t.dayOfWeek === "Monday" && t.startTime === "09:00");
+  assert(
+    editParallel.status === 200 && afterEdit.length === 5 && afterEdit.find((t) => t.id === target.id)?.teacherId === "tch-ti-tehreem" &&
+      afterEdit.filter((t) => t.id !== target.id).every((t) => t.teacherId !== "tch-ti-tehreem"),
+    "Editing one parallel period changes only that record"
+  );
+  const delOne = await timetableDelete(req(ADMIN, `http://x/api/timetable?id=${encodeURIComponent(target.id)}`, "DELETE"));
+  const afterDel = (await getTimetableServer(A)).filter((t) => t.classId === class5.id && t.dayOfWeek === "Monday" && t.startTime === "09:00");
+  assert(delOne.status === 200 && afterDel.length === 4 && !afterDel.some((t) => t.id === target.id), "Deleting one parallel period removes only that record");
+  const otherClassesBefore = (await getTimetableServer(A)).filter((t) => t.classId !== class5.id).length;
+  const replace5 = await commit(pPreview.rows, { replaceExisting: "true", title: "Class 5 again" });
+  const replace5Json = await json(replace5);
+  const afterReplace = (await getTimetableServer(A)).filter((t) => t.classId === class5.id && t.dayOfWeek === "Monday");
+  assert(
+    replace5.status === 201 && replace5Json.replaced === 4 && afterReplace.length === 4 && afterReplace.every((t) => t.importId === replace5Json.importId) &&
+      (await getTimetableServer(A)).filter((t) => t.classId !== class5.id).length === otherClassesBefore,
+    "'Replace existing' replaces only Class 5 Monday's periods with the 4 imported ones; other classes untouched"
+  );
+  await importDelete(req(ADMIN, `http://x/api/timetable/import?id=${replace5Json.importId}`, "DELETE"));
+  assert(
+    (await getTimetableServer(A)).filter((t) => t.classId === class5.id).length === 0 && (await getTimetableServer(A)).filter((t) => t.classId !== class5.id).length === otherClassesBefore,
+    "Deleting the Class 5 import removes its 4 periods and nothing else"
+  );
 
   // ======================================================================
   // 5. Image fallback (no reader configured)

@@ -303,7 +303,9 @@ export function buildPreviewRows(inputs: ImportRowInput[], ctx: ImportContext): 
       classId: cls?.id || "",
       subjectId: subject?.id || "",
       teacherId: teacher?.id || "",
-      periodName: (input.periodName || "").trim().slice(0, 60),
+      // No period name in the file (e.g. a sheet with only Class/Day/Start/End/Subject/Teacher):
+      // label the period by its time, so parallel periods of a slot share one label.
+      periodName: ((input.periodName || "").trim() || (start.value && end.value ? `${start.value}–${end.value}` : "")).slice(0, 60),
       startTime: start.value,
       endTime: end.value,
       fridayStartTime: fStart.value,
@@ -386,8 +388,9 @@ export type SlotResult =
 
 /**
  * Validates one period against this school's own records. Names are always taken from the
- * referenced documents, never from the request, and the period may not overlap another period
- * of the same teacher, class or room on that day (`sameDay` = the other periods of that day).
+ * referenced documents, never from the request. It may not overlap another period of the same
+ * teacher, an identical period (duplicate), or another class's period in the same room
+ * (`sameDay` = the other periods of that day). Parallel periods of one class are allowed.
  */
 export function validateTimetableSlot(
   schoolId: string,
@@ -434,19 +437,29 @@ export function validateTimetableSlot(
     const e = toMinutes(t.endTime);
     return t.dayOfWeek === dayOfWeek && s !== null && e !== null && s < end && start < e;
   };
-  const clash =
-    (teacher && sameDay.find((t) => t.teacherId === teacher.id && overlaps(t))) ||
-    sameDay.find((t) => t.classId === classId && overlaps(t)) ||
-    (roomNo && roomNo !== "-" && sameDay.find((t) => t.roomNo === roomNo && overlaps(t)));
+  // Genuine conflicts only. A class may run several periods in the same slot (split groups,
+  // electives: e.g. Maths, English, Science and Urdu at 09:00 for Class 5), so the same class at
+  // the same time is NOT a clash by itself. What is refused:
+  //  - a teacher booked twice at overlapping times;
+  //  - the exact same period twice (same class + subject + teacher, overlapping) — a duplicate;
+  //  - a room used by two different classes at overlapping times (a class's own parallel groups
+  //    are often listed under the class's room).
+  const teacherClash = teacher ? sameDay.find((t) => t.teacherId === teacher.id && overlaps(t)) : undefined;
+  const duplicate = sameDay.find(
+    (t) => t.classId === classId && t.subjectId === subject.id && (t.teacherId || "") === (teacher?.id || "") && overlaps(t)
+  );
+  const roomClash =
+    roomNo && roomNo !== "-" ? sameDay.find((t) => t.roomNo === roomNo && t.classId !== classId && overlaps(t)) : undefined;
+  const clash = duplicate || teacherClash || roomClash;
   if (clash) {
-    const who =
-      teacher && clash.teacherId === teacher.id ? `${teacher.fullName} is` :
-      clash.classId === classId ? "This class is" : `Room ${roomNo} is`;
-    return {
-      ok: false,
-      status: 409,
-      error: `${who} already scheduled on ${dayOfWeek} ${clash.startTime}–${clash.endTime} (${clash.subjectName}, ${clash.className}).`,
-    };
+    const when = `${dayOfWeek} ${clash.startTime}–${clash.endTime}`;
+    const error =
+      clash === duplicate
+        ? `This period already exists: ${clash.subjectName} for ${clash.className} on ${when} (duplicate).`
+        : clash === teacherClash
+          ? `${teacher!.fullName} is already scheduled on ${when} (${clash.subjectName}, ${clash.className}).`
+          : `Room ${roomNo} is already scheduled on ${when} (${clash.subjectName}, ${clash.className}).`;
+    return { ok: false, status: 409, error };
   }
 
   return {
