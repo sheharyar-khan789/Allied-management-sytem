@@ -1,85 +1,138 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   saveStudentObservationServer,
   createAuditLogServer,
-  getStudentByIdServer
+  getStudentByIdServer,
+  getStudentObservationsServer,
+  getStudentObservationByIdServer,
+  getExamsServer,
 } from "@/lib/firebase/server-db";
 import { StudentObservationDoc } from "@/lib/firebase/types";
-import { assertTeacherOwnsClass } from "@/lib/academic-access";
+import { assertCanViewStudent, assertTeacherOwnsClass } from "@/lib/academic-access";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { idString, parseJsonBody } from "@/lib/input-validation";
+import {
+  CONDUCT_RATINGS,
+  OBSERVATION_CATEGORIES,
+  sortObservationsNewestFirst,
+  toObservationView,
+} from "@/lib/exam-results";
 
-const ALLOWED_SENTIMENTS: StudentObservationDoc["sentiment"][] = ["POSITIVE", "NEUTRAL", "NEEDS_IMPROVEMENT"];
+/**
+ * Student observations live in the `studentObservations` collection, one document per note
+ * (`studentObservations/{obsId}`), keyed to the student by `studentId` and to the tenant by
+ * `schoolId`. The heading is stored in `title`, the written text in `note`, the conduct rating
+ * in `sentiment`; `examId` (optional) ties a note to one exam's report card.
+ *
+ * Earlier versions merged the title into `note` ("Title: text") and the screens rendered
+ * `obs.title`/`obs.content`, fields the API never returned — so only the category badge
+ * ("CONDUCT") was ever visible. Every response now uses the shape of `toObservationView`.
+ */
+
+const writableFields = {
+  title: z.string().trim().max(200).optional(),
+  // `content` is the name the existing forms send; it is stored as `note`.
+  content: z.string().trim().min(1, "Observation text is required.").max(4000),
+  category: z.enum(OBSERVATION_CATEGORIES).optional(),
+  sentiment: z.enum(CONDUCT_RATINGS).optional(),
+  examId: z.union([idString, z.literal(""), z.null()]).optional(),
+};
+
+const createSchema = z.object({ studentId: idString, ...writableFields });
+const updateSchema = z.object({
+  id: idString,
+  ...writableFields,
+  content: writableFields.content.optional(),
+});
+
+const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
+
+async function resolveExamId(schoolId: string, examId: string | null | undefined): Promise<string | undefined | Response> {
+  if (!examId) return undefined;
+  const exams = await getExamsServer(schoolId);
+  if (!exams.some((e) => e.id === examId)) return jsonError("Selected exam not found in the active session.", 404);
+  return examId;
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
+    const studentId = new URL(req.url).searchParams.get("studentId") || "";
+    // School isolation + teacher class scoping (404 for another school's student, 403 for a
+    // class the teacher is not allocated).
+    const student = await assertCanViewStudent(authUser, studentId);
+    const [observations, exams] = await Promise.all([
+      getStudentObservationsServer(authUser.schoolId, student.id),
+      getExamsServer(authUser.schoolId),
+    ]);
+    const examNameById = new Map(exams.map((e) => [e.id, e.name]));
+    return NextResponse.json({
+      success: true,
+      student: { id: student.id, fullName: student.fullName, classId: student.classId },
+      observations: sortObservationsNewestFirst(
+        observations.map((o) => ({
+          ...toObservationView(o, examNameById),
+          // Mirrors the PUT rule: admins edit any note of their school, teachers only their own.
+          canEdit: authUser.role === "ADMIN" || o.teacherId === authUser.teacherId,
+        }))
+      ),
+      exams: exams.map((e) => ({ id: e.id, name: e.name, term: e.term })),
+    });
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/observations");
+    if (busy) return busy;
+    console.error("Observation GET error:", error);
+    return jsonError("Failed to load observations.", 500);
+  }
+}
 
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
-    const body = await req.json();
-    const { studentId, teacherId, title, category, content, sentiment } = body;
+    const parsed = await parseJsonBody(req, createSchema);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.data;
 
-    if (
-      typeof studentId !== "string" || studentId.length > 128 ||
-      typeof content !== "string" || content.length > 4000 ||
-      (title !== undefined && (typeof title !== "string" || title.length > 200)) ||
-      (category !== undefined && (typeof category !== "string" || category.length > 60))
-    ) {
-      return NextResponse.json(
-        { error: "studentId and content are required; content max 4000 and title max 200 characters." },
-        { status: 400 }
-      );
-    }
-    if (!studentId || !content) {
-      return NextResponse.json(
-        { error: "Student ID and observation content are required." },
-        { status: 400 }
-      );
-    }
-
-    // The student must genuinely belong to this school. Previously a missing/foreign student
-    // was allowed through silently (falling back to a generic "Student" label) instead of
-    // being rejected, which would attach an observation to a non-existent or cross-tenant
-    // studentId.
-    const student = await getStudentByIdServer(authUser.schoolId, studentId);
+    // The student must genuinely belong to this school.
+    const student = await getStudentByIdServer(authUser.schoolId, body.studentId);
     if (!student) {
-      return NextResponse.json({ error: "Student not found for this school." }, { status: 404 });
+      return jsonError("Student not found for this school.", 404);
     }
 
-    // A TEACHER may only write an observation for a student in one of their own
-    // assignedClassIds — verified against the student's real classId server-side, never
-    // trusting any client-supplied ownership claim.
+    // A TEACHER may only write an observation for a student of a class in their allocation —
+    // verified against the student's real classId server-side.
     await assertTeacherOwnsClass(authUser, student.classId);
 
-    // Never fabricate a teacher identity. A teacher's own account id is used automatically;
-    // an admin's own staff id is used when they log the note themselves. Previously a
-    // hardcoded "tch-101" was silently attributed to every note whose author had no
-    // teacherId, which mis-attributed admin-authored notes to an arbitrary fake teacher.
+    // Never fabricate a teacher identity: a teacher's own account id, or the admin's staff id.
     let resolvedTeacherId: string;
     if (authUser.role === "TEACHER") {
       if (!authUser.teacherId) {
-        return NextResponse.json(
-          { error: "Your account is not linked to a teacher profile." },
-          { status: 403 }
-        );
+        return jsonError("Your account is not linked to a teacher profile.", 403);
       }
       resolvedTeacherId = authUser.teacherId;
     } else {
-      resolvedTeacherId = teacherId || `staff-${authUser.uid}`;
+      resolvedTeacherId = `staff-${authUser.uid}`;
     }
 
-    const resolvedSentiment: StudentObservationDoc["sentiment"] = ALLOWED_SENTIMENTS.includes(sentiment)
-      ? sentiment
-      : "NEUTRAL";
+    const examId = await resolveExamId(authUser.schoolId, body.examId);
+    if (examId instanceof Response) return examId;
 
     const obsDoc: StudentObservationDoc = {
       id: `obs-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       schoolId: authUser.schoolId,
-      studentId,
+      studentId: student.id,
       studentName: student.fullName,
+      classId: student.classId,
       teacherId: resolvedTeacherId,
       teacherName: authUser.name || "Educator",
-      category: category || "ACADEMIC",
-      note: title ? `${title}: ${content}` : content,
-      sentiment: resolvedSentiment,
+      category: body.category || "ACADEMIC",
+      ...(body.title ? { title: body.title } : {}),
+      note: body.content,
+      sentiment: body.sentiment || "NEUTRAL",
+      ...(examId ? { examId } : {}),
       createdAt: new Date().toISOString(),
     };
 
@@ -93,15 +146,77 @@ export async function POST(req: NextRequest) {
       "ADD_OBSERVATION",
       "STUDENT_OBSERVATION",
       obsDoc.id,
-      `Added observation note for ${obsDoc.studentName}: "${title || content}".`
+      `Added observation note for ${obsDoc.studentName}: "${body.title || body.content.slice(0, 80)}".`
     );
 
-    return NextResponse.json({ success: true, observation: obsDoc }, { status: 201 });
+    const exams = await getExamsServer(authUser.schoolId);
+    return NextResponse.json(
+      { success: true, observation: toObservationView(obsDoc, new Map(exams.map((e) => [e.id, e.name]))) },
+      { status: 201 }
+    );
   } catch (error: any) {
     if (error instanceof Response) return error;
     const busy = serviceBusyResponseFor(error, "/api/observations");
     if (busy) return busy;
     console.error("Observation POST error:", error);
-    return NextResponse.json({ error: "Failed to add observation note." }, { status: 500 });
+    return jsonError("Failed to add observation note.", 500);
+  }
+}
+
+/** Edits an observation: ADMIN for any of their school; a TEACHER only for their own notes. */
+export async function PUT(req: NextRequest) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
+    const parsed = await parseJsonBody(req, updateSchema);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.data;
+
+    const existing = await getStudentObservationByIdServer(authUser.schoolId, body.id);
+    if (!existing) return jsonError("Observation not found.", 404);
+    const student = await getStudentByIdServer(authUser.schoolId, existing.studentId);
+    if (!student) return jsonError("Student not found for this school.", 404);
+    await assertTeacherOwnsClass(authUser, student.classId);
+    if (authUser.role === "TEACHER" && existing.teacherId !== authUser.teacherId) {
+      return jsonError("Forbidden: you can only edit observations you wrote.", 403);
+    }
+
+    const examId = body.examId === undefined ? existing.examId : await resolveExamId(authUser.schoolId, body.examId);
+    if (examId instanceof Response) return examId;
+
+    const updated: StudentObservationDoc = {
+      ...existing,
+      ...(body.title !== undefined ? { title: body.title } : {}),
+      ...(body.content !== undefined ? { note: body.content } : {}),
+      ...(body.category ? { category: body.category } : {}),
+      ...(body.sentiment ? { sentiment: body.sentiment } : {}),
+      examId: examId || undefined,
+      updatedAt: new Date().toISOString(),
+      updatedBy: authUser.uid,
+    };
+    if (!updated.examId) delete updated.examId;
+
+    await saveStudentObservationServer(updated);
+    await createAuditLogServer(
+      authUser.schoolId,
+      authUser.uid,
+      authUser.email,
+      authUser.role,
+      "UPDATE_OBSERVATION",
+      "STUDENT_OBSERVATION",
+      updated.id,
+      `Edited observation note for ${student.fullName}.`
+    );
+
+    const exams = await getExamsServer(authUser.schoolId);
+    return NextResponse.json({
+      success: true,
+      observation: toObservationView(updated, new Map(exams.map((e) => [e.id, e.name]))),
+    });
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/observations");
+    if (busy) return busy;
+    console.error("Observation PUT error:", error);
+    return jsonError("Failed to update observation note.", 500);
   }
 }

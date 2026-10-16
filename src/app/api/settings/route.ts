@@ -9,7 +9,7 @@ import {
   getSchoolServer
 } from "@/lib/firebase/server-db";
 import { SchoolSettingsDoc } from "@/lib/firebase/types";
-import { getDefaultAcademicYear } from "@/lib/school-display";
+import { getDefaultAcademicYear, realPrincipalName } from "@/lib/school-display";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import { DEFAULT_SCHOOL_TIMEZONE } from "@/lib/lesson-plan-schedule";
 
@@ -41,7 +41,9 @@ export async function GET(req: NextRequest) {
         address: school?.address || "",
         phone: school?.phone || "",
         email: school?.email || authUser.email,
-        principalName: school?.principalName || "Principal",
+        // Never a placeholder name: an unset head is shown as "not configured" with a link here.
+        principalName: school?.principalName || "",
+        principalTitle: "",
         academicYear: school?.academicYear || getDefaultAcademicYear(),
         timezone: DEFAULT_SCHOOL_TIMEZONE,
         gradingScale: [
@@ -82,6 +84,9 @@ export async function GET(req: NextRequest) {
       gradingSystem: settings.gradingSystemLabel || "Standard 4.0 / Percentage",
       currentSessionId: sessions[0].id,
       logoUrl: settings.logoUrl || school?.logoUrl || "",
+      // Head of institution as printed on report cards (signature block).
+      principalName: realPrincipalName(settings.principalName) || realPrincipalName(school?.principalName) || "",
+      principalTitle: settings.principalTitle || "",
     };
 
     return NextResponse.json({ success: true, settings: formatted, sessions });
@@ -110,6 +115,8 @@ const settingsSchema = z.object({
   currencySymbol: text(8),
   gradingSystem: text(80),
   logoUrl: safeUrl.optional().nullable(),
+  principalName: text(120),
+  principalTitle: text(80),
 });
 
 export async function PUT(req: NextRequest) {
@@ -155,7 +162,11 @@ export async function PUT(req: NextRequest) {
       address: body.address ?? current?.address ?? school?.address ?? "",
       phone: body.contactPhone ?? current?.phone ?? school?.phone ?? "",
       email: body.contactEmail || current?.email || authUser.email,
-      principalName: current?.principalName || school?.principalName || "Principal",
+      principalName:
+        body.principalName !== undefined
+          ? body.principalName
+          : current?.principalName ?? school?.principalName ?? "",
+      principalTitle: body.principalTitle !== undefined ? body.principalTitle : current?.principalTitle ?? "",
       academicYear: (body.academicYear && String(body.academicYear).trim())
         || current?.academicYear
         || school?.academicYear
@@ -186,7 +197,9 @@ export async function PUT(req: NextRequest) {
       authUser.schoolId,
       current?.academicYear && current.academicYear !== updated.academicYear
         ? `Switched active academic session from ${current.academicYear} to ${updated.academicYear}. Records of ${current.academicYear} are preserved and shown again when it is selected.`
-        : "Updated institution profile and system configuration in Firestore."
+        : (current?.principalName || "") !== updated.principalName || (current?.principalTitle || "") !== (updated.principalTitle || "")
+          ? "Updated institution profile, including the head of institution shown on report cards."
+          : "Updated institution profile and system configuration in Firestore."
     );
 
     return NextResponse.json({ success: true, settings: updated });

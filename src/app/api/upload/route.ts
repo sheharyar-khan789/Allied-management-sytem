@@ -6,6 +6,7 @@ import {
   sniffMimeType,
   AllowedFolder,
   MAX_DOCUMENT_SIZE_BYTES,
+  StorageUnavailableError,
 } from "@/lib/storage";
 import { securityLog } from "@/lib/security-log";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
@@ -91,8 +92,18 @@ export async function POST(req: NextRequest) {
     if (error instanceof Response) return error;
     const busy = serviceBusyResponseFor(error, "/api/upload");
     if (busy) return busy;
+    if (error instanceof StorageUnavailableError) {
+      // Not a transient failure the user can fix by retrying — surfaced distinctly so the UI
+      // (and support) can tell this apart from "try again" failures. No internal detail leaks:
+      // the Google Cloud error itself was already logged inside uploadFileToStorage.
+      securityLog("server.error", { route: "/api/upload", status: 503, reason: "storage_unavailable" });
+      return json(
+        { error: "Document storage is not set up for this school yet. Please contact your administrator; the exam cycle can still be saved without this file." },
+        503
+      );
+    }
     console.error("File upload error:", error?.message || "error");
     securityLog("server.error", { route: "/api/upload", status: 500 });
-    return json({ error: "Failed to upload file to storage." }, 500);
+    return json({ error: "Failed to upload file to storage. Please try again." }, 500);
   }
 }

@@ -3128,6 +3128,122 @@ export async function saveExamResultsBulkServer(
   return { count };
 }
 
+/** One exam schedule by its document id, only if it belongs to `schoolId`. */
+export async function getExamScheduleByIdServer(schoolId: string, scheduleId: string): Promise<ExamScheduleDoc | null> {
+  if (!scheduleId) return null;
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getExamScheduleByIdServer", () =>
+        adminDb.collection("examSchedules").doc(scheduleId).get()
+      );
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as ExamScheduleDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getExamScheduleByIdServer(${scheduleId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  const local = localStore.examSchedules.get(scheduleId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/**
+ * Writes the marks of one marks-entry save as a single unit: every upsert and every removal goes
+ * into Firestore batches, and the call throws if any batch fails, so the route only reports
+ * success once the data is really stored. (The earlier per-document loop swallowed write errors
+ * outside production, letting the page claim "saved" for marks that were never written.)
+ * Result ids are deterministic (`schoolId_examId_studentId_subjectId`), so re-saving updates
+ * the same documents instead of creating duplicates.
+ */
+export async function commitExamResultsServer(
+  schoolId: string,
+  upserts: ExamResultDoc[],
+  deleteIds: string[] = []
+): Promise<{ written: number; deleted: number }> {
+  if (upserts.some((r) => r.schoolId !== schoolId)) {
+    throw new Error("commitExamResultsServer: every result must belong to the given school.");
+  }
+  const docs: ExamResultDoc[] = [];
+  for (const result of upserts) {
+    const academicYear = await sessionForWrite(schoolId, result);
+    docs.push(cleanUndefined({ ...result, ...(academicYear ? { academicYear } : {}) }) as ExamResultDoc);
+  }
+
+  if (hasAdminCredentials) {
+    type Op = { kind: "set"; doc: ExamResultDoc } | { kind: "delete"; id: string };
+    const ops: Op[] = [
+      ...docs.map((doc) => ({ kind: "set" as const, doc })),
+      ...deleteIds.map((id) => ({ kind: "delete" as const, id })),
+    ];
+    try {
+      for (const part of chunk(ops, FIRESTORE_BATCH_LIMIT)) {
+        const batch = adminDb.batch();
+        for (const op of part) {
+          if (op.kind === "set") batch.set(adminDb.collection("examResults").doc(op.doc.id), op.doc);
+          else batch.delete(adminDb.collection("examResults").doc(op.id));
+        }
+        await withFirestoreRetry("commitExamResultsServer", () => batch.commit());
+      }
+    } catch (e) {
+      onFirestoreError(`commitExamResultsServer(${schoolId})`, e);
+      throw e;
+    }
+  }
+
+  for (const doc of docs) localStore.examResults.set(doc.id, doc);
+  for (const id of deleteIds) {
+    const existing = localStore.examResults.get(id);
+    if (existing && existing.schoolId === schoolId) localStore.examResults.delete(id);
+  }
+  invalidateCachePrefix(cacheKeys.examGradesPrefix(schoolId));
+  return { written: docs.length, deleted: deleteIds.length };
+}
+
+/** Removes one exam schedule. Callers must first make sure no marks are recorded against it. */
+export async function deleteExamScheduleServer(schoolId: string, scheduleId: string): Promise<boolean> {
+  const existing = await getExamScheduleByIdServer(schoolId, scheduleId);
+  if (!existing) return false;
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("examSchedules").doc(scheduleId).delete();
+    } catch (e) {
+      onFirestoreError(`deleteExamScheduleServer(${scheduleId})`, e);
+      throw e;
+    }
+  }
+  localStore.examSchedules.delete(scheduleId);
+  return true;
+}
+
+/**
+ * Removes an exam together with its schedules, atomically. Callers must first make sure no marks
+ * are recorded for the exam — results are never deleted as a side effect.
+ */
+export async function deleteExamServer(schoolId: string, examId: string): Promise<boolean> {
+  const exam = (await fetchExamsRaw(schoolId)).find((e) => e.id === examId);
+  if (!exam) return false;
+  const schedules = await getExamSchedulesServer(schoolId, examId);
+  if (hasAdminCredentials) {
+    try {
+      for (const part of chunk([...schedules.map((s) => s.id), null], FIRESTORE_BATCH_LIMIT)) {
+        const batch = adminDb.batch();
+        for (const id of part) {
+          batch.delete(id === null ? adminDb.collection("exams").doc(examId) : adminDb.collection("examSchedules").doc(id));
+        }
+        await batch.commit();
+      }
+    } catch (e) {
+      onFirestoreError(`deleteExamServer(${examId})`, e);
+      throw e;
+    }
+  }
+  for (const s of schedules) localStore.examSchedules.delete(s.id);
+  localStore.exams.delete(examId);
+  invalidateAcademicSessionCache(schoolId);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // OBSERVATIONS & LOCKED RECORDS
 // ---------------------------------------------------------------------------
@@ -3173,6 +3289,29 @@ export async function getStudentObservationsServer(
   return observations.filter((o) => (o.academicYear || fallback) === year);
 }
 
+/** One observation by its document id, only if it belongs to `schoolId`. */
+export async function getStudentObservationByIdServer(
+  schoolId: string,
+  obsId: string
+): Promise<StudentObservationDoc | null> {
+  if (!obsId) return null;
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getStudentObservationByIdServer", () =>
+        adminDb.collection("studentObservations").doc(obsId).get()
+      );
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as StudentObservationDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getStudentObservationByIdServer(${obsId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  const local = localStore.studentObservations.get(obsId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
 export async function saveStudentObservationServer(obs: StudentObservationDoc): Promise<string> {
   const id = obs.id || `obs-${Date.now()}`;
   const academicYear = await observationSession(obs.schoolId, obs);
@@ -3189,6 +3328,8 @@ export async function saveStudentObservationServer(obs: StudentObservationDoc): 
       await adminDb.collection("studentObservations").doc(id).set(cleanUndefined(data));
     } catch (e) {
       onFirestoreError(`saveStudentObservationServer(${id})`, e);
+      // Never let the page report a note as saved when the write failed.
+      throw e;
     }
   }
   return id;

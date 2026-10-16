@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, use } from "react";
 import Link from "next/link";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
+import { CONDUCT_RATING_LABELS, OBSERVATION_CATEGORIES, OBSERVATION_CATEGORY_LABELS } from "@/lib/exam-results";
 
 export default function StudentDossierPage({
   params,
@@ -38,6 +39,11 @@ export default function StudentDossierPage({
   const [noteTitle, setNoteTitle] = useState("");
   const [noteCategory, setNoteCategory] = useState("ACADEMIC");
   const [noteContent, setNoteContent] = useState("");
+  const [noteSentiment, setNoteSentiment] = useState("NEUTRAL");
+  const [noteExamId, setNoteExamId] = useState("");
+  // null = adding a new observation; otherwise the id of the observation being edited.
+  const [editingObsId, setEditingObsId] = useState<string | null>(null);
+  const [noteError, setNoteError] = useState("");
   const [noteLoading, setNoteLoading] = useState(false);
 
   // Edit Student modal state
@@ -197,31 +203,54 @@ export default function StudentDossierPage({
     }
   };
 
+  const openObservationModal = (obs?: any) => {
+    setNoteError("");
+    setEditingObsId(obs?.id || null);
+    setNoteTitle(obs?.title || "");
+    setNoteCategory(obs?.category || "ACADEMIC");
+    setNoteContent(obs?.note || "");
+    setNoteSentiment(obs?.sentiment || "NEUTRAL");
+    setNoteExamId(obs?.examId || "");
+    setNoteModalOpen(true);
+  };
+
   const handleAddObservation = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!noteTitle || !noteContent) return;
+    if (!noteContent.trim()) {
+      setNoteError("Please write the observation.");
+      return;
+    }
     setNoteLoading(true);
+    setNoteError("");
 
     try {
       const res = await fetch("/api/observations", {
-        method: "POST",
+        method: editingObsId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          studentId: id,
+          ...(editingObsId ? { id: editingObsId } : { studentId: id }),
           title: noteTitle,
           category: noteCategory,
           content: noteContent,
+          sentiment: noteSentiment,
+          examId: noteExamId || null,
         }),
       });
+      const json = await res.json().catch(() => ({}));
 
       if (res.ok) {
         setNoteModalOpen(false);
+        setEditingObsId(null);
         setNoteTitle("");
         setNoteContent("");
         fetchStudentDossier();
+        setActiveTab("conduct");
+      } else {
+        setNoteError(json.error || "The observation could not be saved.");
       }
     } catch (err) {
       console.error(err);
+      setNoteError("The observation could not be saved. Check your connection and try again.");
     } finally {
       setNoteLoading(false);
     }
@@ -371,7 +400,7 @@ export default function StudentDossierPage({
           </button>
           <button
             type="button"
-            onClick={() => setNoteModalOpen(true)}
+            onClick={() => openObservationModal()}
             className="px-3.5 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold flex items-center gap-1.5 transition-colors"
           >
             <span className="material-symbols-outlined text-[18px] text-secondary">edit_note</span>
@@ -713,6 +742,7 @@ export default function StudentDossierPage({
             <table className="w-full text-left border-collapse text-xs sm:text-sm">
               <thead>
                 <tr className="bg-surface-container-low text-on-surface-variant uppercase text-[11px] font-bold">
+                  <th className="py-3 px-4">Exam</th>
                   <th className="py-3 px-4">Subject</th>
                   <th className="py-3 px-4">Code</th>
                   <th className="py-3 px-4">Max Marks</th>
@@ -720,29 +750,44 @@ export default function StudentDossierPage({
                   <th className="py-3 px-4">Percentage</th>
                   <th className="py-3 px-4">Grade</th>
                   <th className="py-3 px-4">GPA</th>
+                  <th className="py-3 px-4">Result</th>
                   <th className="py-3 px-4">Remarks</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container-low">
+                {student.examResults.length === 0 && (
+                  <tr>
+                    <td colSpan={10} className="py-8 text-center text-on-surface-variant italic">
+                      No marks are recorded for this student in the active session yet. Marks entered in
+                      Exams &amp; Results appear here.
+                    </td>
+                  </tr>
+                )}
                 {student.examResults.map((r: any) => {
-                  const pct = Math.round((r.marksObtained / r.maxMarks) * 100);
                   return (
                     <tr key={r.id} className="hover:bg-surface-container-low/40">
+                      <td className="py-3 px-4 text-on-surface">
+                        {r.examSchedule?.exam?.name || "—"}
+                        {r.examStatus && r.examStatus !== "PUBLISHED" ? (
+                          <span className="block text-[10px] text-on-surface-variant">Not published</span>
+                        ) : null}
+                      </td>
                       <td className="py-3 px-4 font-bold text-on-surface">
-                        {r.examSchedule?.subject?.name || "Subject"}
+                        {r.examSchedule?.subject?.name || "—"}
                       </td>
                       <td className="py-3 px-4 font-mono text-on-surface-variant">
-                        {r.examSchedule?.subject?.code || "SUB"}
+                        {r.examSchedule?.subject?.code || "—"}
                       </td>
                       <td className="py-3 px-4">{r.maxMarks}</td>
                       <td className="py-3 px-4 font-bold text-on-surface">{r.marksObtained}</td>
-                      <td className="py-3 px-4 font-semibold">{pct}%</td>
+                      <td className="py-3 px-4 font-semibold">{r.percentage}%</td>
                       <td className="py-3 px-4">
                         <span className="px-2 py-0.5 rounded bg-surface-container font-bold text-secondary">
                           {r.grade}
                         </span>
                       </td>
                       <td className="py-3 px-4 font-bold">{typeof r.gpa === "number" ? r.gpa.toFixed(1) : "—"}</td>
+                      <td className="py-3 px-4 font-semibold">{r.status === "PASS" ? "Pass" : r.status === "FAIL" ? "Fail" : "—"}</td>
                       <td className="py-3 px-4 text-on-surface-variant text-xs">{r.remarks || "—"}</td>
                     </tr>
                   );
@@ -750,13 +795,14 @@ export default function StudentDossierPage({
               </tbody>
               <tfoot>
                 <tr className="bg-surface-container font-bold text-xs border-t-2 border-primary/20">
-                  <td className="py-3 px-4">Total Aggregate</td>
+                  <td className="py-3 px-4" colSpan={2}>Total Aggregate</td>
                   <td className="py-3 px-4">—</td>
                   <td className="py-3 px-4">{stats.academics.totalMarks}</td>
                   <td className="py-3 px-4 text-secondary">{stats.academics.obtainedMarks}</td>
                   <td className="py-3 px-4">{stats.academics.percentage}%</td>
-                  <td className="py-3 px-4">—</td>
+                  <td className="py-3 px-4">{stats.academics.grade || "—"}</td>
                   <td className="py-3 px-4">{typeof stats.academics.gpa === "number" ? stats.academics.gpa.toFixed(2) : "—"}</td>
+                  <td className="py-3 px-4">{student.examResults.length > 0 ? `${stats.academics.passed}/${student.examResults.length} passed` : ""}</td>
                   <td className="py-3 px-4"></td>
                 </tr>
               </tfoot>
@@ -773,7 +819,7 @@ export default function StudentDossierPage({
               Faculty Observations & Behavioral Conduct Logs
             </h3>
             <button
-              onClick={() => setNoteModalOpen(true)}
+              onClick={() => openObservationModal()}
               className="px-3 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-semibold flex items-center gap-1 hover:bg-secondary/90"
             >
               <span className="material-symbols-outlined text-[16px]">add</span>
@@ -781,6 +827,11 @@ export default function StudentDossierPage({
             </button>
           </div>
 
+          {student.observations.length === 0 && (
+            <div className="p-8 text-center rounded-xl bg-surface-container-lowest border border-surface-container-high/40 text-xs text-on-surface-variant">
+              No observations recorded for this student in the active session.
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {student.observations.map((obs: any) => (
               <div
@@ -797,15 +848,24 @@ export default function StudentDossierPage({
                         : "bg-tertiary-container/10 text-on-tertiary-container"
                     }`}
                   >
-                    {obs.category}
+                    {obs.categoryLabel || obs.category}
                   </span>
                   <span className="text-[10px] text-on-surface-variant">{formatDate(obs.date)}</span>
                 </div>
-                <h4 className="font-bold text-xs text-on-surface">{obs.title}</h4>
-                <p className="text-xs text-on-surface-variant leading-relaxed">{obs.content}</p>
-                <div className="pt-2 border-t border-surface-container-low text-[10px] text-on-surface-variant flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[14px] text-secondary">verified</span>
-                  <span>Recorded by {obs.teacher?.firstName} {obs.teacher?.lastName}</span>
+                {obs.title ? <h4 className="font-bold text-xs text-on-surface">{obs.title}</h4> : null}
+                <p className="text-xs text-on-surface leading-relaxed whitespace-pre-wrap">{obs.note}</p>
+                <div className="flex flex-wrap gap-2 text-[10px]">
+                  <span className="px-2 py-0.5 rounded bg-surface-container font-semibold">Conduct: {obs.conductLabel}</span>
+                  <span className="px-2 py-0.5 rounded bg-surface-container">{obs.examName ? `Exam: ${obs.examName}` : "General (all report cards)"}</span>
+                </div>
+                <div className="pt-2 border-t border-surface-container-low text-[10px] text-on-surface-variant flex items-center justify-between gap-1">
+                  <span className="flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[14px] text-secondary">verified</span>
+                    <span>Recorded by {obs.teacherName}{obs.updatedAt && obs.updatedAt !== obs.date ? ` • edited ${formatDate(obs.updatedAt)}` : ""}</span>
+                  </span>
+                  <button type="button" onClick={() => openObservationModal(obs)} className="text-secondary font-semibold hover:underline">
+                    Edit
+                  </button>
                 </div>
               </div>
             ))}
@@ -1094,7 +1154,7 @@ export default function StudentDossierPage({
             className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8"
           >
             <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
-              <h3 id="add-observation-heading" className="font-headline-md text-sm font-bold text-on-surface">Add Behavioral Observation</h3>
+              <h3 id="add-observation-heading" className="font-headline-md text-sm font-bold text-on-surface">{editingObsId ? "Edit Observation" : "Add Observation"}</h3>
               <button
                 onClick={() => setNoteModalOpen(false)}
                 className="text-on-surface-variant hover:text-on-surface"
@@ -1108,7 +1168,7 @@ export default function StudentDossierPage({
                 <label htmlFor="id-observation-title-4" className="block font-semibold text-on-surface mb-1">Observation Title</label>
                 <input id="id-observation-title-4"
                   type="text"
-                  required
+                  maxLength={200}
                   placeholder="e.g. Outstanding Science Project"
                   value={noteTitle}
                   onChange={(e) => setNoteTitle(e.target.value)}
@@ -1123,11 +1183,38 @@ export default function StudentDossierPage({
                   onChange={(e) => setNoteCategory(e.target.value)}
                   className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                 >
-                  <option value="ACADEMIC">Academic Excellence</option>
-                  <option value="LEADERSHIP">Leadership & Citizenship</option>
-                  <option value="CONDUCT">Behavior & Conduct</option>
-                  <option value="PARTICIPATION">Classroom Participation</option>
+                  {OBSERVATION_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>{OBSERVATION_CATEGORY_LABELS[c]}</option>
+                  ))}
                 </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label htmlFor="id-conduct-rating" className="block font-semibold text-on-surface mb-1">Conduct Rating</label>
+                  <select id="id-conduct-rating"
+                    value={noteSentiment}
+                    onChange={(e) => setNoteSentiment(e.target.value)}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  >
+                    {Object.entries(CONDUCT_RATING_LABELS).map(([v, l]) => (
+                      <option key={v} value={v}>{l}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="id-observation-exam" className="block font-semibold text-on-surface mb-1">Report Card</label>
+                  <select id="id-observation-exam"
+                    value={noteExamId}
+                    onChange={(e) => setNoteExamId(e.target.value)}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  >
+                    <option value="">General (every report card)</option>
+                    {(data?.student?.examOptions || []).map((ex: any) => (
+                      <option key={ex.id} value={ex.id}>{ex.name}{ex.term ? ` (${ex.term})` : ""}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div>
@@ -1137,10 +1224,13 @@ export default function StudentDossierPage({
                   rows={3}
                   placeholder="Provide detailed comments on student conduct or achievements..."
                   value={noteContent}
+                  maxLength={4000}
                   onChange={(e) => setNoteContent(e.target.value)}
                   className="w-full p-2 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                 />
               </div>
+
+              {noteError && <p className="text-error font-semibold">{noteError}</p>}
 
               <div className="flex justify-end gap-2 pt-2">
                 <button
@@ -1155,7 +1245,7 @@ export default function StudentDossierPage({
                   disabled={noteLoading}
                   className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50"
                 >
-                  {noteLoading ? "Saving..." : "Save Observation"}
+                  {noteLoading ? "Saving..." : editingObsId ? "Save Changes" : "Save Observation"}
                 </button>
               </div>
             </form>

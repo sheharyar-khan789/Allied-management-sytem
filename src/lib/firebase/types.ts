@@ -348,6 +348,7 @@ export interface ExamScheduleDoc {
   passingMarks: number;
   roomNo?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface ExamResultDoc {
@@ -382,11 +383,21 @@ export interface StudentObservationDoc {
   studentName?: string;
   teacherId: string;
   teacherName?: string;
-  category: "ACADEMIC" | "BEHAVIORAL" | "LEADERSHIP" | "ATTENDANCE" | "SPORTS";
+  category: "ACADEMIC" | "CONDUCT" | "BEHAVIORAL" | "LEADERSHIP" | "PARTICIPATION" | "ATTENDANCE" | "SPORTS";
+  /** Short heading. Records saved before this field existed have the title merged into `note`. */
+  title?: string;
+  /** The written observation text. */
   note: string;
+  /** Conduct rating. */
   sentiment: "POSITIVE" | "NEUTRAL" | "NEEDS_IMPROVEMENT";
+  /** Class of the student when the observation was written. */
+  classId?: string;
+  /** Exam this observation is for (shown on that exam's report card); absent = general. */
+  examId?: string;
   academicYear?: string;
   createdAt: string;
+  updatedAt?: string;
+  updatedBy?: string;
 }
 
 /**
@@ -504,6 +515,8 @@ export interface SchoolSettingsDoc {
   website?: string;
   logoUrl?: string;
   principalName: string;
+  /** Designation printed under the head's name on report cards, e.g. "Principal". */
+  principalTitle?: string;
   academicYear: string;
   taxRegistration?: string;
   currencySymbol?: string;

@@ -20,6 +20,13 @@ import {
 import { schoolPrintIdentity } from "@/lib/school-display";
 import { AttendanceDoc, ExamResultDoc, FeeChallanDoc, StudentObservationDoc, SubjectDoc } from "@/lib/firebase/types";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import {
+  resolveGradingScale,
+  resultSubjectName,
+  sortObservationsNewestFirst,
+  summarizeResults,
+  toObservationView,
+} from "@/lib/exam-results";
 
 /**
  * `?view=` selects what a student page needs, so each page reads only its own data:
@@ -92,13 +99,17 @@ export async function GET(req: NextRequest) {
       getExamsServer(authUser.schoolId),
       wants.observations ? getStudentObservationsServer(authUser.schoolId, resolvedStudentId) : Promise.resolve([] as StudentObservationDoc[]),
       getClassesServer(authUser.schoolId),
-      wants.subjects ? getSubjectsServer(authUser.schoolId, student.classId) : Promise.resolve([] as SubjectDoc[]),
+      // All subjects when results are shown: older results carry only subjectId, never a name.
+      wants.subjects || wants.results ? getSubjectsServer(authUser.schoolId) : Promise.resolve([] as SubjectDoc[]),
       getSchoolServer(authUser.schoolId),
       getSchoolSettingsServer(authUser.schoolId)
     ]);
     const publishedExamIds = new Set(exams.filter((e) => e.status === "PUBLISHED").map((e) => e.id));
     const examResults = examResultsRaw.filter((r) => publishedExamIds.has(r.examId));
     const examNameById = new Map(exams.map((e) => [e.id, e.name]));
+    const subjectsById = new Map(subjects.map((s) => [s.id, s]));
+    const classSubjects = subjects.filter((s) => s.classId === student.classId);
+    const gradingScale = resolveGradingScale(settings);
 
     const targetClass = classes.find((c) => c.id === student.classId);
 
@@ -116,14 +127,8 @@ export async function GET(req: NextRequest) {
     const totalOutstandingFee = Math.max(0, totalExpectedFee - totalPaidFee);
 
     // Academic statistics
-    const totalMaxMarks = examResults.reduce((s, r) => s + (r.totalMarks || 100), 0);
-    const totalObtainedMarks = examResults.reduce((s, r) => s + (r.obtainedMarks || 0), 0);
-    const examPct = totalMaxMarks > 0 ? parseFloat(((totalObtainedMarks / totalMaxMarks) * 100).toFixed(1)) : 0.0;
-    const gpaValues = examResults.filter((r) => typeof r.gpa === "number");
-    const avgGpa =
-      gpaValues.length > 0
-        ? parseFloat((gpaValues.reduce((s, r) => s + (r.gpa || 0), 0) / gpaValues.length).toFixed(2))
-        : null;
+    // Same arithmetic as the report card (src/lib/exam-results.ts).
+    const academics = summarizeResults(examResults, gradingScale);
 
     const formattedStudent = {
       id: student.id,
@@ -152,7 +157,7 @@ export async function GET(req: NextRequest) {
         name: targetClass?.name || "",
         section: targetClass?.section || "",
         classTeacher: targetClass?.classTeacherName ? { firstName: targetClass.classTeacherName, lastName: "" } : null,
-        subjects: subjects.map((sub) => ({
+        subjects: classSubjects.map((sub) => ({
           id: sub.id,
           name: sub.name,
           code: sub.code,
@@ -177,29 +182,30 @@ export async function GET(req: NextRequest) {
         status: c.status === "PAID" ? "PAID" : c.paidAmount > 0 ? "PARTIAL" : "UNPAID",
         payments: []
       })),
-      examResults: examResults.map((r) => ({
-        id: r.id,
-        marksObtained: r.obtainedMarks,
-        maxMarks: r.totalMarks,
-        percentage: r.percentage,
-        grade: r.grade,
-        gpa: r.gpa,
-        remarks: r.remarks || "",
-        examSchedule: {
-          examDate: r.createdAt ? r.createdAt.split("T")[0] : "",
-          exam: { name: examNameById.get(r.examId) || "" },
-          subject: { name: r.subjectName || "", code: "" }
-        }
-      })),
-      observations: observations.map((o) => ({
-        id: o.id,
-        title: (o as any).title || o.category,
-        content: (o as any).content || o.note,
-        notes: (o as any).content || o.note,
-        severity: (o as any).type || o.sentiment,
-        date: o.createdAt,
-        teacher: { name: o.teacherName || "Faculty" }
-      }))
+      examResults: examResults.map((r) => {
+        const subject = resultSubjectName(r, subjectsById);
+        return {
+          id: r.id,
+          examId: r.examId,
+          marksObtained: r.obtainedMarks,
+          maxMarks: r.totalMarks,
+          percentage: r.percentage,
+          grade: r.grade,
+          gpa: r.gpa,
+          status: r.status,
+          remarks: r.remarks || "",
+          examSchedule: {
+            exam: { name: examNameById.get(r.examId) || "" },
+            subject: { name: subject.name, code: subject.code }
+          }
+        };
+      }),
+      // Observations tied to an exam that isn't published yet are withheld with its results.
+      observations: sortObservationsNewestFirst(
+        observations
+          .filter((o) => !o.examId || publishedExamIds.has(o.examId))
+          .map((o) => toObservationView(o, examNameById))
+      )
     };
 
     return NextResponse.json({
@@ -220,10 +226,11 @@ export async function GET(req: NextRequest) {
           outstanding: totalOutstandingFee
         },
         academics: {
-          percentage: examPct,
-          gpa: avgGpa,
-          totalMarks: totalMaxMarks,
-          obtainedMarks: totalObtainedMarks
+          percentage: academics.percentage,
+          gpa: academics.gpa,
+          grade: academics.grade,
+          totalMarks: academics.totalMarks,
+          obtainedMarks: academics.obtainedMarks
         }
       },
       school: schoolPrintIdentity(school, settings),

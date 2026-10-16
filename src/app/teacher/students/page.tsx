@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { formatDate } from "@/lib/utils";
+import { CONDUCT_RATING_LABELS, OBSERVATION_CATEGORIES, OBSERVATION_CATEGORY_LABELS } from "@/lib/exam-results";
 
 export default function TeacherStudentsPage() {
   const [students, setStudents] = useState<any[]>([]);
@@ -15,7 +16,17 @@ export default function TeacherStudentsPage() {
   const [noteTitle, setNoteTitle] = useState("");
   const [noteCategory, setNoteCategory] = useState("ACADEMIC");
   const [noteContent, setNoteContent] = useState("");
+  const [noteSentiment, setNoteSentiment] = useState("NEUTRAL");
+  const [noteExamId, setNoteExamId] = useState("");
+  const [editingObsId, setEditingObsId] = useState<string | null>(null);
   const [savingNote, setSavingNote] = useState(false);
+  const [noteError, setNoteError] = useState("");
+  const [noteNotice, setNoteNotice] = useState("");
+  // Saved observations of the selected student (studentObservations collection, via the API).
+  const [observations, setObservations] = useState<any[]>([]);
+  const [examOptions, setExamOptions] = useState<any[]>([]);
+  const [obsLoading, setObsLoading] = useState(false);
+  const [obsError, setObsError] = useState("");
 
   useEffect(() => {
     fetch("/api/classes")
@@ -44,31 +55,91 @@ export default function TeacherStudentsPage() {
     fetchStudents();
   }, [selectedClassId]);
 
+  const resetForm = () => {
+    setEditingObsId(null);
+    setNoteTitle("");
+    setNoteCategory("ACADEMIC");
+    setNoteContent("");
+    setNoteSentiment("NEUTRAL");
+    setNoteExamId("");
+    setNoteError("");
+  };
+
+  const loadObservations = async (studentId: string) => {
+    setObsLoading(true);
+    setObsError("");
+    try {
+      const res = await fetch(`/api/observations?studentId=${encodeURIComponent(studentId)}`, { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        setObsError(json.error || "Could not load saved observations.");
+        return;
+      }
+      setObservations(json.observations || []);
+      setExamOptions(json.exams || []);
+    } catch {
+      setObsError("Could not load saved observations.");
+    } finally {
+      setObsLoading(false);
+    }
+  };
+
+  const openObservations = (st: any) => {
+    setSelectedStudent(st);
+    resetForm();
+    setNoteNotice("");
+    setObservations([]);
+    setNoteModalOpen(true);
+    loadObservations(st.id);
+  };
+
+  const startEdit = (obs: any) => {
+    setEditingObsId(obs.id);
+    setNoteTitle(obs.title || "");
+    setNoteCategory(obs.category || "ACADEMIC");
+    setNoteContent(obs.note || "");
+    setNoteSentiment(obs.sentiment || "NEUTRAL");
+    setNoteExamId(obs.examId || "");
+    setNoteError("");
+    setNoteNotice("");
+  };
+
   const handleAddNote = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedStudent || !noteTitle || !noteContent) return;
+    if (!selectedStudent) return;
+    if (!noteContent.trim()) {
+      setNoteError("Please write the observation.");
+      return;
+    }
     setSavingNote(true);
+    setNoteError("");
+    setNoteNotice("");
 
     try {
       const res = await fetch("/api/observations", {
-        method: "POST",
+        method: editingObsId ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          studentId: selectedStudent.id,
+          ...(editingObsId ? { id: editingObsId } : { studentId: selectedStudent.id }),
           title: noteTitle,
           category: noteCategory,
           content: noteContent,
+          sentiment: noteSentiment,
+          examId: noteExamId || null,
         }),
       });
+      const json = await res.json().catch(() => ({}));
 
       if (res.ok) {
-        setNoteModalOpen(false);
-        setNoteTitle("");
-        setNoteContent("");
-        alert("Observation note saved to student academic dossier.");
+        setNoteNotice(editingObsId ? "Observation updated." : "Observation saved to the student's record.");
+        resetForm();
+        await loadObservations(selectedStudent.id);
+      } else {
+        setNoteError(json.error || "The observation could not be saved.");
       }
     } catch (err) {
       console.error(err);
+      setNoteError("The observation could not be saved. Check your connection and try again.");
     } finally {
       setSavingNote(false);
     }
@@ -167,14 +238,11 @@ export default function TeacherStudentsPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setSelectedStudent(st);
-                    setNoteModalOpen(true);
-                  }}
+                  onClick={() => openObservations(st)}
                   className="w-full py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-secondary text-xs font-semibold flex items-center justify-center gap-1 transition-colors"
                 >
                   <span className="material-symbols-outlined text-[16px]">edit_note</span>
-                  <span>Add Quick Observation</span>
+                  <span>Observations</span>
                 </button>
               </div>
             </div>
@@ -189,11 +257,11 @@ export default function TeacherStudentsPage() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="observation-heading"
-            className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8"
+            className="bg-surface-container-lowest rounded-xl max-w-lg w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8"
           >
             <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
               <h3 id="observation-heading" className="font-headline-md text-sm font-bold text-on-surface">
-                Observation for {selectedStudent?.fullName}
+                Observations — {selectedStudent?.fullName}
               </h3>
               <button
                 onClick={() => setNoteModalOpen(false)}
@@ -203,12 +271,48 @@ export default function TeacherStudentsPage() {
               </button>
             </div>
 
-            <form onSubmit={handleAddNote} className="space-y-3 text-xs">
+            <div className="space-y-2 text-xs">
+              <h4 className="font-bold text-on-surface">Saved observations</h4>
+              {obsLoading ? (
+                <p className="text-on-surface-variant">Loading saved observations...</p>
+              ) : obsError ? (
+                <p className="text-error font-semibold">{obsError}</p>
+              ) : observations.length === 0 ? (
+                <p className="text-on-surface-variant italic">No observations recorded for this student in the active session.</p>
+              ) : (
+                <ul className="space-y-2 max-h-56 overflow-y-auto">
+                  {observations.map((o) => (
+                    <li key={o.id} className="p-2.5 rounded-lg bg-surface-container-low/60 border border-surface-container-high/40">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-on-surface">{o.title || o.categoryLabel}</span>
+                        <span className="text-[10px] text-on-surface-variant">{formatDate(o.date)}</span>
+                      </div>
+                      <p className="mt-1 whitespace-pre-wrap text-on-surface">{o.note}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-on-surface-variant">
+                        <span>{o.categoryLabel}</span>
+                        <span>• Conduct: {o.conductLabel}</span>
+                        <span>• {o.examName ? `Exam: ${o.examName}` : "General"}</span>
+                        <span>• {o.teacherName}</span>
+                        {o.canEdit && (
+                          <button type="button" onClick={() => startEdit(o)} className="ml-auto text-secondary font-semibold hover:underline">
+                            Edit
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <form onSubmit={handleAddNote} className="space-y-3 text-xs border-t border-surface-container-low pt-3">
+              <h4 className="font-bold text-on-surface">{editingObsId ? "Edit observation" : "Add an observation"}</h4>
+              {noteNotice && <p className="text-on-tertiary-container font-semibold">{noteNotice}</p>}
               <div>
-                <label htmlFor="students-title-key-highlight-1" className="block font-semibold text-on-surface mb-1">Title / Key Highlight</label>
+                <label htmlFor="students-title-key-highlight-1" className="block font-semibold text-on-surface mb-1">Title / Key Highlight (optional)</label>
                 <input id="students-title-key-highlight-1"
                   type="text"
-                  required
+                  maxLength={200}
                   placeholder="e.g. Rapid Problem Solving in Geometry"
                   value={noteTitle}
                   onChange={(e) => setNoteTitle(e.target.value)}
@@ -223,11 +327,38 @@ export default function TeacherStudentsPage() {
                   onChange={(e) => setNoteCategory(e.target.value)}
                   className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                 >
-                  <option value="ACADEMIC">Academic Excellence</option>
-                  <option value="LEADERSHIP">Leadership & Citizenship</option>
-                  <option value="CONDUCT">Behavior & Conduct</option>
-                  <option value="PARTICIPATION">Classroom Participation</option>
+                  {OBSERVATION_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>{OBSERVATION_CATEGORY_LABELS[c]}</option>
+                  ))}
                 </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label htmlFor="students-conduct-rating" className="block font-semibold text-on-surface mb-1">Conduct Rating</label>
+                  <select id="students-conduct-rating"
+                    value={noteSentiment}
+                    onChange={(e) => setNoteSentiment(e.target.value)}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  >
+                    {Object.entries(CONDUCT_RATING_LABELS).map(([v, l]) => (
+                      <option key={v} value={v}>{l}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="students-observation-exam" className="block font-semibold text-on-surface mb-1">Report Card</label>
+                  <select id="students-observation-exam"
+                    value={noteExamId}
+                    onChange={(e) => setNoteExamId(e.target.value)}
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  >
+                    <option value="">General (every report card)</option>
+                    {examOptions.map((ex) => (
+                      <option key={ex.id} value={ex.id}>{ex.name}{ex.term ? ` (${ex.term})` : ""}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div>
@@ -237,25 +368,28 @@ export default function TeacherStudentsPage() {
                   rows={3}
                   placeholder="Enter observation notes for student dossier..."
                   value={noteContent}
+                  maxLength={4000}
                   onChange={(e) => setNoteContent(e.target.value)}
                   className="w-full p-2 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                 />
               </div>
 
+              {noteError && <p className="text-error font-semibold">{noteError}</p>}
+
               <div className="flex justify-end gap-2 pt-2 border-t border-surface-container-low">
                 <button
                   type="button"
-                  onClick={() => setNoteModalOpen(false)}
+                  onClick={() => (editingObsId ? resetForm() : setNoteModalOpen(false))}
                   className="px-3 py-1.5 rounded bg-surface-container text-on-surface font-semibold"
                 >
-                  Cancel
+                  {editingObsId ? "Cancel edit" : "Close"}
                 </button>
                 <button
                   type="submit"
                   disabled={savingNote}
                   className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50"
                 >
-                  {savingNote ? "Saving..." : "Save to Dossier"}
+                  {savingNote ? "Saving..." : editingObsId ? "Save Changes" : "Save to Dossier"}
                 </button>
               </div>
             </form>

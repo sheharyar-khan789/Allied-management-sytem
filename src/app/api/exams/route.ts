@@ -4,21 +4,28 @@ import {
   getExamsServer,
   saveExamServer,
   getExamSchedulesServer,
+  getExamScheduleByIdServer,
   saveExamScheduleServer,
   getExamResultsServer,
-  saveExamResultsBulkServer,
+  commitExamResultsServer,
+  deleteExamServer,
+  deleteExamScheduleServer,
   createAuditLogServer,
   getClassesServer,
   getSubjectsServer,
   getStudentsServer,
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
-import { ExamDoc, ExamResultDoc, ExamScheduleDoc, SchoolSettingsDoc } from "@/lib/firebase/types";
+import { ExamDoc, ExamResultDoc, ExamScheduleDoc } from "@/lib/firebase/types";
 import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic-access";
 import { validateDateString } from "@/lib/date-utils";
 import { z } from "zod";
 import { idString, parseJsonBody, safeUrl } from "@/lib/input-validation";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { computeSubjectResult, resolveGradingScale, validateObtainedMarks } from "@/lib/exam-results";
+import { deleteFileFromStorage, storagePathFromDownloadUrl } from "@/lib/storage";
+
+const EXAM_STATUSES = ["UPCOMING", "ONGOING", "COMPLETED", "PUBLISHED"] as const;
 
 const examUpdateSchema = z.union([
   // Exam cycle metadata (ADMIN only).
@@ -26,17 +33,21 @@ const examUpdateSchema = z.union([
     examId: idString,
     examScheduleId: z.undefined().optional(),
     title: z.string().trim().min(1).max(160).optional(),
-    status: z.enum(["UPCOMING", "ONGOING", "COMPLETED", "PUBLISHED"]).optional(),
+    term: z.string().trim().max(80).optional(),
+    startDate: z.string().trim().max(10).optional(),
+    endDate: z.string().trim().max(10).optional(),
+    status: z.enum(EXAM_STATUSES).optional(),
     resultSheetUrl: safeUrl.optional().nullable(),
   }),
   // Marks entry for one schedule (ADMIN, or the TEACHER allocated that subject).
+  // marksObtained null = "no mark recorded": an existing mark is removed, none is created.
   z.object({
     examScheduleId: idString,
     studentMarks: z
       .array(
         z.object({
           studentId: idString,
-          marksObtained: z.coerce.number().finite().min(0).max(100_000),
+          marksObtained: z.number().finite().nullable(),
           remarks: z.string().trim().max(500).optional(),
           cardUrl: safeUrl.optional(),
         })
@@ -45,28 +56,21 @@ const examUpdateSchema = z.union([
   }),
 ]);
 
-// Grade/GPA are derived from the school's own configured grading scale (Settings), falling
-// back to a sane default scale for schools that have not customized one yet. This replaces a
-// previous hardcoded binary A/B split that ignored the school's real configuration entirely.
-const DEFAULT_GRADING_SCALE: SchoolSettingsDoc["gradingScale"] = [
-  { minPercentage: 90, grade: "A+", gpa: 4.0 },
-  { minPercentage: 80, grade: "A", gpa: 3.7 },
-  { minPercentage: 70, grade: "B+", gpa: 3.3 },
-  { minPercentage: 60, grade: "B", gpa: 3.0 },
-  { minPercentage: 50, grade: "C", gpa: 2.5 },
-  { minPercentage: 40, grade: "D", gpa: 2.0 },
-  { minPercentage: 0, grade: "F", gpa: 0.0 },
-];
-
-function gradeFor(percentage: number, scale: SchoolSettingsDoc["gradingScale"]) {
-  const sorted = [...scale].sort((a, b) => b.minPercentage - a.minPercentage);
-  const match = sorted.find((s) => percentage >= s.minPercentage) || sorted[sorted.length - 1];
-  return match ? { grade: match.grade, gpa: match.gpa } : { grade: "F", gpa: 0 };
-}
-
 function splitName(fullName: string) {
   const parts = (fullName || "").trim().split(/\s+/);
   return { firstName: parts[0] || "", lastName: parts.slice(1).join(" ") || "" };
+}
+
+const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
+
+/** Deterministic id of one student's result in one subject of one exam (one doc, never duplicated). */
+const resultIdFor = (schoolId: string, examId: string, studentId: string, subjectId: string) =>
+  `${schoolId}_${examId}_${studentId}_${subjectId}`;
+
+/** Results recorded against a schedule: by scheduleId, or (older records) by exam+class+subject. */
+async function resultsForSchedule(schoolId: string, schedule: ExamScheduleDoc): Promise<ExamResultDoc[]> {
+  const results = await getExamResultsServer(schoolId, schedule.examId, schedule.classId, undefined, { allSessions: true });
+  return results.filter((r) => r.scheduleId === schedule.id || r.subjectId === schedule.subjectId);
 }
 
 export async function GET(req: NextRequest) {
@@ -92,33 +96,31 @@ export async function GET(req: NextRequest) {
       getExamsServer(authUser.schoolId),
       getSchoolSettingsServer(authUser.schoolId),
     ]);
-    const gradingScale = settings?.gradingScale?.length ? settings.gradingScale : DEFAULT_GRADING_SCALE;
+    const gradingScale = resolveGradingScale(settings);
 
     const activeExam = examId ? exams.find((e) => e.id === examId) : exams[0];
+    if (examId && !activeExam) return jsonError("Exam not found for this school.", 404);
 
     const realSchedules = activeExam
       ? await getExamSchedulesServer(authUser.schoolId, activeExam.id)
       : [];
 
-    const visibleSchedules = allocation
+    const visibleSchedules = (allocation
       ? realSchedules.filter((s) => allocation.subjectIds.has(s.subjectId) && allocation.classIds.has(s.classId))
-      : realSchedules;
+      : realSchedules
+    ).sort((a, b) => (a.examDate || "").localeCompare(b.examDate || "") || (a.startTime || "").localeCompare(b.startTime || ""));
 
     const [classes, subjects] = await Promise.all([
       getClassesServer(authUser.schoolId),
       getSubjectsServer(authUser.schoolId),
     ]);
 
-    // Build the real roster + existing marks for each schedule, matching the exact shape the
-    // admin and teacher gradebook pages expect (student.firstName/lastName/rollNumber/
-    // admissionNumber, maxMarks, grade, gpa).
-    // A class's roster and marks are read once and shared by all of its subject schedules (they
-    // used to be read again for every schedule: ~8x the reads for an 8-subject class).
+    // A class's roster and marks are read once and shared by all of its subject schedules.
     const classData = new Map<string, ReturnType<typeof loadClassData>>();
     const loadClassData = (classId: string) =>
       Promise.all([
         getStudentsServer(authUser.schoolId, classId, undefined, undefined, "ACTIVE"),
-        getExamResultsServer(authUser.schoolId, activeExam!.id, classId),
+        getExamResultsServer(authUser.schoolId, activeExam!.id, classId, undefined, { allSessions: true }),
       ]);
     const classDataFor = (classId: string) => {
       let p = classData.get(classId);
@@ -138,70 +140,77 @@ export async function GET(req: NextRequest) {
           examDate: sched.examDate,
           startTime: sched.startTime,
           endTime: sched.endTime,
+          roomNo: sched.roomNo || "",
           maxMarks: sched.totalMarks,
           passingMarks: sched.passingMarks,
           classId: sched.classId,
           subjectId: sched.subjectId,
           class: cls ? { id: cls.id, name: cls.name, section: cls.section } : null,
-          subject: subject ? { id: subject.id, name: subject.name, code: subject.code } : null,
+          subject: subject
+            ? { id: subject.id, name: subject.name, code: subject.code }
+            : { id: sched.subjectId, name: sched.subjectName || "Subject removed", code: "" },
         };
         if (oneRoster && sched.id !== rosterScheduleId) return { ...header, results: null };
 
         const [classStudents, existingResults] = await classDataFor(sched.classId);
         const resultsByStudent = new Map(
-          existingResults.filter((r) => r.scheduleId === sched.id).map((r) => [r.studentId, r])
+          existingResults
+            .filter((r) => r.scheduleId === sched.id || r.subjectId === sched.subjectId)
+            .map((r) => [r.studentId, r])
         );
 
-        const results = classStudents.map((st) => {
-          const existing = resultsByStudent.get(st.id);
-          const { firstName, lastName } = splitName(st.fullName);
-          return {
-            studentId: st.id,
-            student: {
-              firstName,
-              lastName,
-              rollNumber: st.rollNo,
-              admissionNumber: st.admissionNo,
-            },
-            marksObtained: existing?.obtainedMarks ?? 0,
-            maxMarks: sched.totalMarks,
-            grade: existing?.grade ?? gradeFor(0, gradingScale).grade,
-            gpa: existing?.gpa ?? gradeFor(0, gradingScale).gpa,
-            remarks: existing?.remarks ?? "",
-            cardUrl: existing?.cardUrl || undefined,
-          };
-        });
+        const results = classStudents
+          .slice()
+          .sort((a, b) => String(a.rollNo).localeCompare(String(b.rollNo), undefined, { numeric: true }))
+          .map((st) => {
+            const existing = resultsByStudent.get(st.id);
+            const { firstName, lastName } = splitName(st.fullName);
+            return {
+              studentId: st.id,
+              student: {
+                firstName,
+                lastName,
+                fullName: st.fullName,
+                rollNumber: st.rollNo,
+                admissionNumber: st.admissionNo,
+              },
+              // A student with no saved mark is "not recorded" (null), never a silent 0.
+              recorded: Boolean(existing),
+              marksObtained: existing ? existing.obtainedMarks : null,
+              maxMarks: sched.totalMarks,
+              percentage: existing ? existing.percentage : null,
+              grade: existing?.grade ?? null,
+              gpa: typeof existing?.gpa === "number" ? existing.gpa : null,
+              status: existing?.status ?? null,
+              remarks: existing?.remarks ?? "",
+              cardUrl: existing?.cardUrl || undefined,
+              updatedAt: existing?.updatedAt || null,
+            };
+          });
 
         return { ...header, results };
       })
     );
 
-    const mappedExams = exams.map((e) => ({
+    const formatExam = (e: ExamDoc) => ({
       id: e.id,
       title: e.name,
       term: e.term,
+      session: e.session,
       startDate: e.startDate,
       endDate: e.endDate,
       status: e.status,
       resultSheetUrl: e.resultSheetUrl || undefined,
-      schedulesCount: e.id === activeExam?.id ? schedulesFormatted.length : undefined,
-    }));
-
-    const activeExamFormatted = activeExam ? {
-      id: activeExam.id,
-      title: activeExam.name,
-      term: activeExam.term,
-      startDate: activeExam.startDate,
-      endDate: activeExam.endDate,
-      status: activeExam.status,
-      resultSheetUrl: activeExam.resultSheetUrl || undefined,
-      schedules: schedulesFormatted,
-    } : null;
+    });
 
     return NextResponse.json({
       success: true,
-      exams: mappedExams,
-      activeExam: activeExamFormatted,
+      exams: exams.map((e) => ({
+        ...formatExam(e),
+        schedulesCount: e.id === activeExam?.id ? schedulesFormatted.length : undefined,
+      })),
+      activeExam: activeExam ? { ...formatExam(activeExam), schedules: schedulesFormatted } : null,
+      gradingScale,
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
@@ -215,49 +224,62 @@ export async function GET(req: NextRequest) {
   }
 }
 
+/** Validated max/passing marks of a schedule; an error string when they are invalid. */
+function resolveScheduleMarks(totalMarks: unknown, passingMarks: unknown): { total: number; passing: number } | string {
+  const total = totalMarks === undefined || totalMarks === "" ? 100 : Number(totalMarks);
+  const passing = passingMarks === undefined || passingMarks === "" ? 33 : Number(passingMarks);
+  if (!Number.isFinite(total) || total <= 0 || total > 100_000) return "Maximum marks must be a positive number.";
+  if (!Number.isFinite(passing) || passing < 0) return "Passing marks must be zero or more.";
+  if (passing > total) return "Passing marks cannot be greater than maximum marks.";
+  return { total, passing };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const body = await req.json();
     const { title, term, startDate, endDate, schedules, resultSheetUrl } = body;
 
-    if (!title || !startDate || !endDate) {
-      return NextResponse.json(
-        { error: "Title, start date, and end date are required." },
-        { status: 400 }
-      );
+    if (!title || typeof title !== "string" || !title.trim() || !startDate || !endDate) {
+      return jsonError("Title, start date, and end date are required.", 400);
+    }
+    if (title.length > 160 || (term !== undefined && (typeof term !== "string" || term.length > 80))) {
+      return jsonError("Title max 160 and term max 80 characters.", 400);
+    }
+    if (resultSheetUrl && !safeUrl.safeParse(resultSheetUrl).success) {
+      return jsonError("resultSheetUrl must be an https:// URL.", 400);
     }
     // Strict calendar validation: `new Date()` silently rolls 2026-02-31 over to March 3rd.
     const examStart = validateDateString(startDate);
     const examEnd = validateDateString(endDate);
     if (!examStart || !examEnd) {
-      return NextResponse.json({ error: "startDate/endDate must be valid dates." }, { status: 400 });
+      return jsonError("startDate/endDate must be valid dates.", 400);
     }
     if (examEnd < examStart) {
-      return NextResponse.json({ error: "endDate cannot be before startDate." }, { status: 400 });
+      return jsonError("endDate cannot be before startDate.", 400);
     }
 
     const settings = await getSchoolSettingsServer(authUser.schoolId);
     const uniqueSuffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const examId = `exam-${uniqueSuffix}`;
+    const now = new Date().toISOString();
     const examDoc: ExamDoc = {
       id: examId,
       schoolId: authUser.schoolId,
-      name: title,
-      term: term || "Mid-Term",
+      name: title.trim(),
+      term: (term && term.trim()) || "Mid-Term",
       session: settings?.academicYear || new Date().getFullYear().toString(),
       startDate: examStart,
       endDate: examEnd,
       status: "UPCOMING",
       resultSheetUrl: resultSheetUrl ? String(resultSheetUrl) : undefined,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     };
 
     await saveExamServer(examDoc);
 
-    // Optionally create real exam schedules (subject/class/date/time/marks) at the same time,
-    // rather than the previous approach of fabricating a schedule grid on every read.
+    // Optionally create real exam schedules (subject/class/date/time/marks) at the same time.
     let createdSchedules = 0;
     if (Array.isArray(schedules) && schedules.length > 0) {
       const [classes, subjects] = await Promise.all([
@@ -268,22 +290,25 @@ export async function POST(req: NextRequest) {
         if (!s?.classId || !s?.subjectId || !s?.examDate || !s?.startTime || !s?.endTime) continue;
         const scheduleDate = validateDateString(s.examDate);
         if (!scheduleDate) continue;
+        const marks = resolveScheduleMarks(s.totalMarks, s.passingMarks);
+        if (typeof marks === "string") continue;
         const classOk = classes.some((c) => c.id === s.classId);
-        const subjectOk = subjects.some((sub) => sub.id === s.subjectId && sub.classId === s.classId);
-        if (!classOk || !subjectOk) continue; // never trust client-supplied class/subject ownership blindly
+        const subject = subjects.find((sub) => sub.id === s.subjectId && sub.classId === s.classId);
+        if (!classOk || !subject) continue; // never trust client-supplied class/subject ownership blindly
         const scheduleDoc: ExamScheduleDoc = {
           id: `sch-${examId}-${s.classId}-${s.subjectId}`,
           schoolId: authUser.schoolId,
           examId,
           classId: s.classId,
           subjectId: s.subjectId,
+          subjectName: subject.name,
           examDate: scheduleDate,
           startTime: s.startTime,
           endTime: s.endTime,
-          totalMarks: Number(s.totalMarks) > 0 ? Number(s.totalMarks) : 100,
-          passingMarks: Number(s.passingMarks) >= 0 ? Number(s.passingMarks) : 33,
+          totalMarks: marks.total,
+          passingMarks: marks.passing,
           roomNo: s.roomNo || undefined,
-          createdAt: new Date().toISOString(),
+          createdAt: now,
         };
         await saveExamScheduleServer(scheduleDoc);
         createdSchedules += 1;
@@ -298,7 +323,7 @@ export async function POST(req: NextRequest) {
       "CREATE_EXAM",
       "EXAM",
       examId,
-      `Created examination cycle "${title}" with ${createdSchedules} subject schedule(s).`
+      `Created examination cycle "${examDoc.name}" with ${createdSchedules} subject schedule(s).`
     );
 
     return NextResponse.json({ success: true, exam: examDoc, schedulesCreated: createdSchedules }, { status: 201 });
@@ -311,6 +336,12 @@ export async function POST(req: NextRequest) {
   }
 }
 
+/**
+ * Adds a subject schedule to an exam, or updates it (one schedule per exam+class+subject; the id
+ * is deterministic). When marks are already recorded and the maximum/passing marks change, the
+ * derived percentage/grade/pass-fail of those results are recomputed from their unchanged
+ * obtained marks — and a new maximum below an already-recorded mark is refused.
+ */
 export async function PATCH(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
@@ -318,56 +349,75 @@ export async function PATCH(req: NextRequest) {
     const { examId, classId, subjectId, examDate, startTime, endTime, totalMarks, passingMarks, roomNo } = body;
 
     if (!examId || !classId || !subjectId || !examDate || !startTime || !endTime) {
-      return NextResponse.json(
-        { error: "examId, classId, subjectId, examDate, startTime, and endTime are required." },
-        { status: 400 }
-      );
+      return jsonError("examId, classId, subjectId, examDate, startTime, and endTime are required.", 400);
     }
     const cleanExamDate = validateDateString(examDate);
     if (!cleanExamDate) {
-      return NextResponse.json({ error: "examDate is not a valid date." }, { status: 400 });
+      return jsonError("examDate is not a valid date.", 400);
     }
     if (endTime <= startTime) {
-      return NextResponse.json({ error: "endTime must be after startTime." }, { status: 400 });
+      return jsonError("endTime must be after startTime.", 400);
     }
-    const resolvedTotalMarks = Number(totalMarks) > 0 ? Number(totalMarks) : 100;
-    const resolvedPassingMarks = Number(passingMarks) >= 0 ? Number(passingMarks) : 33;
-    if (resolvedPassingMarks > resolvedTotalMarks) {
-      return NextResponse.json(
-        { error: "passingMarks cannot be greater than totalMarks." },
-        { status: 400 }
-      );
-    }
+    const marks = resolveScheduleMarks(totalMarks, passingMarks);
+    if (typeof marks === "string") return jsonError(marks, 400);
 
-    const [exams, classes, subjects] = await Promise.all([
+    const [exams, classes, subjects, settings] = await Promise.all([
       getExamsServer(authUser.schoolId),
       getClassesServer(authUser.schoolId),
       getSubjectsServer(authUser.schoolId),
+      getSchoolSettingsServer(authUser.schoolId),
     ]);
-    const examOk = exams.some((e) => e.id === examId);
-    if (!examOk) {
-      return NextResponse.json({ error: "Exam not found for this school." }, { status: 404 });
+    if (!exams.some((e) => e.id === examId)) {
+      return jsonError("Exam not found for this school.", 404);
     }
     const classOk = classes.some((c) => c.id === classId);
-    const subjectOk = subjects.some((s) => s.id === subjectId && s.classId === classId);
-    if (!classOk || !subjectOk) {
-      return NextResponse.json({ error: "Class or subject not found for this school." }, { status: 404 });
+    const subject = subjects.find((s) => s.id === subjectId && s.classId === classId);
+    if (!classOk || !subject) {
+      return jsonError("Class or subject not found for this school.", 404);
     }
 
+    const scheduleId = `sch-${examId}-${classId}-${subjectId}`;
+    const previous = await getExamScheduleByIdServer(authUser.schoolId, scheduleId);
+    const now = new Date().toISOString();
     const scheduleDoc: ExamScheduleDoc = {
-      id: `sch-${examId}-${classId}-${subjectId}`,
+      id: scheduleId,
       schoolId: authUser.schoolId,
       examId,
       classId,
       subjectId,
+      subjectName: subject.name,
       examDate: cleanExamDate,
       startTime,
       endTime,
-      totalMarks: resolvedTotalMarks,
-      passingMarks: resolvedPassingMarks,
+      totalMarks: marks.total,
+      passingMarks: marks.passing,
       roomNo: roomNo || undefined,
-      createdAt: new Date().toISOString(),
+      createdAt: previous?.createdAt || now,
+      ...(previous ? { updatedAt: now } : {}),
     };
+
+    let recomputed = 0;
+    if (previous && (previous.totalMarks !== marks.total || previous.passingMarks !== marks.passing)) {
+      const existing = await resultsForSchedule(authUser.schoolId, previous);
+      const tooHigh = existing.find((r) => r.obtainedMarks > marks.total);
+      if (tooHigh) {
+        return jsonError(
+          `Maximum marks cannot be lowered to ${marks.total}: ${tooHigh.studentName || "a student"} already has ${tooHigh.obtainedMarks} recorded. Correct that mark first.`,
+          409
+        );
+      }
+      const scale = resolveGradingScale(settings);
+      const updated = existing.map((r) => ({
+        ...r,
+        totalMarks: marks.total,
+        ...computeSubjectResult(r.obtainedMarks, marks.total, marks.passing, scale),
+        updatedAt: now,
+      }));
+      if (updated.length > 0) {
+        await commitExamResultsServer(authUser.schoolId, updated);
+        recomputed = updated.length;
+      }
+    }
     await saveExamScheduleServer(scheduleDoc);
 
     await createAuditLogServer(
@@ -375,19 +425,24 @@ export async function PATCH(req: NextRequest) {
       authUser.uid,
       authUser.email,
       authUser.role,
-      "CREATE_EXAM_SCHEDULE",
+      previous ? "UPDATE_EXAM_SCHEDULE" : "CREATE_EXAM_SCHEDULE",
       "EXAM_SCHEDULE",
       scheduleDoc.id,
-      `Added subject schedule to exam ${examId} for class ${classId}.`
+      previous
+        ? `Updated ${subject.name} schedule of exam ${examId} (max ${marks.total}, passing ${marks.passing}); ${recomputed} recorded result(s) re-graded.`
+        : `Added ${subject.name} schedule to exam ${examId} for class ${classId}.`
     );
 
-    return NextResponse.json({ success: true, schedule: scheduleDoc }, { status: 201 });
+    return NextResponse.json(
+      { success: true, schedule: scheduleDoc, updated: Boolean(previous), resultsRecomputed: recomputed },
+      { status: previous ? 200 : 201 }
+    );
   } catch (error: any) {
     if (error instanceof Response) return error;
     const busy = serviceBusyResponseFor(error, "/api/exams");
     if (busy) return busy;
     console.error("Exam schedule PATCH error:", error);
-    return NextResponse.json({ error: "Failed to add exam schedule." }, { status: 500 });
+    return NextResponse.json({ error: "Failed to save exam schedule." }, { status: 500 });
   }
 }
 
@@ -399,113 +454,149 @@ export async function PUT(req: NextRequest) {
     if (!parsed.ok) return parsed.response;
     const body = parsed.data as any;
 
-    // Support updating exam metadata (such as result sheet URL or status) by ADMIN
+    // Exam cycle details (title, term, dates, status, result sheet) — ADMIN only.
     if (body.examId && !body.examScheduleId) {
       if (authUser.role !== "ADMIN") {
-        return NextResponse.json({ error: "Only administrators can update exam cycle details." }, { status: 403 });
+        return jsonError("Only administrators can update exam cycle details.", 403);
       }
       const exams = await getExamsServer(authUser.schoolId);
       const targetExam = exams.find((e) => e.id === body.examId);
       if (!targetExam) {
-        return NextResponse.json({ error: "Exam not found." }, { status: 404 });
+        return jsonError("Exam not found.", 404);
       }
+      const updated: ExamDoc = { ...targetExam };
       if (body.resultSheetUrl !== undefined) {
-        targetExam.resultSheetUrl = body.resultSheetUrl ? String(body.resultSheetUrl) : undefined;
+        updated.resultSheetUrl = body.resultSheetUrl ? String(body.resultSheetUrl) : undefined;
+        // Being replaced or cleared: delete the file it used to point to so it doesn't become
+        // an orphan in Storage (same convention as timetable image re-imports). Best-effort —
+        // a delete failure here must never block saving the exam's new state.
+        if (targetExam.resultSheetUrl && targetExam.resultSheetUrl !== updated.resultSheetUrl) {
+          const oldPath = storagePathFromDownloadUrl(targetExam.resultSheetUrl, authUser.schoolId);
+          if (oldPath) await deleteFileFromStorage(oldPath, authUser.schoolId);
+        }
       }
-      if (body.title) targetExam.name = String(body.title);
-      if (body.status) targetExam.status = body.status;
-      await saveExamServer(targetExam);
-      return NextResponse.json({ success: true, exam: targetExam });
-    }
-
-    const { examScheduleId, studentMarks } = body;
-
-    if (!examScheduleId || !Array.isArray(studentMarks)) {
-      return NextResponse.json(
-        { error: "examScheduleId and studentMarks array are required." },
-        { status: 400 }
+      if (body.title) updated.name = String(body.title);
+      if (body.term !== undefined && body.term) updated.term = String(body.term);
+      if (body.startDate !== undefined) {
+        const d = validateDateString(body.startDate);
+        if (!d) return jsonError("startDate must be a valid date.", 400);
+        updated.startDate = d;
+      }
+      if (body.endDate !== undefined) {
+        const d = validateDateString(body.endDate);
+        if (!d) return jsonError("endDate must be a valid date.", 400);
+        updated.endDate = d;
+      }
+      if (updated.endDate < updated.startDate) return jsonError("endDate cannot be before startDate.", 400);
+      if (body.status) updated.status = body.status;
+      await saveExamServer(updated);
+      await createAuditLogServer(
+        authUser.schoolId,
+        authUser.uid,
+        authUser.email,
+        authUser.role,
+        "UPDATE_EXAM",
+        "EXAM",
+        updated.id,
+        targetExam.status !== updated.status
+          ? `Exam "${updated.name}" status changed from ${targetExam.status} to ${updated.status}.`
+          : `Updated details of exam "${updated.name}".`
       );
+      return NextResponse.json({ success: true, exam: updated });
     }
+
+    const { examScheduleId, studentMarks } = body as {
+      examScheduleId: string;
+      studentMarks: { studentId: string; marksObtained: number | null; remarks?: string; cardUrl?: string }[];
+    };
 
     // The schedule (and therefore its real examId/classId/subjectId/totalMarks) is looked up
-    // server-side and verified to belong to this school. Previously these were hardcoded
-    // literals ("exam-midterm-2024", "cls-10a", "sub-101", totalMarks 100), which silently
-    // corrupted every recorded result regardless of which exam/class/subject was actually
-    // being graded.
-    const exams = await getExamsServer(authUser.schoolId);
-    let schedule: ExamScheduleDoc | undefined;
-    for (const exam of exams) {
-      const scheds = await getExamSchedulesServer(authUser.schoolId, exam.id);
-      const found = scheds.find((s) => s.id === examScheduleId);
-      if (found) {
-        schedule = found;
-        break;
-      }
-    }
-    if (!schedule) {
-      return NextResponse.json({ error: "Exam schedule not found for this school." }, { status: 404 });
+    // server-side by id and verified to belong to this school and to an exam of the active session.
+    const schedule = await getExamScheduleByIdServer(authUser.schoolId, examScheduleId);
+    const exam = schedule ? (await getExamsServer(authUser.schoolId)).find((e) => e.id === schedule.examId) : undefined;
+    if (!schedule || !exam) {
+      return jsonError("Exam schedule not found for this school.", 404);
     }
 
-    // A TEACHER may only submit marks for a schedule whose class is in their own
-    // assignedClassIds — resolved server-side, never trusting a client-supplied class/teacher.
+    // A TEACHER may only submit marks for a class in their allocation...
     await assertTeacherOwnsClass(authUser, schedule.classId);
     // ...and only for a subject allocated to them, not any subject of that class.
     if (authUser.role === "TEACHER") {
       const allocation = await requireTeacherAllocation(authUser);
       if (!allocation.subjectIds.has(schedule.subjectId)) {
-        return NextResponse.json(
-          { error: "Forbidden: this subject is not allocated to you." },
-          { status: 403 }
-        );
+        return jsonError("Forbidden: this subject is not allocated to you.", 403);
       }
     }
 
     // Verify every graded student actually belongs to this school and to the schedule's class.
     const classStudents = await getStudentsServer(authUser.schoolId, schedule.classId);
-    const validStudentIds = new Set(classStudents.map((s) => s.id));
-    const invalid = studentMarks.find((sm: any) => !validStudentIds.has(sm.studentId));
-    if (invalid) {
-      return NextResponse.json(
-        { error: "One or more students do not belong to this exam schedule's class." },
-        { status: 403 }
-      );
+    const studentsById = new Map(classStudents.map((s) => [s.id, s]));
+    const seen = new Set<string>();
+    for (const sm of studentMarks) {
+      if (!studentsById.has(sm.studentId)) {
+        return jsonError("One or more students do not belong to this exam schedule's class.", 403);
+      }
+      if (seen.has(sm.studentId)) return jsonError("A student appears more than once in this submission.", 400);
+      seen.add(sm.studentId);
     }
 
-    const settings = await getSchoolSettingsServer(authUser.schoolId);
-    const gradingScale = settings?.gradingScale?.length ? settings.gradingScale : DEFAULT_GRADING_SCALE;
-    const totalMarks = schedule.totalMarks || 100;
-    const studentsById = new Map(classStudents.map((s) => [s.id, s]));
+    // Marks above the configured maximum (or negative) are rejected, not silently clamped.
+    const totalMarks = schedule.totalMarks;
+    for (const sm of studentMarks) {
+      if (sm.marksObtained === null) continue;
+      const problem = validateObtainedMarks(sm.marksObtained, totalMarks);
+      if (problem) {
+        const name = studentsById.get(sm.studentId)?.fullName || sm.studentId;
+        return jsonError(`${name}: ${problem}`, 400);
+      }
+    }
 
-    const examResults: ExamResultDoc[] = studentMarks.map((sm: any) => {
-      const obtained = Math.max(0, Math.min(totalMarks, Number(sm.marksObtained) || 0));
-      const percentage = Math.round((obtained / totalMarks) * 100);
-      const { grade, gpa } = gradeFor(percentage, gradingScale);
-      const student = studentsById.get(sm.studentId);
-      return {
-        id: `${authUser.schoolId}_${schedule!.examId}_${sm.studentId}_${schedule!.subjectId}`,
+    const [settings, subjects, existingResults] = await Promise.all([
+      getSchoolSettingsServer(authUser.schoolId),
+      getSubjectsServer(authUser.schoolId),
+      resultsForSchedule(authUser.schoolId, schedule),
+    ]);
+    const gradingScale = resolveGradingScale(settings);
+    const subjectName = subjects.find((s) => s.id === schedule.subjectId)?.name || schedule.subjectName;
+    const existingById = new Map(existingResults.map((r) => [r.id, r]));
+    const now = new Date().toISOString();
+
+    const upserts: ExamResultDoc[] = [];
+    const deleteIds: string[] = [];
+    for (const sm of studentMarks) {
+      const id = resultIdFor(authUser.schoolId, schedule.examId, sm.studentId, schedule.subjectId);
+      const existing = existingById.get(id);
+      if (sm.marksObtained === null) {
+        if (existing) deleteIds.push(id);
+        continue;
+      }
+      const student = studentsById.get(sm.studentId)!;
+      upserts.push({
+        id,
         schoolId: authUser.schoolId,
-        examId: schedule!.examId,
+        examId: schedule.examId,
         studentId: sm.studentId,
-        studentName: student?.fullName,
-        rollNo: student?.rollNo,
-        classId: schedule!.classId,
-        subjectId: schedule!.subjectId,
-        scheduleId: examScheduleId,
-        obtainedMarks: obtained,
+        studentName: student.fullName,
+        rollNo: student.rollNo,
+        classId: schedule.classId,
+        subjectId: schedule.subjectId,
+        subjectName,
+        scheduleId: schedule.id,
+        obtainedMarks: sm.marksObtained,
         totalMarks,
-        percentage,
-        grade,
-        gpa,
-        status: percentage >= (schedule!.passingMarks / totalMarks) * 100 ? "PASS" : "FAIL",
-        remarks: sm.remarks || "",
-        cardUrl: sm.cardUrl ? String(sm.cardUrl) : undefined,
+        ...computeSubjectResult(sm.marksObtained, totalMarks, schedule.passingMarks, gradingScale),
+        // Remarks/card are only changed when sent: a client that doesn't send them (the teacher
+        // grid used not to) no longer wipes what was saved before.
+        remarks: sm.remarks !== undefined ? sm.remarks : existing?.remarks || "",
+        cardUrl: sm.cardUrl !== undefined ? sm.cardUrl || undefined : existing?.cardUrl,
         evaluatedBy: authUser.uid,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-    });
+        academicYear: existing?.academicYear || exam.session || undefined,
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+      });
+    }
 
-    await saveExamResultsBulkServer(examResults);
+    const { written, deleted } = await commitExamResultsServer(authUser.schoolId, upserts, deleteIds);
 
     await createAuditLogServer(
       authUser.schoolId,
@@ -515,18 +606,76 @@ export async function PUT(req: NextRequest) {
       "ENTER_EXAM_MARKS",
       "EXAM_RESULT",
       examScheduleId,
-      `Recorded marks for schedule ${examScheduleId} (${studentMarks.length} students).`
+      `Recorded marks for ${subjectName || schedule.subjectId} in "${exam.name}" (${written} saved, ${deleted} cleared).`
     );
 
     return NextResponse.json({
       success: true,
-      message: "Grades saved and calculated successfully in Firestore.",
+      saved: written,
+      cleared: deleted,
+      message: `Saved ${written} mark(s)${deleted ? ` and cleared ${deleted}` : ""} for ${subjectName || "this subject"}.`,
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
     const busy = serviceBusyResponseFor(error, "/api/exams");
     if (busy) return busy;
     console.error("Marks entry error:", error);
-    return NextResponse.json({ error: "Failed to record exam marks." }, { status: 500 });
+    return NextResponse.json({ error: "Failed to record exam marks. Nothing was saved." }, { status: 500 });
+  }
+}
+
+/**
+ * ?examId= removes an exam with its schedules; ?scheduleId= removes one subject schedule.
+ * Both are refused while any marks are recorded for it, so a delete never destroys results.
+ */
+export async function DELETE(req: NextRequest) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN"]);
+    const { searchParams } = new URL(req.url);
+    const examId = searchParams.get("examId");
+    const scheduleId = searchParams.get("scheduleId");
+
+    if (scheduleId) {
+      const schedule = await getExamScheduleByIdServer(authUser.schoolId, scheduleId);
+      if (!schedule) return jsonError("Exam schedule not found for this school.", 404);
+      const recorded = await resultsForSchedule(authUser.schoolId, schedule);
+      if (recorded.length > 0) {
+        return jsonError(`This subject already has ${recorded.length} recorded mark(s); clear them before removing it.`, 409);
+      }
+      await deleteExamScheduleServer(authUser.schoolId, scheduleId);
+      await createAuditLogServer(
+        authUser.schoolId, authUser.uid, authUser.email, authUser.role,
+        "DELETE_EXAM_SCHEDULE", "EXAM_SCHEDULE", scheduleId,
+        `Removed ${schedule.subjectName || schedule.subjectId} schedule from exam ${schedule.examId}.`
+      );
+      return NextResponse.json({ success: true });
+    }
+
+    if (examId) {
+      const exam = (await getExamsServer(authUser.schoolId, { allSessions: true })).find((e) => e.id === examId);
+      if (!exam) return jsonError("Exam not found for this school.", 404);
+      const recorded = await getExamResultsServer(authUser.schoolId, examId, undefined, undefined, { allSessions: true });
+      if (recorded.length > 0) {
+        return jsonError(`"${exam.name}" already has ${recorded.length} recorded mark(s) and cannot be deleted.`, 409);
+      }
+      await deleteExamServer(authUser.schoolId, examId);
+      if (exam.resultSheetUrl) {
+        const oldPath = storagePathFromDownloadUrl(exam.resultSheetUrl, authUser.schoolId);
+        if (oldPath) await deleteFileFromStorage(oldPath, authUser.schoolId);
+      }
+      await createAuditLogServer(
+        authUser.schoolId, authUser.uid, authUser.email, authUser.role,
+        "DELETE_EXAM", "EXAM", examId, `Deleted exam "${exam.name}" (no marks were recorded).`
+      );
+      return NextResponse.json({ success: true });
+    }
+
+    return jsonError("examId or scheduleId is required.", 400);
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/exams");
+    if (busy) return busy;
+    console.error("Exam DELETE error:", error);
+    return NextResponse.json({ error: "Failed to delete." }, { status: 500 });
   }
 }

@@ -29,7 +29,7 @@ import { evaluateSessionAgainstProfile } from "../src/lib/firebase/server-auth";
 import { getJwtSecretKey, signSessionToken, verifySessionToken } from "../src/lib/session-token";
 import { isCrossSiteStateChange } from "../src/lib/request-security";
 import { checkPasswordPolicy } from "../src/lib/password-reset";
-import { sniffMimeType } from "../src/lib/storage";
+import { sniffMimeType, isBucketNotFoundError, storagePathFromDownloadUrl, MAX_DOCUMENT_SIZE_BYTES } from "../src/lib/storage";
 import { neutralizeSpreadsheetFormula } from "../src/lib/spreadsheet-parser";
 import { currentStep, generateTotpSecret, totpAt, verifyTotp } from "../src/lib/totp";
 import { getUserByEmailServer, updateUserServer } from "../src/lib/firebase/server-db";
@@ -691,6 +691,60 @@ async function runSecurityTests() {
       up2.status === 201 && upJson.storagePath.startsWith("schools/allied-school-main/profile-photos/") && !upJson.storagePath.includes("..") && upJson.storagePath.endsWith(".png"),
       "30d. Upload: stored under the caller's school path with a safe generated name (no traversal, server-chosen extension)"
     );
+
+    // Regression coverage for the "Failed to upload file to storage" exam-document bug: a real
+    // PDF to the exam documents folder, an oversized document, an unauthorized caller, and the
+    // pure helpers the root-cause fix (StorageUnavailableError / storagePathFromDownloadUrl) added.
+    const pdf = Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(2048, 0x20)]);
+    const fdPdf = new FormData();
+    fdPdf.append("folder", "result-cards");
+    fdPdf.append("file", new Blob([pdf], { type: "application/pdf" }), "date-sheet.pdf");
+    const upPdf = await uploadPost(new NextRequest("http://localhost:3000/api/upload", { method: "POST", headers: { cookie: `allied_session=${adminA}`, ...nextIp() }, body: fdPdf }));
+    const upPdfJson = await upPdf.json();
+    assert(upPdf.status === 201 && upPdfJson.storagePath.endsWith(".pdf") && upPdfJson.storagePath.startsWith("schools/allied-school-main/result-cards/"), "30e. Upload: a real PDF to the exam result-cards folder succeeds");
+
+    const big = Buffer.alloc(MAX_DOCUMENT_SIZE_BYTES + 1024, 0x20);
+    const fdBig = new FormData();
+    fdBig.append("folder", "result-cards");
+    fdBig.append("file", new Blob([Buffer.concat([Buffer.from("%PDF-1.4\n"), big])], { type: "application/pdf" }), "huge.pdf");
+    const upBig = await uploadPost(new NextRequest("http://localhost:3000/api/upload", { method: "POST", headers: { cookie: `allied_session=${adminA}`, ...nextIp() }, body: fdBig }));
+    assert(upBig.status === 413, "30f. Upload: a document over the 10MB limit is rejected (413), not a generic storage failure");
+
+    const fdZip = new FormData();
+    fdZip.append("folder", "result-cards");
+    fdZip.append("file", new Blob([Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0])], { type: "application/pdf" }), "archive.pdf");
+    const upZip = await uploadPost(new NextRequest("http://localhost:3000/api/upload", { method: "POST", headers: { cookie: `allied_session=${adminA}`, ...nextIp() }, body: fdZip }));
+    assert(upZip.status === 400, "30g. Upload: a .zip disguised as a PDF (unrecognised bytes) is rejected (400)");
+
+    const fdNoAuth = new FormData();
+    fdNoAuth.append("folder", "result-cards");
+    fdNoAuth.append("file", new Blob([pdf], { type: "application/pdf" }), "date-sheet.pdf");
+    const upNoAuth = await uploadPost(new NextRequest("http://localhost:3000/api/upload", { method: "POST", headers: { ...nextIp() }, body: fdNoAuth }));
+    assert(upNoAuth.status === 401, "30h. Upload: an unauthenticated request is rejected (401)");
+
+    const fdStudent = new FormData();
+    fdStudent.append("folder", "result-cards");
+    fdStudent.append("file", new Blob([pdf], { type: "application/pdf" }), "date-sheet.pdf");
+    const upStudent = await uploadPost(new NextRequest("http://localhost:3000/api/upload", { method: "POST", headers: { cookie: `allied_session=${otherStudent}`, ...nextIp() }, body: fdStudent }));
+    assert(upStudent.status === 403, "30i. Upload: a STUDENT session cannot upload exam/school documents (403)");
+
+    // isBucketNotFoundError: the detector the upload-failure root-cause fix relies on to tell
+    // "Cloud Storage was never enabled for this project" (not retryable) apart from any other
+    // Storage failure (retryable) — see src/lib/storage.ts.
+    assert(isBucketNotFoundError({ code: 404 }), "30j. isBucketNotFoundError: GCS numeric error code 404 recognised");
+    assert(isBucketNotFoundError({ response: { status: 404 } }), "30k. isBucketNotFoundError: gaxios-shaped 404 recognised");
+    assert(isBucketNotFoundError({ message: "The specified bucket does not exist." }), "30l. isBucketNotFoundError: message-based fallback recognised");
+    assert(!isBucketNotFoundError({ code: 403, message: "Permission denied" }), "30m. isBucketNotFoundError: a permission error is NOT misreported as a missing bucket");
+    assert(!isBucketNotFoundError(null) && !isBucketNotFoundError(undefined), "30n. isBucketNotFoundError: no error object is false, never throws");
+
+    // storagePathFromDownloadUrl: recovers the storage path from our own download URL so an
+    // exam's previous result sheet can be cleaned up on replace/delete without a schema change.
+    const realUrl = "https://firebasestorage.googleapis.com/v0/b/demo.firebasestorage.app/o/schools%2Fallied-school-main%2Fresult-cards%2Fsheet-123.pdf?alt=media&token=abc";
+    assert(storagePathFromDownloadUrl(realUrl, "allied-school-main") === "schools/allied-school-main/result-cards/sheet-123.pdf", "30o. storagePathFromDownloadUrl: recovers the real path for the owning school");
+    assert(storagePathFromDownloadUrl(realUrl, "school-b-campus") === null, "30p. storagePathFromDownloadUrl: refuses a path belonging to a different school");
+    assert(storagePathFromDownloadUrl("data:application/pdf;base64,JVBERi0=", "allied-school-main") === null, "30q. storagePathFromDownloadUrl: a dev-fallback data URI is never treated as a deletable path");
+    assert(storagePathFromDownloadUrl("https://evil.example/v0/b/x/o/schools%2Fallied-school-main%2Fa.pdf?alt=media", "allied-school-main") === null, "30r. storagePathFromDownloadUrl: a foreign host is rejected");
+    assert(storagePathFromDownloadUrl(undefined, "allied-school-main") === null && storagePathFromDownloadUrl("", "allied-school-main") === null, "30s. storagePathFromDownloadUrl: empty/undefined input is null, never throws");
   }
 
   // 31. CSRF: cross-site state-changing requests rejected (route-level and middleware)

@@ -17,6 +17,8 @@ export default function SettingsPage() {
     currencySymbol: "Rs.",
     gradingSystem: "Standard 4.0 / Percentage",
     logoUrl: "",
+    principalName: "",
+    principalTitle: "",
   });
   const [sessions, setSessions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,6 +66,8 @@ export default function SettingsPage() {
             timezone: json.settings.timezone ?? prev.timezone,
             currencySymbol: json.settings.currencySymbol ?? prev.currencySymbol,
             gradingSystem: json.settings.gradingSystemLabel ?? prev.gradingSystem,
+            principalName: json.settings.principalName ?? prev.principalName,
+            principalTitle: json.settings.principalTitle ?? prev.principalTitle,
           }));
         }
         setSaveSuccess(true);
@@ -269,6 +273,46 @@ export default function SettingsPage() {
               </select>
             </div>
           </div>
+        </div>
+
+        {/* Section: Head of Institution (report cards) */}
+        <div id="report-card" className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-surface-container-low">
+            <span className="material-symbols-outlined text-secondary text-[20px]">workspace_premium</span>
+            <h2 className="font-headline-md text-sm font-bold text-on-surface">Report Card &amp; Head of Institution</h2>
+          </div>
+          {!settings.principalName && (
+            <p className="text-[11px] font-semibold text-error">
+              No head of institution is configured — report cards show &quot;School information not configured&quot; in the signature block until you add one.
+            </p>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            <div>
+              <label htmlFor="settings-principal-name" className="block font-semibold text-on-surface mb-1">Head / Principal Name</label>
+              <input id="settings-principal-name"
+                type="text"
+                name="principalName"
+                maxLength={120}
+                value={settings.principalName || ""}
+                onChange={handleChange}
+                placeholder="Full name as it should appear on report cards"
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40"
+              />
+            </div>
+            <div>
+              <label htmlFor="settings-principal-title" className="block font-semibold text-on-surface mb-1">Designation</label>
+              <input id="settings-principal-title"
+                type="text"
+                name="principalTitle"
+                maxLength={80}
+                value={settings.principalTitle || ""}
+                onChange={handleChange}
+                placeholder="e.g. Principal, Headmistress (default: Principal / Head)"
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40"
+              />
+            </div>
+          </div>
+          <p className="text-[10px] text-on-surface-variant">Printed in the signature block of every report card of this school.</p>
         </div>
 
         {/* Section 3: System Status */}
