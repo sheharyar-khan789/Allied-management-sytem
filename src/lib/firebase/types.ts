@@ -389,6 +389,81 @@ export interface StudentObservationDoc {
   createdAt: string;
 }
 
+/**
+ * ASD Weekly & Daily Lesson Plan (see src/lib/lesson-plan-schedule.ts for the Saturday
+ * submission-window/lock rules this record is governed by).
+ *
+ * One document per teacher + class + subject + school week (`weekId`, the Monday the week
+ * starts). The document id is deterministic (`lessonPlanDocId` in lesson-plan-schedule.ts) so a
+ * second create for the same key upserts the same record instead of creating a duplicate.
+ *
+ * Mirrors the supplied "ASD Daily Lesson Plan" template: a Class/Subject/Teacher header plus one
+ * free-text cell per calendar date. The template's month-long grid is this collection's records
+ * for that teacher/class/subject regrouped by week; `days` holds one entry per teaching day
+ * (Monday-Saturday) of this record's week.
+ */
+export interface LessonPlanDayEntry {
+  /** YYYY-MM-DD, within [weekStartDate, weekEndDate]. */
+  date: string;
+  dayOfWeek: "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday";
+  /** The lesson content for that date — the template's blank cell. */
+  content: string;
+  /** Teacher-marked: no class held this date (holiday, assessment day, etc.). */
+  isNonTeachingDay?: boolean;
+}
+
+export interface LessonPlanAdminCorrection {
+  at: string;
+  by: string;
+  byName?: string;
+  reason: string;
+  /** The `days` content as it was immediately before this correction, so nothing is silently lost. */
+  previousDays: LessonPlanDayEntry[];
+}
+
+export interface LessonPlanDoc {
+  /** `lessonPlanDocId(schoolId, teacherId, classId, subjectId, weekId)` — deterministic, see above. */
+  id: string;
+  schoolId: string;
+  academicYear: string;
+  teacherId: string;
+  teacherName?: string;
+  classId: string;
+  className?: string;
+  subjectId: string;
+  subjectName?: string;
+  /** Monday of this record's school week, YYYY-MM-DD. Also this record's natural sort key. */
+  weekId: string;
+  weekStartDate: string;
+  /** Sunday of this record's school week, YYYY-MM-DD. */
+  weekEndDate: string;
+  days: LessonPlanDayEntry[];
+  /**
+   * Whether the teacher has finalized this record. Whether it is still editable (and the
+   * teacher-facing status of DRAFT/SUBMITTED/LATE/LOCKED) is derived at read time from this flag
+   * plus `submissionDeadline` — see lessonPlanStatus() in lesson-plan-schedule.ts — not stored,
+   * so a change to the school's timezone setting never retroactively rewrites past records.
+   */
+  submitted: boolean;
+  submittedAt?: string | null;
+  /**
+   * The Saturday-window close time (ISO) in effect when this record was first created, i.e. the
+   * instant it becomes locked to the teacher. Stamped once and kept, so it survives later
+   * timezone-setting changes.
+   */
+  submissionDeadline: string;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy?: string;
+  /** Soft delete: the record is kept (audit trail) but excluded from normal reads. */
+  deletedAt?: string | null;
+  deletedBy?: string;
+  /** Admin corrections made after the teacher lock, oldest first. Never erases prior content. */
+  adminCorrections?: LessonPlanAdminCorrection[];
+}
+
 export interface LockedRecordDoc {
   id: string;
   schoolId: string;
@@ -438,6 +513,13 @@ export interface SchoolSettingsDoc {
     grade: string;
     gpa: number;
   }[];
+  /**
+   * IANA timezone (e.g. "Asia/Karachi") the school's clock-based rules run on — currently the
+   * weekly lesson-plan Saturday submission window/lock (see lesson-plan-schedule.ts). Explicitly
+   * configured rather than inferred from the server, so a deployment in another region never
+   * silently shifts the deadline. Defaults to Asia/Karachi (see DEFAULT_SCHOOL_TIMEZONE) when unset.
+   */
+  timezone?: string;
   updatedAt: string;
 }
 

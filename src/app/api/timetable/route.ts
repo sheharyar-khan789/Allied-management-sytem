@@ -103,8 +103,8 @@ export async function GET(req: NextRequest) {
 /**
  * Validates an admin-submitted slot against this school's own records (shared with the timetable
  * import, see src/lib/timetable-import.ts). Names are always taken from the referenced
- * documents, never from the request, and the slot may not clash with another slot of the same
- * teacher, class or room on that day.
+ * documents, never from the request. Teacher double-booking, duplicate periods and room clashes
+ * between classes are refused; parallel periods of one class are allowed.
  */
 async function buildSlot(authUser: AuthenticatedUser, body: any, editingId?: string): Promise<SlotResult> {
   const dayOfWeek = String(body?.dayOfWeek || "").trim();
