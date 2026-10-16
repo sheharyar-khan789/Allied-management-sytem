@@ -101,6 +101,34 @@ export async function assertTeacherOwnsClass(
 }
 
 /**
+ * Authorization gate for the ASD weekly lesson plan (class + subject, not just class). A TEACHER
+ * may act only on a subject allocated to them (SubjectDoc.teacherId) within that same class — the
+ * canonical subject->teacher->class link, resolved from the caller's own records exactly like
+ * attendance's assertTeacherCanAccessAttendance, so a teacher can never read or write another
+ * teacher's lesson plan by guessing its classId/subjectId. ADMIN passes through.
+ */
+export async function assertTeacherCanAccessLessonPlan(
+  authUser: AuthenticatedUser,
+  classId: string,
+  subjectId: string
+): Promise<{ allocation: TeacherAllocation | null; subject: SubjectDoc }> {
+  const subject = await getSubjectByIdServer(authUser.schoolId, subjectId);
+  if (!subject || subject.schoolId !== authUser.schoolId || subject.classId !== classId) {
+    throw new Response(JSON.stringify({ error: "Subject not found for this class." }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (authUser.role !== "TEACHER") return { allocation: null, subject };
+
+  const allocation = await requireTeacherAllocation(authUser);
+  if (!allocation.subjectIds.has(subjectId)) {
+    forbidden("Forbidden: this subject is not allocated to you.");
+  }
+  return { allocation, subject };
+}
+
+/**
  * Attendance is a class-incharge responsibility. A TEACHER may access a class's attendance only
  * when `ClassDoc.classTeacherId` (the canonical class-incharge link, resolved here from the
  * caller's own teacher record) names them. Teaching a subject in the class, or an admin-granted

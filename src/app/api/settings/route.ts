@@ -11,6 +11,17 @@ import {
 import { SchoolSettingsDoc } from "@/lib/firebase/types";
 import { getDefaultAcademicYear } from "@/lib/school-display";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { DEFAULT_SCHOOL_TIMEZONE } from "@/lib/lesson-plan-schedule";
+
+/** A conservative allowlist check: must parse as a real IANA zone (Intl throws on a bad one). */
+function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -32,6 +43,7 @@ export async function GET(req: NextRequest) {
         email: school?.email || authUser.email,
         principalName: school?.principalName || "Principal",
         academicYear: school?.academicYear || getDefaultAcademicYear(),
+        timezone: DEFAULT_SCHOOL_TIMEZONE,
         gradingScale: [
           { minPercentage: 90, grade: "A+", gpa: 4.0 },
           { minPercentage: 80, grade: "A", gpa: 3.7 },
@@ -63,6 +75,9 @@ export async function GET(req: NextRequest) {
       contactPhone: settings.phone || school?.phone || "",
       address: settings.address || school?.address || "",
       academicYear: settings.academicYear || getDefaultAcademicYear(),
+      // Explicitly configured (never inferred from the server) — drives the ASD weekly
+      // lesson-plan Saturday submission window/lock. See lesson-plan-schedule.ts.
+      timezone: settings.timezone || DEFAULT_SCHOOL_TIMEZONE,
       currencySymbol: settings.currencySymbol || "Rs.",
       gradingSystem: settings.gradingSystemLabel || "Standard 4.0 / Percentage",
       currentSessionId: sessions[0].id,
@@ -91,6 +106,7 @@ const settingsSchema = z.object({
   contactPhone: text(40),
   address: text(300),
   academicYear: text(9),
+  timezone: text(60),
   currencySymbol: text(8),
   gradingSystem: text(80),
   logoUrl: safeUrl.optional().nullable(),
@@ -120,6 +136,12 @@ export async function PUT(req: NextRequest) {
         );
       }
     }
+    if (body.timezone !== undefined && String(body.timezone).trim().length > 0 && !isValidTimeZone(String(body.timezone).trim())) {
+      return NextResponse.json(
+        { error: "Timezone must be a valid IANA timezone name, e.g. Asia/Karachi." },
+        { status: 400 }
+      );
+    }
 
     const current = await getSchoolSettingsServer(authUser.schoolId);
     const school = await getSchoolServer(authUser.schoolId);
@@ -138,6 +160,9 @@ export async function PUT(req: NextRequest) {
         || current?.academicYear
         || school?.academicYear
         || getDefaultAcademicYear(),
+      timezone: (body.timezone && String(body.timezone).trim())
+        || current?.timezone
+        || DEFAULT_SCHOOL_TIMEZONE,
       currencySymbol: (body.currencySymbol && String(body.currencySymbol).trim())
         || current?.currencySymbol
         || "Rs.",

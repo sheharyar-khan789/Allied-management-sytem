@@ -41,6 +41,7 @@ export default function AdminSidebar({
     { label: "Teachers", href: "/admin/teachers", icon: "person_apron", badge: totalTeachers },
     { label: "Classes & Subjects", href: "/admin/classes", icon: "menu_book" },
     { label: "Timetable", href: "/admin/timetable", icon: "calendar_month" },
+    { label: "Lesson Plans", href: "/admin/lesson-plans", icon: "edit_calendar" },
     { label: "Attendance", href: "/admin/attendance", icon: "event_available" },
     { label: "Fees & Payments", href: "/admin/fees", icon: "payments" },
     { label: "Payroll", href: "/admin/payroll", icon: "account_balance_wallet" },

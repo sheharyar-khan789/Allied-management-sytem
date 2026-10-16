@@ -260,6 +260,19 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------
+    // Lesson Plans Collection (ASD Weekly & Daily Lesson Plan)
+    // -------------------------------------------------------------
+    match /lessonPlans/{planId} {
+      // A teacher reads only the plans they authored; an admin reads any of their school's.
+      // All writes (create, draft edits, submit, delete, admin correction) go through
+      // /api/lesson-plans, which enforces teacher/subject allocation and the Saturday
+      // submission-window lock server-side (src/lib/lesson-plan-schedule.ts).
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId
+        && (isAdmin() || (isTeacher() && callerTeacherId() != '' && resource.data.teacherId == callerTeacherId()));
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
     // Locked Records Collection
     // -------------------------------------------------------------
     match /lockedRecords/{recordId} {

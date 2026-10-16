@@ -38,6 +38,7 @@ import {
   ExamScheduleDoc,
   ExamResultDoc,
   StudentObservationDoc,
+  LessonPlanDoc,
   LockedRecordDoc,
   AuditLogDoc,
   SchoolSettingsDoc,
@@ -68,6 +69,7 @@ const localStore: {
   examSchedules: Map<string, ExamScheduleDoc>;
   examResults: Map<string, ExamResultDoc>;
   studentObservations: Map<string, StudentObservationDoc>;
+  lessonPlans: Map<string, LessonPlanDoc>;
   lockedRecords: Map<string, LockedRecordDoc>;
   auditLogs: Map<string, AuditLogDoc>;
   timetables: Map<string, TimetableDoc>;
@@ -92,6 +94,7 @@ const localStore: {
   examSchedules: new Map(),
   examResults: new Map(),
   studentObservations: new Map(),
+  lessonPlans: new Map(),
   lockedRecords: new Map(),
   auditLogs: new Map(),
   timetables: new Map(),
@@ -3189,6 +3192,109 @@ export async function saveStudentObservationServer(obs: StudentObservationDoc): 
     }
   }
   return id;
+}
+
+// ---------------------------------------------------------------------------
+// LESSON PLANS (ASD Weekly & Daily Lesson Plan)
+// ---------------------------------------------------------------------------
+export interface LessonPlanFilter {
+  teacherId?: string;
+  classId?: string;
+  subjectId?: string;
+  weekId?: string;
+  academicYear?: string;
+  /** Default false: soft-deleted records are excluded. */
+  includeDeleted?: boolean;
+}
+
+export async function getLessonPlansServer(schoolId: string, filter: LessonPlanFilter = {}): Promise<LessonPlanDoc[]> {
+  let list: LessonPlanDoc[];
+  if (hasAdminCredentials) {
+    try {
+      let ref: Query = adminDb.collection("lessonPlans").where("schoolId", "==", schoolId);
+      if (filter.teacherId) ref = ref.where("teacherId", "==", filter.teacherId);
+      if (filter.classId) ref = ref.where("classId", "==", filter.classId);
+      if (filter.subjectId) ref = ref.where("subjectId", "==", filter.subjectId);
+      if (filter.weekId) ref = ref.where("weekId", "==", filter.weekId);
+      if (filter.academicYear) ref = ref.where("academicYear", "==", filter.academicYear);
+      const snap = await withFirestoreRetry("getLessonPlansServer", () => ref.get());
+      list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as LessonPlanDoc));
+    } catch (e) {
+      onFirestoreError(`getLessonPlansServer(${schoolId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+      list = Array.from(localStore.lessonPlans.values()).filter((p) => p.schoolId === schoolId);
+    }
+  } else {
+    list = Array.from(localStore.lessonPlans.values()).filter((p) => p.schoolId === schoolId);
+    if (filter.teacherId) list = list.filter((p) => p.teacherId === filter.teacherId);
+    if (filter.classId) list = list.filter((p) => p.classId === filter.classId);
+    if (filter.subjectId) list = list.filter((p) => p.subjectId === filter.subjectId);
+    if (filter.weekId) list = list.filter((p) => p.weekId === filter.weekId);
+    if (filter.academicYear) list = list.filter((p) => p.academicYear === filter.academicYear);
+  }
+  if (!filter.includeDeleted) list = list.filter((p) => !p.deletedAt);
+  return list.sort((a, b) => b.weekId.localeCompare(a.weekId) || (a.subjectName || "").localeCompare(b.subjectName || ""));
+}
+
+export async function getLessonPlanByIdServer(schoolId: string, id: string): Promise<LessonPlanDoc | null> {
+  if (!id) return null;
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getLessonPlanByIdServer", () => adminDb.collection("lessonPlans").doc(id).get());
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as LessonPlanDoc;
+        return data.schoolId === schoolId ? data : null;
+      }
+      if (process.env.NODE_ENV === "production") return null;
+    } catch (e) {
+      onFirestoreError(`getLessonPlanByIdServer(${id})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  const local = localStore.lessonPlans.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/**
+ * Upserts one lesson-plan record (create or edit, by its deterministic id — see
+ * lessonPlanDocId). A Firestore transaction re-reads the document immediately before writing so
+ * two concurrent saves of the same week can't silently overwrite one another's `days`/`submitted`
+ * state (test: duplicate/concurrent submissions). The in-memory fallback is single-threaded, so
+ * no equivalent race exists there.
+ */
+export async function saveLessonPlanServer(
+  doc: LessonPlanDoc,
+  guard?: (current: LessonPlanDoc | null) => void
+): Promise<string> {
+  const data: LessonPlanDoc = { ...doc, updatedAt: new Date().toISOString(), createdAt: doc.createdAt || new Date().toISOString() };
+  if (hasAdminCredentials) {
+    try {
+      await withFirestoreRetry("saveLessonPlanServer", () =>
+        adminDb.runTransaction(async (tx) => {
+          const ref = adminDb.collection("lessonPlans").doc(data.id);
+          const snap = await tx.get(ref);
+          const current = snap.exists ? ({ id: snap.id, ...snap.data() } as LessonPlanDoc) : null;
+          if (guard) guard(current);
+          tx.set(ref, cleanUndefined(data), { merge: true });
+        })
+      );
+    } catch (e) {
+      onFirestoreError(`saveLessonPlanServer(${data.id})`, e);
+      throw e;
+    }
+  } else if (guard) {
+    guard(localStore.lessonPlans.get(data.id) || null);
+  }
+  localStore.lessonPlans.set(data.id, data);
+  return data.id;
+}
+
+/** Soft delete: the record is kept (with deletedAt/deletedBy) rather than removed, for the audit trail. */
+export async function softDeleteLessonPlanServer(schoolId: string, id: string, deletedBy: string): Promise<boolean> {
+  const existing = await getLessonPlanByIdServer(schoolId, id);
+  if (!existing) return false;
+  await saveLessonPlanServer({ ...existing, deletedAt: new Date().toISOString(), deletedBy, updatedBy: deletedBy });
+  return true;
 }
 
 export async function getLockedRecordsServer(schoolId: string, studentId?: string): Promise<LockedRecordDoc[]> {

@@ -13,6 +13,7 @@ export default function SettingsPage() {
     contactPhone: "",
     address: "",
     academicYear: "",
+    timezone: "Asia/Karachi",
     currencySymbol: "Rs.",
     gradingSystem: "Standard 4.0 / Percentage",
     logoUrl: "",
@@ -60,6 +61,7 @@ export default function SettingsPage() {
           setSettings((prev: any) => ({
             ...prev,
             academicYear: json.settings.academicYear ?? prev.academicYear,
+            timezone: json.settings.timezone ?? prev.timezone,
             currencySymbol: json.settings.currencySymbol ?? prev.currencySymbol,
             gradingSystem: json.settings.gradingSystemLabel ?? prev.gradingSystem,
           }));
@@ -237,6 +239,21 @@ export default function SettingsPage() {
                 onChange={handleChange}
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono font-bold"
               />
+            </div>
+
+            <div>
+              <label htmlFor="settings-timezone" className="block font-semibold text-on-surface mb-1">School Timezone</label>
+              <input id="settings-timezone"
+                type="text"
+                name="timezone"
+                value={settings.timezone}
+                onChange={handleChange}
+                placeholder="e.g. Asia/Karachi"
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono"
+              />
+              <p className="text-[10px] text-on-surface-variant mt-1">
+                IANA timezone, e.g. Asia/Karachi. Drives the ASD weekly lesson-plan Saturday submission window and lock.
+              </p>
             </div>
 
             <div>
