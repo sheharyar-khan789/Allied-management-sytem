@@ -16,13 +16,19 @@ import {
   getStudentsServer,
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
-import { ExamDoc, ExamResultDoc, ExamScheduleDoc } from "@/lib/firebase/types";
+import { ExamCategory, ExamDoc, ExamResultDoc, ExamScheduleDoc } from "@/lib/firebase/types";
 import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic-access";
 import { validateDateString } from "@/lib/date-utils";
 import { z } from "zod";
 import { idString, parseJsonBody, safeUrl } from "@/lib/input-validation";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
-import { computeSubjectResult, resolveGradingScale, validateObtainedMarks } from "@/lib/exam-results";
+import {
+  computeSubjectResult,
+  EXAM_CATEGORIES,
+  resolveGradingScale,
+  resolveTeacherMarksPermission,
+  validateObtainedMarks,
+} from "@/lib/exam-results";
 import { deleteFileFromStorage, storagePathFromDownloadUrl } from "@/lib/storage";
 
 const EXAM_STATUSES = ["UPCOMING", "ONGOING", "COMPLETED", "PUBLISHED"] as const;
@@ -34,6 +40,7 @@ const examUpdateSchema = z.union([
     examScheduleId: z.undefined().optional(),
     title: z.string().trim().min(1).max(160).optional(),
     term: z.string().trim().max(80).optional(),
+    category: z.enum(EXAM_CATEGORIES as [ExamCategory, ...ExamCategory[]]).optional().nullable(),
     startDate: z.string().trim().max(10).optional(),
     endDate: z.string().trim().max(10).optional(),
     status: z.enum(EXAM_STATUSES).optional(),
@@ -196,11 +203,15 @@ export async function GET(req: NextRequest) {
       id: e.id,
       title: e.name,
       term: e.term,
+      category: e.category || undefined,
       session: e.session,
       startDate: e.startDate,
       endDate: e.endDate,
       status: e.status,
       resultSheetUrl: e.resultSheetUrl || undefined,
+      // Resolved so the UI can show/disable marks entry correctly without a second request —
+      // the actual enforcement is still server-side in PUT (marks), this is display only.
+      teacherMarksPermission: resolveTeacherMarksPermission(e.category, settings),
     });
 
     return NextResponse.json({
@@ -238,13 +249,16 @@ export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const body = await req.json();
-    const { title, term, startDate, endDate, schedules, resultSheetUrl } = body;
+    const { title, term, category, startDate, endDate, schedules, resultSheetUrl } = body;
 
     if (!title || typeof title !== "string" || !title.trim() || !startDate || !endDate) {
       return jsonError("Title, start date, and end date are required.", 400);
     }
     if (title.length > 160 || (term !== undefined && (typeof term !== "string" || term.length > 80))) {
       return jsonError("Title max 160 and term max 80 characters.", 400);
+    }
+    if (category !== undefined && category !== null && category !== "" && !EXAM_CATEGORIES.includes(category)) {
+      return jsonError(`category must be one of: ${EXAM_CATEGORIES.join(", ")}.`, 400);
     }
     if (resultSheetUrl && !safeUrl.safeParse(resultSheetUrl).success) {
       return jsonError("resultSheetUrl must be an https:// URL.", 400);
@@ -268,6 +282,7 @@ export async function POST(req: NextRequest) {
       schoolId: authUser.schoolId,
       name: title.trim(),
       term: (term && term.trim()) || "Mid-Term",
+      ...(category ? { category: category as ExamCategory } : {}),
       session: settings?.academicYear || new Date().getFullYear().toString(),
       startDate: examStart,
       endDate: examEnd,
@@ -477,6 +492,7 @@ export async function PUT(req: NextRequest) {
       }
       if (body.title) updated.name = String(body.title);
       if (body.term !== undefined && body.term) updated.term = String(body.term);
+      if (body.category !== undefined) updated.category = body.category ? (body.category as ExamCategory) : undefined;
       if (body.startDate !== undefined) {
         const d = validateDateString(body.startDate);
         if (!d) return jsonError("startDate must be a valid date.", 400);
@@ -528,6 +544,30 @@ export async function PUT(req: NextRequest) {
       }
     }
 
+    const settings = await getSchoolSettingsServer(authUser.schoolId);
+
+    // PUBLISHED means these results are already visible to students and parents — a teacher
+    // editing them from that point on is a correction to a finalized record, not routine entry.
+    // Require ADMIN for it, same as every other finalized-exam change (status, result sheet),
+    // so it's a deliberate, auditable action rather than something a teacher can do silently.
+    const isCorrectionAfterPublish = exam.status === "PUBLISHED";
+    if (isCorrectionAfterPublish && authUser.role !== "ADMIN") {
+      return jsonError(
+        "This exam has been published; its marks are finalized. Ask an administrator to make corrections.",
+        403
+      );
+    }
+
+    // Admin-controlled per-category permission (Monthly/Weekly/First Term/Second Term/Midterm/
+    // Final Term) — e.g. Final Term defaults to read-only for teachers. Checked server-side so a
+    // direct request can't bypass a disabled button in the UI. ADMIN is never restricted by this.
+    if (authUser.role === "TEACHER" && resolveTeacherMarksPermission(exam.category, settings) === "READ_ONLY") {
+      return jsonError(
+        `Teachers cannot enter marks for ${exam.category ? exam.category.replace(/_/g, " ").toLowerCase() : "this"} exams. Ask an administrator.`,
+        403
+      );
+    }
+
     // Verify every graded student actually belongs to this school and to the schedule's class.
     const classStudents = await getStudentsServer(authUser.schoolId, schedule.classId);
     const studentsById = new Map(classStudents.map((s) => [s.id, s]));
@@ -551,8 +591,7 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    const [settings, subjects, existingResults] = await Promise.all([
-      getSchoolSettingsServer(authUser.schoolId),
+    const [subjects, existingResults] = await Promise.all([
       getSubjectsServer(authUser.schoolId),
       resultsForSchedule(authUser.schoolId, schedule),
     ]);
@@ -603,10 +642,12 @@ export async function PUT(req: NextRequest) {
       authUser.uid,
       authUser.email,
       authUser.role,
-      "ENTER_EXAM_MARKS",
+      isCorrectionAfterPublish ? "CORRECT_PUBLISHED_EXAM_MARKS" : "ENTER_EXAM_MARKS",
       "EXAM_RESULT",
       examScheduleId,
-      `Recorded marks for ${subjectName || schedule.subjectId} in "${exam.name}" (${written} saved, ${deleted} cleared).`
+      isCorrectionAfterPublish
+        ? `Corrected marks for ${subjectName || schedule.subjectId} in the published exam "${exam.name}" (${written} saved, ${deleted} cleared) — already-published results were changed.`
+        : `Recorded marks for ${subjectName || schedule.subjectId} in "${exam.name}" (${written} saved, ${deleted} cleared).`
     );
 
     return NextResponse.json({

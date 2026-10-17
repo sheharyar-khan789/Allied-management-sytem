@@ -5,7 +5,7 @@
  * code for their live preview — previously the grids graded with a hardcoded client-side scale
  * that disagreed with the school's configured one, and each view summed totals its own way.
  */
-import type { ExamResultDoc, SchoolSettingsDoc, StudentObservationDoc } from "@/lib/firebase/types";
+import type { ExamCategory, ExamResultDoc, SchoolSettingsDoc, StudentObservationDoc } from "@/lib/firebase/types";
 
 export type GradingScale = SchoolSettingsDoc["gradingScale"];
 
@@ -102,6 +102,60 @@ export function summarizeResults(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Exam categories & teacher mark-entry permission
+// ---------------------------------------------------------------------------
+
+export const EXAM_CATEGORIES: ExamCategory[] = [
+  "MONTHLY_TEST",
+  "WEEKLY_TEST",
+  "FIRST_TERM",
+  "SECOND_TERM",
+  "MIDTERM",
+  "FINAL_TERM",
+];
+
+export const EXAM_CATEGORY_LABELS: Record<ExamCategory, string> = {
+  MONTHLY_TEST: "Monthly Test",
+  WEEKLY_TEST: "Weekly Test",
+  FIRST_TERM: "First Term",
+  SECOND_TERM: "Second Term",
+  MIDTERM: "Midterm",
+  FINAL_TERM: "Final Term",
+};
+
+export type TeacherMarksPermission = "ALLOWED" | "READ_ONLY";
+
+/**
+ * Initial policy (a school can change every one of these in Settings): Monthly and Weekly tests
+ * are low-stakes and routinely teacher-entered; First/Second Term and Midterm start allowed but
+ * are the ones Admin is expected to actually review per-school; Final Term is read-only for
+ * teachers by default since it is usually the one Admin finalizes and controls most tightly.
+ */
+export const EXAM_CATEGORY_PERMISSION_DEFAULTS: Record<ExamCategory, TeacherMarksPermission> = {
+  MONTHLY_TEST: "ALLOWED",
+  WEEKLY_TEST: "ALLOWED",
+  FIRST_TERM: "ALLOWED",
+  SECOND_TERM: "ALLOWED",
+  MIDTERM: "ALLOWED",
+  FINAL_TERM: "READ_ONLY",
+};
+
+/**
+ * Whether an allocated TEACHER may currently enter/edit marks for an exam of `category`. An
+ * exam with no category (created before this field existed, or deliberately uncategorized) is
+ * never category-gated — only the existing allocation/publish checks apply. ADMIN is never
+ * subject to this; it only restricts TEACHER writes, enforced in /api/exams PUT, not just hidden
+ * in the UI.
+ */
+export function resolveTeacherMarksPermission(
+  category: ExamCategory | undefined,
+  settings?: Pick<SchoolSettingsDoc, "examCategoryPermissions"> | null
+): TeacherMarksPermission {
+  if (!category) return "ALLOWED";
+  return settings?.examCategoryPermissions?.[category] || EXAM_CATEGORY_PERMISSION_DEFAULTS[category];
+}
+
 /**
  * Subject name of a result. Results written before this fix carry no subjectName (the marks
  * route never stored it), so it is resolved from the subject records at read time.
@@ -165,6 +219,8 @@ export interface ObservationView {
   academicYear: string;
   date: string;
   updatedAt: string;
+  /** Prior (title, note) pairs, oldest first; empty when the note has never been edited. */
+  editHistory: { at: string; by: string; byName?: string; previousTitle?: string; previousNote: string }[];
 }
 
 /**
@@ -192,6 +248,7 @@ export function toObservationView(
     academicYear: o.academicYear || "",
     date: o.createdAt,
     updatedAt: o.updatedAt || o.createdAt,
+    editHistory: o.editHistory || [],
   };
 }
 

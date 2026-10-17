@@ -9,13 +9,14 @@
  */
 import { NextRequest } from "next/server";
 import { GET as examsGet, POST as examsPost, PATCH as examsPatch, PUT as examsPut, DELETE as examsDelete } from "../src/app/api/exams/route";
-import { GET as obsGet, POST as obsPost, PUT as obsPut } from "../src/app/api/observations/route";
+import { GET as obsGet, POST as obsPost, PUT as obsPut, DELETE as obsDelete } from "../src/app/api/observations/route";
 import { GET as settingsGet, PUT as settingsPut } from "../src/app/api/settings/route";
 import { GET as reportCardGet } from "../src/app/api/print/report-card/[studentId]/route";
 import { GET as studentGet } from "../src/app/api/students/[id]/route";
 import { GET as studentMeGet } from "../src/app/api/student/me/route";
 import { createSessionCookieServer } from "../src/lib/firebase/server-auth";
 import {
+  getAuditLogsServer,
   getExamResultsServer,
   saveClassServer,
   saveStudentObservationServer,
@@ -310,6 +311,44 @@ async function run() {
     const dossier = await json(await studentGet(req(ADMIN, `/api/students/${s1.id}`), idParams(s1.id)));
     const dObs = dossier.student.observations.find((o: any) => o.id === OBS);
     assert(dObs?.note.startsWith("Ali helps") && dObs.title === "Helpful in class" && dObs.examName === "Mid-Term 2026", "Student profile shows title, written text and exam of the observation");
+
+    // Edit history: the correction above must not have erased what was originally written.
+    const afterEdit = await json(await obsGet(req(T_MATH, `/api/observations?studentId=${s1.id}`)));
+    const editedObs = afterEdit.observations.find((o: any) => o.id === OBS);
+    assert(editedObs.editHistory.length === 1 && editedObs.editHistory[0].previousNote === text, "Observation PUT: the pre-edit text is preserved in edit history, not erased");
+    assert(editedObs.editHistory[0].previousTitle === "Helpful in class" && editedObs.editHistory[0].byName, "Observation PUT: edit history records who made the correction");
+    // A category/sentiment-only change (no text change) must not add a history entry.
+    await obsPut(req(T_MATH, "/api/observations", "PUT", { id: OBS, sentiment: "NEUTRAL" }));
+    const afterNonTextEdit = await json(await obsGet(req(T_MATH, `/api/observations?studentId=${s1.id}`)));
+    assert(afterNonTextEdit.observations.find((o: any) => o.id === OBS).editHistory.length === 1, "Observation PUT: changing only category/sentiment does not add a history entry");
+
+    // Admin school-wide search (the admin observations screen): no studentId, filterable.
+    assert((await obsGet(req(T_MATH, "/api/observations"))).status === 400, "Observation GET (search): a teacher must still specify a studentId");
+    const search = await json(await obsGet(req(ADMIN, "/api/observations")));
+    assert(search.mode === "search" && search.observations.some((o: any) => o.id === OBS), "Observation GET (search): admin sees the school's observations without a studentId");
+    const byClass = await json(await obsGet(req(ADMIN, `/api/observations?classId=${c1.id}`)));
+    assert(byClass.observations.length > 0 && byClass.observations.every((o: any) => o.classId === c1.id), "Observation GET (search): classId filter narrows to that class");
+    const byCategory = await json(await obsGet(req(ADMIN, "/api/observations?category=ATTENDANCE")));
+    assert(byCategory.observations.length === 1 && byCategory.observations[0].category === "ATTENDANCE", "Observation GET (search): category filter narrows the results");
+    const byText = await json(await obsGet(req(ADMIN, "/api/observations?q=Leads+group")));
+    assert(byText.observations.some((o: any) => o.id === OBS), "Observation GET (search): free-text search matches the note body");
+    const crossSchool = await json(await obsGet(req(ADMIN_B, "/api/observations")));
+    assert(crossSchool.observations.every((o: any) => o.id !== OBS), "Observation GET (search): another school never sees this school's observations");
+
+    // Delete (soft): ADMIN for any note, TEACHER only their own; gone from every normal read but
+    // not actually destroyed. A dedicated note is created for this — adminNoteId ("Punctual all
+    // term.") is still needed, intact, by the report-card test below.
+    const toDeleteId = (await json(await obsPost(req(ADMIN, "/api/observations", "POST", { studentId: s1.id, content: "Scratch note for delete testing." })))).observation.id;
+    assert((await obsDelete(req(T_SCI, `/api/observations?id=${toDeleteId}`, "DELETE"))).status === 403, "Observation DELETE: teacher of another class blocked");
+    assert((await obsDelete(req(T_MATH, `/api/observations?id=${toDeleteId}`, "DELETE"))).status === 403, "Observation DELETE: a teacher cannot delete someone else's note");
+    assert((await obsDelete(req(ADMIN_B, `/api/observations?id=${toDeleteId}`, "DELETE"))).status === 404, "Observation DELETE: another school cannot delete");
+    const del = await obsDelete(req(ADMIN, `/api/observations?id=${toDeleteId}`, "DELETE"));
+    assert(del.status === 200, "Observation DELETE: admin deletes a note");
+    const afterDelete = await json(await obsGet(req(ADMIN, `/api/observations?studentId=${s1.id}`)));
+    assert(!afterDelete.observations.some((o: any) => o.id === toDeleteId), "Observation DELETE: the deleted note no longer appears in the student's list");
+    const afterDeleteSearch = await json(await obsGet(req(ADMIN, "/api/observations")));
+    assert(!afterDeleteSearch.observations.some((o: any) => o.id === toDeleteId), "Observation DELETE: the deleted note no longer appears in the school-wide search");
+    assert((await obsDelete(req(ADMIN, `/api/observations?id=${toDeleteId}`, "DELETE"))).status === 404, "Observation DELETE: deleting an already-deleted note is reported as not found, not silently repeated");
   }
 
   // ---------------------------------------------------------------- 9. report card = dossier = persisted marks
@@ -347,6 +386,25 @@ async function run() {
     const pub = await examsPut(req(ADMIN, "/api/exams", "PUT", { examId: EXAM, status: "PUBLISHED" }));
     assert(pub.status === 200, "Exam PUT: admin publishes the exam");
     assert((await examsPut(req(T_MATH, "/api/exams", "PUT", { examId: EXAM, status: "UPCOMING" }))).status === 403, "Exam PUT: teachers cannot change exam status");
+
+    // Finalized-results correction workflow: once published, a teacher's routine mark entry is a
+    // correction to a result students/parents can already see — require admin, and audit it as a
+    // correction distinctly from routine entry (Phase 2 of the bug-fix brief).
+    const blockedEdit = await examsPut(req(T_MATH, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 46 }] }));
+    assert(blockedEdit.status === 403, "Marks PUT: a teacher cannot edit marks of a published (finalized) exam");
+    const beforeCorrection = await json(await examsGet(req(ADMIN, `/api/exams?examId=${EXAM}&rosters=one&scheduleId=${MATH_SCH}`)));
+    const s1Before = beforeCorrection.activeExam.schedules.find((s: any) => s.id === MATH_SCH).results.find((r: any) => r.studentId === s1.id);
+    assert(s1Before.marksObtained === 40, "Marks PUT: the blocked teacher edit left the published mark unchanged");
+    const adminCorrection = await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 46 }] }));
+    assert(adminCorrection.status === 200, "Marks PUT: an admin can still correct marks of a published exam");
+    const afterCorrection = await json(await examsGet(req(ADMIN, `/api/exams?examId=${EXAM}&rosters=one&scheduleId=${MATH_SCH}`)));
+    const s1After = afterCorrection.activeExam.schedules.find((s: any) => s.id === MATH_SCH).results.find((r: any) => r.studentId === s1.id);
+    assert(s1After.marksObtained === 46, "Marks PUT: the admin's correction to the published exam was saved");
+    const logs = await getAuditLogsServer(A);
+    assert(
+      logs.some((l) => l.action === "CORRECT_PUBLISHED_EXAM_MARKS" && l.entityId === MATH_SCH),
+      "Audit log: the post-publish correction is recorded distinctly from routine mark entry"
+    );
     const after = await json(await reportCardGet(req(STUDENT1, `/api/print/report-card/${s1.id}`), sidParams(s1.id)));
     assert(after.results.length === 1 && after.results[0].examId === EXAM && after.exams[0].observations.some((o: any) => o.id === OBS), "Student: published exam results and its observation visible");
     const me = await json(await studentMeGet(req(STUDENT1, "/api/student/me?view=dashboard")));
@@ -378,6 +436,51 @@ async function run() {
     const withSheet = await json(await examsPost(req(ADMIN, "/api/exams", "POST", { title: "To delete with sheet", startDate: "2026-11-05", endDate: "2026-11-06", resultSheetUrl: sheetA })));
     assert(withSheet.exam?.resultSheetUrl === sheetA, "Exam POST: created with a result sheet already attached");
     assert((await examsDelete(req(ADMIN, `/api/exams?examId=${withSheet.exam.id}`, "DELETE"))).status === 200, "Exam DELETE: an exam with an attached result sheet deletes cleanly (cleanup attempt never blocks the delete)");
+  }
+
+  // ---------------------------------------------------------------- 11c. exam categories & admin-controlled teacher permissions
+  {
+    const monthly = await json(await examsPost(req(ADMIN, "/api/exams", "POST", { title: "October Monthly", category: "MONTHLY_TEST", startDate: "2026-10-05", endDate: "2026-10-05" })));
+    assert(monthly.exam?.category === "MONTHLY_TEST", "Exam POST: category stored");
+    const finalTerm = await json(await examsPost(req(ADMIN, "/api/exams", "POST", { title: "Final Examination", category: "FINAL_TERM", startDate: "2027-05-01", endDate: "2027-05-10" })));
+    assert(finalTerm.exam?.category === "FINAL_TERM", "Exam POST: a different category stored on a different exam");
+    assert((await examsPost(req(ADMIN, "/api/exams", "POST", { title: "Bad category", category: "NOT_A_CATEGORY", startDate: "2026-10-01", endDate: "2026-10-01" }))).status === 400, "Exam POST: an unknown category is rejected");
+
+    const monthlySch = (await json(await examsPatch(req(ADMIN, "/api/exams", "PATCH", sched(math.id, c1.id, "20", "10", monthly.exam.id))))).schedule.id as string;
+    const finalSch = (await json(await examsPatch(req(ADMIN, "/api/exams", "PATCH", sched(math.id, c1.id, "100", "33", finalTerm.exam.id))))).schedule.id as string;
+
+    // Defaults: Monthly Test is teacher-entry allowed; Final Term is read-only for teachers.
+    const monthlyGet = await json(await examsGet(req(ADMIN, `/api/exams?examId=${monthly.exam.id}`)));
+    assert(monthlyGet.activeExam.teacherMarksPermission === "ALLOWED", "Exam GET: Monthly Test defaults to teacher entry allowed");
+    const finalGet = await json(await examsGet(req(ADMIN, `/api/exams?examId=${finalTerm.exam.id}`)));
+    assert(finalGet.activeExam.teacherMarksPermission === "READ_ONLY", "Exam GET: Final Term defaults to read-only for teachers");
+
+    // s3 is used here deliberately: by this point its only earlier mark (on a different exam)
+    // was cleared back to "not recorded" (see "Clearing a mark removes that one result" above),
+    // so it carries no result count that a later test in this file depends on — unlike s1/s2.
+    assert((await examsPut(req(T_MATH, "/api/exams", "PUT", { examScheduleId: monthlySch, studentMarks: [{ studentId: s3.id, marksObtained: 18 }] }))).status === 200, "Marks PUT: a teacher can enter marks for a default-allowed category (Monthly Test)");
+    const blockedFinal = await examsPut(req(T_MATH, "/api/exams", "PUT", { examScheduleId: finalSch, studentMarks: [{ studentId: s3.id, marksObtained: 90 }] }));
+    assert(blockedFinal.status === 403, "Marks PUT: a teacher cannot enter marks for a default-read-only category (Final Term)");
+    assert((await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: finalSch, studentMarks: [{ studentId: s3.id, marksObtained: 90 }] }))).status === 200, "Marks PUT: an admin can always enter marks regardless of category permission");
+    // Read access is never gated by this permission — only writes.
+    assert((await examsGet(req(T_MATH, `/api/exams?examId=${finalTerm.exam.id}&rosters=one&scheduleId=${finalSch}`))).status === 200, "Exams GET: a teacher can still view a read-only-category exam's marks");
+
+    // Admin reverses both defaults via Settings; the effect is immediate and server-enforced.
+    const curSettings = (await json(await settingsGet(req(ADMIN, "/api/settings")))).settings;
+    const flipped = await settingsPut(req(ADMIN, "/api/settings", "PUT", {
+      ...curSettings,
+      examCategoryPermissions: { ...curSettings.examCategoryPermissions, MONTHLY_TEST: "READ_ONLY", FINAL_TERM: "ALLOWED" },
+    }));
+    assert(flipped.status === 200, "Settings PUT: admin overrides the exam category permission defaults");
+    assert((await examsPut(req(T_MATH, "/api/exams", "PUT", { examScheduleId: monthlySch, studentMarks: [{ studentId: s3.id, marksObtained: 15 }] }))).status === 403, "Marks PUT: Monthly Test is now read-only for teachers after the admin override");
+    assert((await examsPut(req(T_MATH, "/api/exams", "PUT", { examScheduleId: finalSch, studentMarks: [{ studentId: s3.id, marksObtained: 80 }] }))).status === 200, "Marks PUT: Final Term now allows teacher entry after the admin override");
+
+    // Another school's category-permission override never crosses the tenant boundary.
+    const bSettings = (await json(await settingsGet(req(ADMIN_B, "/api/settings")))).settings;
+    assert(bSettings.examCategoryPermissions.MONTHLY_TEST === "ALLOWED", "Settings: another school's category permissions are unaffected by school A's override");
+
+    // Restore defaults so later assertions in this file see the documented out-of-the-box policy.
+    await settingsPut(req(ADMIN, "/api/settings", "PUT", { ...curSettings, examCategoryPermissions: curSettings.examCategoryPermissions }));
   }
 
   // ---------------------------------------------------------------- 12. safe deletes

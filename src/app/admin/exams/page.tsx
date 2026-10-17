@@ -4,7 +4,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
 import MarksEntryGrid from "@/components/MarksEntryGrid";
-import { DEFAULT_GRADING_SCALE } from "@/lib/exam-results";
+import { DEFAULT_GRADING_SCALE, EXAM_CATEGORIES, EXAM_CATEGORY_LABELS } from "@/lib/exam-results";
 
 const STATUS_LABELS: Record<string, string> = {
   UPCOMING: "Upcoming",
@@ -37,17 +37,20 @@ export default function ExamsManagementPage() {
   const [selectedExamId, setSelectedExamId] = useState("");
   const [activeSheetUrl, setActiveSheetUrl] = useState("");
   const [showSheetUploader, setShowSheetUploader] = useState(false);
+  // Bumped to force the result-sheet FileUpload to remount and re-sync its preview to
+  // activeSheetUrl whenever a delete is cancelled or a save fails — see handleUpdateResultSheet.
+  const [sheetResetKey, setSheetResetKey] = useState(0);
   const [classes, setClasses] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [selectedScheduleId, setSelectedScheduleId] = useState("");
   const [gradingScale, setGradingScale] = useState(DEFAULT_GRADING_SCALE);
 
   const [showNewExam, setShowNewExam] = useState(false);
-  const [newExam, setNewExam] = useState({ title: "", term: "", startDate: "", endDate: "", resultSheetUrl: "" });
+  const [newExam, setNewExam] = useState({ title: "", term: "", category: "", startDate: "", endDate: "", resultSheetUrl: "" });
   const [creatingExam, setCreatingExam] = useState(false);
 
   const [showEditExam, setShowEditExam] = useState(false);
-  const [editExam, setEditExam] = useState({ title: "", term: "", startDate: "", endDate: "", status: "UPCOMING" });
+  const [editExam, setEditExam] = useState({ title: "", term: "", category: "", startDate: "", endDate: "", status: "UPCOMING" });
   const [savingExam, setSavingExam] = useState(false);
   const [confirmDeleteExam, setConfirmDeleteExam] = useState(false);
 
@@ -92,6 +95,7 @@ export default function ExamsManagementPage() {
         setEditExam({
           title: active.title || "",
           term: active.term || "",
+          category: active.category || "",
           startDate: active.startDate || "",
           endDate: active.endDate || "",
           status: active.status || "UPCOMING",
@@ -128,9 +132,23 @@ export default function ExamsManagementPage() {
   const handleUpdateResultSheet = async (url: string) => {
     if (!selectedExamId) return;
     setFormError("");
+    // Removing the attached document is a real, immediate deletion (it's already persisted and
+    // the underlying file is cleaned up from Storage) — confirm before it happens. A new
+    // upload replacing the existing one is not gated: the old file is still safely retired by
+    // the server, and re-attaching is one click away.
+    if (!url && activeSheetUrl) {
+      const confirmed = window.confirm(
+        "Delete the attached date sheet / result sheet from this exam? This cannot be undone."
+      );
+      if (!confirmed) {
+        setSheetResetKey((k) => k + 1); // re-sync the uploader's preview back to the current document
+        return;
+      }
+    }
     const { ok, json } = await callApi("PUT", { examId: selectedExamId, resultSheetUrl: url });
     if (!ok) {
       setFormError(json.error || "Could not attach the document.");
+      setSheetResetKey((k) => k + 1); // the upload may have succeeded client-side; re-sync to what's actually saved
       return;
     }
     setActiveSheetUrl(url);
@@ -152,7 +170,7 @@ export default function ExamsManagementPage() {
         return;
       }
       setShowNewExam(false);
-      setNewExam({ title: "", term: "", startDate: "", endDate: "", resultSheetUrl: "" });
+      setNewExam({ title: "", term: "", category: "", startDate: "", endDate: "", resultSheetUrl: "" });
       setNotice(`Exam "${json.exam.name}" created. Next: add its subjects.`);
       await loadExams(json.exam.id);
       setShowScheduleForm(true);
@@ -325,6 +343,16 @@ export default function ExamsManagementPage() {
                   {STATUS_LABELS[activeExam.status] || activeExam.status}
                 </span>
               )}
+              {activeExam?.category && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-secondary/10 text-secondary">
+                  {EXAM_CATEGORY_LABELS[activeExam.category as keyof typeof EXAM_CATEGORY_LABELS] || activeExam.category}
+                </span>
+              )}
+              {activeExam && activeExam.teacherMarksPermission === "READ_ONLY" && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-error-container/10 text-error" title="Teachers can view this exam's marks but cannot enter or edit them; only an administrator can.">
+                  Teachers: Read-only
+                </span>
+              )}
             </div>
           ) : (
             <p className="text-xs text-on-surface-variant">{loading ? "Loading..." : "No exams created for this session yet."}</p>
@@ -337,9 +365,9 @@ export default function ExamsManagementPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {activeSheetUrl && (
-            <a href={activeSheetUrl} target="_blank" rel="noopener noreferrer" className={btnCls} title="View attached date sheet / result sheet">
+            <a href={activeSheetUrl} target="_blank" rel="noopener noreferrer" className={btnCls} title="View or download the attached date sheet / result sheet">
               <span className="material-symbols-outlined text-[18px]">description</span>
-              <span>Date Sheet / Results</span>
+              <span>View / Download Date Sheet</span>
             </a>
           )}
           {selectedExamId && (
@@ -376,12 +404,13 @@ export default function ExamsManagementPage() {
             </button>
           </div>
           <FileUpload
+            key={sheetResetKey}
             folder="result-cards"
             value={activeSheetUrl}
             onChange={(url) => handleUpdateResultSheet(url)}
             accept="image/*,application/pdf"
             previewType="file"
-            helperText="Upload official exam timetable, date sheet, or consolidated result sheet (Max 10MB)"
+            helperText="Upload official exam timetable, date sheet, or consolidated result sheet (Max 10MB). Removing it deletes the file."
           />
         </div>
       )}
@@ -399,6 +428,16 @@ export default function ExamsManagementPage() {
             <input id="exams-term-3" maxLength={80} value={newExam.term}
               onChange={(e) => setNewExam((s) => ({ ...s, term: e.target.value }))}
               placeholder="Mid-Term" className={inputCls} />
+          </div>
+          <div>
+            <label htmlFor="exams-category" className={labelCls}>Category</label>
+            <select id="exams-category" value={newExam.category}
+              onChange={(e) => setNewExam((s) => ({ ...s, category: e.target.value }))} className={inputCls}>
+              <option value="">— Uncategorized —</option>
+              {EXAM_CATEGORIES.map((c) => (
+                <option key={c} value={c}>{EXAM_CATEGORY_LABELS[c]}</option>
+              ))}
+            </select>
           </div>
           <div>
             <label htmlFor="exams-start-date-4" className={labelCls}>Start Date</label>
@@ -441,6 +480,16 @@ export default function ExamsManagementPage() {
             <label htmlFor="exams-edit-term" className={labelCls}>Term</label>
             <input id="exams-edit-term" maxLength={80} value={editExam.term}
               onChange={(e) => setEditExam((s) => ({ ...s, term: e.target.value }))} className={inputCls} />
+          </div>
+          <div>
+            <label htmlFor="exams-edit-category" className={labelCls}>Category</label>
+            <select id="exams-edit-category" value={editExam.category}
+              onChange={(e) => setEditExam((s) => ({ ...s, category: e.target.value }))} className={inputCls}>
+              <option value="">— Uncategorized —</option>
+              {EXAM_CATEGORIES.map((c) => (
+                <option key={c} value={c}>{EXAM_CATEGORY_LABELS[c]}</option>
+              ))}
+            </select>
           </div>
           <div>
             <label htmlFor="exams-edit-start" className={labelCls}>Start Date</label>

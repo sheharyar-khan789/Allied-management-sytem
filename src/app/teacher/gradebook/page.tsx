@@ -13,6 +13,8 @@ export default function TeacherGradebookPage() {
   const [exams, setExams] = useState<any[]>([]);
   const [examId, setExamId] = useState("");
   const [examTitle, setExamTitle] = useState("");
+  const [examStatus, setExamStatus] = useState("");
+  const [teacherMarksPermission, setTeacherMarksPermission] = useState<"ALLOWED" | "READ_ONLY">("ALLOWED");
   const [schedules, setSchedules] = useState<any[]>([]);
   const [selectedScheduleId, setSelectedScheduleId] = useState("");
   const [gradingScale, setGradingScale] = useState(DEFAULT_GRADING_SCALE);
@@ -37,6 +39,8 @@ export default function TeacherGradebookPage() {
       setGradingScale(json.gradingScale || DEFAULT_GRADING_SCALE);
       setExamId(json.activeExam?.id || "");
       setExamTitle(json.activeExam?.title || "");
+      setExamStatus(json.activeExam?.status || "");
+      setTeacherMarksPermission(json.activeExam?.teacherMarksPermission === "READ_ONLY" ? "READ_ONLY" : "ALLOWED");
       const scheds = json.activeExam?.schedules || [];
       setSchedules(scheds);
       const loaded = scheds.find((s: any) => s.results) || scheds[0];
@@ -53,6 +57,14 @@ export default function TeacherGradebookPage() {
   }, [load]);
 
   const activeSchedule = schedules.find((s) => s.id === selectedScheduleId);
+  // The server is the real enforcement point (a direct request can't bypass this); this only
+  // keeps a teacher from filling in a grid that will be rejected on save.
+  const readOnlyReason =
+    examStatus === "PUBLISHED"
+      ? "This exam has been published and its marks are finalized. Ask an administrator for any correction."
+      : teacherMarksPermission === "READ_ONLY"
+      ? "Marks entry for this exam category is restricted by your administrator. You can view results but not change them."
+      : "";
 
   return (
     <div className="flex flex-col w-full gap-space-lg">
@@ -123,12 +135,21 @@ export default function TeacherGradebookPage() {
           <p className="text-xs text-on-surface-variant">Loading marks...</p>
         </div>
       ) : activeSchedule?.results ? (
-        <MarksEntryGrid
-          examTitle={examTitle}
-          schedule={activeSchedule}
-          gradingScale={gradingScale}
-          onSaved={() => load(examId, activeSchedule.id, true)}
-        />
+        <>
+          {readOnlyReason && (
+            <div className="p-3 rounded-lg bg-surface-container-low border border-outline-variant/40 text-on-surface-variant text-xs font-semibold flex items-center gap-2">
+              <span className="material-symbols-outlined text-[16px]">lock</span>
+              {readOnlyReason}
+            </div>
+          )}
+          <MarksEntryGrid
+            examTitle={examTitle}
+            schedule={activeSchedule}
+            gradingScale={gradingScale}
+            readOnly={Boolean(readOnlyReason)}
+            onSaved={() => load(examId, activeSchedule.id, true)}
+          />
+        </>
       ) : null}
     </div>
   );

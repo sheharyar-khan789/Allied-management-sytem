@@ -7,7 +7,10 @@ import {
   getStudentByIdServer,
   getStudentObservationsServer,
   getStudentObservationByIdServer,
+  getAllObservationsServer,
   getExamsServer,
+  getClassesServer,
+  getTeachersServer,
 } from "@/lib/firebase/server-db";
 import { StudentObservationDoc } from "@/lib/firebase/types";
 import { assertCanViewStudent, assertTeacherOwnsClass } from "@/lib/academic-access";
@@ -56,10 +59,61 @@ async function resolveExamId(schoolId: string, examId: string | null | undefined
   return examId;
 }
 
+/**
+ * Admin-only, school-wide observation search (Admin Observations screen): no single studentId,
+ * filterable by class/teacher/category/date range. A TEACHER always goes through the per-student
+ * path below — class/allocation scoping for a free cross-student search isn't meaningfully
+ * different from just giving them the whole school's notes, which assertCanViewStudent exists to
+ * prevent.
+ */
+async function searchObservations(req: NextRequest, authUser: Awaited<ReturnType<typeof requireAuth>>) {
+  const { searchParams } = new URL(req.url);
+  const [observations, exams, classes, teachers] = await Promise.all([
+    getAllObservationsServer(authUser.schoolId, {
+      classId: searchParams.get("classId") || undefined,
+      teacherId: searchParams.get("teacherId") || undefined,
+      category: searchParams.get("category") || undefined,
+      fromDate: searchParams.get("fromDate") || undefined,
+      toDate: searchParams.get("toDate") || undefined,
+    }),
+    getExamsServer(authUser.schoolId),
+    getClassesServer(authUser.schoolId),
+    getTeachersServer(authUser.schoolId),
+  ]);
+  const examNameById = new Map(exams.map((e) => [e.id, e.name]));
+  const classById = new Map(classes.map((c) => [c.id, `${c.name}-${c.section}`]));
+  const search = (searchParams.get("q") || "").trim().toLowerCase();
+  let list = observations.map((o) => ({
+    ...toObservationView(o, examNameById),
+    classId: o.classId || "",
+    className: (o.classId && classById.get(o.classId)) || "",
+  }));
+  if (search) {
+    list = list.filter(
+      (o) =>
+        o.note.toLowerCase().includes(search) ||
+        o.title.toLowerCase().includes(search) ||
+        o.studentId.toLowerCase().includes(search)
+    );
+  }
+  return NextResponse.json({
+    success: true,
+    mode: "search",
+    observations: list,
+    classes: classes.map((c) => ({ id: c.id, name: `${c.name}-${c.section}` })),
+    teachers: teachers.map((t) => ({ id: t.id, name: t.fullName })),
+    exams: exams.map((e) => ({ id: e.id, name: e.name, term: e.term })),
+  });
+}
+
 export async function GET(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     const studentId = new URL(req.url).searchParams.get("studentId") || "";
+    if (!studentId) {
+      if (authUser.role !== "ADMIN") return jsonError("studentId is required.", 400);
+      return await searchObservations(req, authUser);
+    }
     // School isolation + teacher class scoping (404 for another school's student, 403 for a
     // class the teacher is not allocated).
     const student = await assertCanViewStudent(authUser, studentId);
@@ -183,12 +237,30 @@ export async function PUT(req: NextRequest) {
     const examId = body.examId === undefined ? existing.examId : await resolveExamId(authUser.schoolId, body.examId);
     if (examId instanceof Response) return examId;
 
+    // The text actually changing is what gets preserved in history — switching only the
+    // category/sentiment/exam link isn't a correction to what was written.
+    const titleChanged = body.title !== undefined && body.title !== (existing.title || "");
+    const noteChanged = body.content !== undefined && body.content !== existing.note;
+    const history = titleChanged || noteChanged
+      ? [
+          ...(existing.editHistory || []),
+          {
+            at: new Date().toISOString(),
+            by: authUser.uid,
+            byName: authUser.name,
+            previousTitle: existing.title,
+            previousNote: existing.note,
+          },
+        ]
+      : existing.editHistory;
+
     const updated: StudentObservationDoc = {
       ...existing,
       ...(body.title !== undefined ? { title: body.title } : {}),
       ...(body.content !== undefined ? { note: body.content } : {}),
       ...(body.category ? { category: body.category } : {}),
       ...(body.sentiment ? { sentiment: body.sentiment } : {}),
+      ...(history ? { editHistory: history } : {}),
       examId: examId || undefined,
       updatedAt: new Date().toISOString(),
       updatedBy: authUser.uid,
@@ -218,5 +290,53 @@ export async function PUT(req: NextRequest) {
     if (busy) return busy;
     console.error("Observation PUT error:", error);
     return jsonError("Failed to update observation note.", 500);
+  }
+}
+
+/**
+ * Soft-deletes an observation: ADMIN for any of their school; a TEACHER only for their own
+ * notes (same authorization as PUT). The record is kept with deletedAt/deletedBy for the audit
+ * trail — it just drops out of every normal read.
+ */
+export async function DELETE(req: NextRequest) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
+    const id = new URL(req.url).searchParams.get("id") || "";
+    if (!id) return jsonError("id is required.", 400);
+
+    const existing = await getStudentObservationByIdServer(authUser.schoolId, id);
+    if (!existing || existing.deletedAt) return jsonError("Observation not found.", 404);
+    const student = await getStudentByIdServer(authUser.schoolId, existing.studentId);
+    if (!student) return jsonError("Student not found for this school.", 404);
+    await assertTeacherOwnsClass(authUser, student.classId);
+    if (authUser.role === "TEACHER" && existing.teacherId !== authUser.teacherId) {
+      return jsonError("Forbidden: you can only delete observations you wrote.", 403);
+    }
+
+    await saveStudentObservationServer({
+      ...existing,
+      deletedAt: new Date().toISOString(),
+      deletedBy: authUser.uid,
+      updatedAt: new Date().toISOString(),
+      updatedBy: authUser.uid,
+    });
+    await createAuditLogServer(
+      authUser.schoolId,
+      authUser.uid,
+      authUser.email,
+      authUser.role,
+      "DELETE_OBSERVATION",
+      "STUDENT_OBSERVATION",
+      id,
+      `Deleted observation note for ${student.fullName}.`
+    );
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/observations");
+    if (busy) return busy;
+    console.error("Observation DELETE error:", error);
+    return jsonError("Failed to delete observation note.", 500);
   }
 }

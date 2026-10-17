@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import AdminTwoFactorCard from "@/components/AdminTwoFactorCard";
 import FileUpload from "@/components/FileUpload";
+import { EXAM_CATEGORIES, EXAM_CATEGORY_LABELS, EXAM_CATEGORY_PERMISSION_DEFAULTS } from "@/lib/exam-results";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>({
@@ -19,6 +20,7 @@ export default function SettingsPage() {
     logoUrl: "",
     principalName: "",
     principalTitle: "",
+    examCategoryPermissions: { ...EXAM_CATEGORY_PERMISSION_DEFAULTS },
   });
   const [sessions, setSessions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -42,6 +44,13 @@ export default function SettingsPage() {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setSettings((prev: any) => ({ ...prev, [name]: value }));
+  };
+
+  const handleCategoryPermissionChange = (category: string, value: "ALLOWED" | "READ_ONLY") => {
+    setSettings((prev: any) => ({
+      ...prev,
+      examCategoryPermissions: { ...prev.examCategoryPermissions, [category]: value },
+    }));
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -68,6 +77,7 @@ export default function SettingsPage() {
             gradingSystem: json.settings.gradingSystemLabel ?? prev.gradingSystem,
             principalName: json.settings.principalName ?? prev.principalName,
             principalTitle: json.settings.principalTitle ?? prev.principalTitle,
+            examCategoryPermissions: json.settings.examCategoryPermissions ?? prev.examCategoryPermissions,
           }));
         }
         setSaveSuccess(true);
@@ -272,6 +282,36 @@ export default function SettingsPage() {
                 <option value="Percentage Only">Percentage Only (0 - 100%)</option>
               </select>
             </div>
+          </div>
+        </div>
+
+        {/* Section: Exam Category Teacher Permissions */}
+        <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-surface-container-low">
+            <span className="material-symbols-outlined text-secondary text-[20px]">rule</span>
+            <h2 className="font-headline-md text-sm font-bold text-on-surface">Exam Category Teacher Permissions</h2>
+          </div>
+          <p className="text-[11px] text-on-surface-variant">
+            Controls whether an allocated teacher can enter or edit marks for an exam of each category. Administrators can always enter and correct marks. Enforced on every save request, not just hidden in the interface.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            {EXAM_CATEGORIES.map((category) => {
+              const value = settings.examCategoryPermissions?.[category] || EXAM_CATEGORY_PERMISSION_DEFAULTS[category];
+              return (
+                <div key={category} className="flex items-center justify-between gap-3 p-3 rounded-lg bg-surface-container-low">
+                  <span className="font-semibold text-on-surface">{EXAM_CATEGORY_LABELS[category]}</span>
+                  <select
+                    aria-label={`Teacher permission for ${EXAM_CATEGORY_LABELS[category]}`}
+                    value={value}
+                    onChange={(e) => handleCategoryPermissionChange(category, e.target.value as "ALLOWED" | "READ_ONLY")}
+                    className="h-8 px-2 rounded-lg bg-surface-container-lowest text-on-surface border border-outline-variant/40 font-semibold"
+                  >
+                    <option value="ALLOWED">Teachers can enter marks</option>
+                    <option value="READ_ONLY">Read-only for teachers</option>
+                  </select>
+                </div>
+              );
+            })}
           </div>
         </div>
 

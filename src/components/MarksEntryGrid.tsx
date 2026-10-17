@@ -43,11 +43,15 @@ export default function MarksEntryGrid({
   examTitle,
   schedule,
   gradingScale,
+  readOnly = false,
   onSaved,
 }: {
   examTitle: string;
   schedule: any;
   gradingScale: GradingScale;
+  /** Disables every input and the Save button — the grid is still fully visible. The server
+   * enforces the actual restriction independently; this only avoids a dead-end save attempt. */
+  readOnly?: boolean;
   /** Reload this schedule's roster and marks from the server. */
   onSaved: () => Promise<void> | void;
 }) {
@@ -88,7 +92,7 @@ export default function MarksEntryGrid({
   };
 
   const handleSave = async () => {
-    if (invalidCount > 0 || dirty.length === 0) return;
+    if (readOnly || invalidCount > 0 || dirty.length === 0) return;
     setSaving(true);
     setMessage("");
     setError("");
@@ -137,12 +141,14 @@ export default function MarksEntryGrid({
         <button
           type="button"
           onClick={handleSave}
-          disabled={saving || invalidCount > 0 || dirty.length === 0}
+          disabled={readOnly || saving || invalidCount > 0 || dirty.length === 0}
           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 shadow-sm disabled:opacity-50"
         >
-          <span className="material-symbols-outlined text-[18px]">save</span>
+          <span className="material-symbols-outlined text-[18px]">{readOnly ? "lock" : "save"}</span>
           <span>
-            {saving
+            {readOnly
+              ? "Read-only"
+              : saving
               ? "Saving..."
               : dirty.length === 0
               ? "No changes"
@@ -205,10 +211,11 @@ export default function MarksEntryGrid({
                       step="any"
                       value={row.input}
                       placeholder="Not recorded"
+                      disabled={readOnly}
                       aria-label={`Marks for ${row.name}`}
                       aria-invalid={Boolean(problem)}
                       onChange={(e) => update(row.studentId, { input: e.target.value })}
-                      className={`w-28 h-8 px-2.5 rounded bg-surface-container-low font-bold text-on-surface border focus:outline-none focus:ring-2 focus:ring-secondary/20 ${
+                      className={`w-28 h-8 px-2.5 rounded bg-surface-container-low font-bold text-on-surface border focus:outline-none focus:ring-2 focus:ring-secondary/20 disabled:opacity-60 ${
                         problem ? "border-error" : "border-outline-variant/40"
                       }`}
                     />
@@ -223,7 +230,7 @@ export default function MarksEntryGrid({
                       type="text"
                       maxLength={500}
                       value={row.remarks}
-                      disabled={row.input.trim() === ""}
+                      disabled={readOnly || row.input.trim() === ""}
                       aria-label={`Remarks for ${row.name}`}
                       onChange={(e) => update(row.studentId, { remarks: e.target.value })}
                       className="w-44 h-8 px-2.5 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 disabled:opacity-40"

@@ -2944,6 +2944,7 @@ export async function saveExamServer(examData: ExamDoc): Promise<string> {
     endDate: examData.endDate || new Date().toISOString(),
     status: examData.status || "UPCOMING",
     ...(examData.resultSheetUrl ? { resultSheetUrl: examData.resultSheetUrl } : {}),
+    ...(examData.category ? { category: examData.category } : {}),
     createdAt: examData.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -3281,12 +3282,56 @@ export async function getStudentObservationsServer(
   scope?: SessionScope
 ): Promise<StudentObservationDoc[]> {
   const { year } = await resolveSessionScope(schoolId, scope);
-  const observations = await fetchStudentObservationsRaw(schoolId, studentId);
+  const observations = (await fetchStudentObservationsRaw(schoolId, studentId)).filter((o) => !o.deletedAt);
   if (!year || observations.length === 0) return observations;
   const fallback = observations.some((o) => !o.academicYear)
     ? await observationSession(schoolId, { studentId } as StudentObservationDoc)
     : undefined;
   return observations.filter((o) => (o.academicYear || fallback) === year);
+}
+
+export interface ObservationSearchFilter {
+  classId?: string;
+  teacherId?: string;
+  category?: string;
+  /** Inclusive, ISO date (YYYY-MM-DD) compared against createdAt. */
+  fromDate?: string;
+  /** Inclusive, ISO date (YYYY-MM-DD) compared against createdAt. */
+  toDate?: string;
+}
+
+/**
+ * School-wide observation search for the admin review screen (not scoped to one student). Soft
+ * deleted notes are always excluded. Firestore has no server-side free-text search, so the
+ * (small, school-scale) collection is read scoped to the school and filtered in-process — the
+ * same approach already used for exam results and timetable rows in this file.
+ */
+export async function getAllObservationsServer(
+  schoolId: string,
+  filter: ObservationSearchFilter = {}
+): Promise<StudentObservationDoc[]> {
+  let list: StudentObservationDoc[];
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("getAllObservationsServer", () =>
+        adminDb.collection("studentObservations").where("schoolId", "==", schoolId).get()
+      );
+      list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentObservationDoc));
+    } catch (e) {
+      onFirestoreError(`getAllObservationsServer(${schoolId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+      list = Array.from(localStore.studentObservations.values()).filter((o) => o.schoolId === schoolId);
+    }
+  } else {
+    list = Array.from(localStore.studentObservations.values()).filter((o) => o.schoolId === schoolId);
+  }
+  list = list.filter((o) => !o.deletedAt);
+  if (filter.classId) list = list.filter((o) => o.classId === filter.classId);
+  if (filter.teacherId) list = list.filter((o) => o.teacherId === filter.teacherId);
+  if (filter.category) list = list.filter((o) => o.category === filter.category);
+  if (filter.fromDate) list = list.filter((o) => o.createdAt.slice(0, 10) >= filter.fromDate!);
+  if (filter.toDate) list = list.filter((o) => o.createdAt.slice(0, 10) <= filter.toDate!);
+  return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 /** One observation by its document id, only if it belongs to `schoolId`. */

@@ -8,10 +8,11 @@ import {
   createAuditLogServer,
   getSchoolServer
 } from "@/lib/firebase/server-db";
-import { SchoolSettingsDoc } from "@/lib/firebase/types";
+import { ExamCategory, SchoolSettingsDoc } from "@/lib/firebase/types";
 import { getDefaultAcademicYear, realPrincipalName } from "@/lib/school-display";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import { DEFAULT_SCHOOL_TIMEZONE } from "@/lib/lesson-plan-schedule";
+import { EXAM_CATEGORIES, EXAM_CATEGORY_PERMISSION_DEFAULTS } from "@/lib/exam-results";
 
 /** A conservative allowlist check: must parse as a real IANA zone (Intl throws on a bad one). */
 function isValidTimeZone(tz: string): boolean {
@@ -87,6 +88,12 @@ export async function GET(req: NextRequest) {
       // Head of institution as printed on report cards (signature block).
       principalName: realPrincipalName(settings.principalName) || realPrincipalName(school?.principalName) || "",
       principalTitle: settings.principalTitle || "",
+      // Always the full map (defaults filled in) so the settings UI has a definite value per
+      // category to show/toggle, not just whatever overrides happen to be stored.
+      examCategoryPermissions: {
+        ...EXAM_CATEGORY_PERMISSION_DEFAULTS,
+        ...(settings.examCategoryPermissions || {}),
+      },
     };
 
     return NextResponse.json({ success: true, settings: formatted, sessions });
@@ -117,6 +124,9 @@ const settingsSchema = z.object({
   logoUrl: safeUrl.optional().nullable(),
   principalName: text(120),
   principalTitle: text(80),
+  examCategoryPermissions: z
+    .record(z.enum(EXAM_CATEGORIES as [ExamCategory, ...ExamCategory[]]), z.enum(["ALLOWED", "READ_ONLY"]))
+    .optional(),
 });
 
 export async function PUT(req: NextRequest) {
@@ -182,6 +192,9 @@ export async function PUT(req: NextRequest) {
         || "Standard 4.0 / Percentage",
       gradingScale: current?.gradingScale || [],
       logoUrl: body.logoUrl !== undefined ? (body.logoUrl ?? "") : (current?.logoUrl || school?.logoUrl || ""),
+      examCategoryPermissions: body.examCategoryPermissions !== undefined
+        ? body.examCategoryPermissions
+        : current?.examCategoryPermissions,
       updatedAt: new Date().toISOString(),
     };
 
