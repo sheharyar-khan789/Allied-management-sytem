@@ -33,7 +33,20 @@ export default function SettingsPage() {
       .then((res) => res.json())
       .then((json) => {
         if (json.success) {
-          if (json.settings) setSettings(json.settings);
+          if (json.settings) {
+            const login = json.settings.studentLogin;
+            setSettings({
+              ...json.settings,
+              ...(login
+                ? {
+                    studentLoginPrefix: login.prefix,
+                    studentLoginCampus: login.campus,
+                    studentLoginPadding: login.padding,
+                    studentLoginNextSequence: login.nextSequence,
+                  }
+                : {}),
+            });
+          }
           if (json.sessions) setSessions(json.sessions);
         }
       })
@@ -44,6 +57,11 @@ export default function SettingsPage() {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setSettings((prev: any) => ({ ...prev, [name]: value }));
+  };
+
+  const handleNumberChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setSettings((prev: any) => ({ ...prev, [name]: value === "" ? "" : Number(value) }));
   };
 
   const handleCategoryPermissionChange = (category: string, value: "ALLOWED" | "READ_ONLY") => {
@@ -78,6 +96,8 @@ export default function SettingsPage() {
             principalName: json.settings.principalName ?? prev.principalName,
             principalTitle: json.settings.principalTitle ?? prev.principalTitle,
             examCategoryPermissions: json.settings.examCategoryPermissions ?? prev.examCategoryPermissions,
+            studentLogin: json.settings.studentLogin ?? prev.studentLogin,
+            studentLoginNextSequence: json.settings.studentLogin?.nextSequence ?? prev.studentLoginNextSequence,
           }));
         }
         setSaveSuccess(true);
@@ -313,6 +333,49 @@ export default function SettingsPage() {
               );
             })}
           </div>
+        </div>
+
+        {/* Section: Student login IDs */}
+        <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-surface-container-low">
+            <span className="material-symbols-outlined text-secondary text-[20px]">badge</span>
+            <h2 className="font-headline-md text-sm font-bold text-on-surface">Student Login IDs</h2>
+          </div>
+          <p className="text-[11px] text-on-surface-variant">
+            New students get the next login ID in the form <span className="font-mono">prefix + campus + number</span> on the school&apos;s own email domain. Numbers are never reused, even after a student is deleted. These are sign-in names, not real mailboxes.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-xs">
+            <div>
+              <label htmlFor="settings-login-prefix" className="block font-semibold text-on-surface mb-1">Prefix</label>
+              <input id="settings-login-prefix" type="text" name="studentLoginPrefix" maxLength={20}
+                value={settings.studentLoginPrefix ?? ""} onChange={handleChange}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono" />
+            </div>
+            <div>
+              <label htmlFor="settings-login-campus" className="block font-semibold text-on-surface mb-1">Campus</label>
+              <input id="settings-login-campus" type="text" name="studentLoginCampus" maxLength={20}
+                value={settings.studentLoginCampus ?? ""} onChange={handleChange}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono" />
+            </div>
+            <div>
+              <label htmlFor="settings-login-padding" className="block font-semibold text-on-surface mb-1">Digits</label>
+              <input id="settings-login-padding" type="number" name="studentLoginPadding" min={1} max={8}
+                value={settings.studentLoginPadding ?? 3} onChange={handleNumberChange}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40" />
+            </div>
+            <div>
+              <label htmlFor="settings-login-next" className="block font-semibold text-on-surface mb-1">Next number</label>
+              <input id="settings-login-next" type="number" name="studentLoginNextSequence" min={1}
+                value={settings.studentLoginNextSequence ?? 1} onChange={handleNumberChange}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40" />
+              <p className="mt-1 text-[10px] text-on-surface-variant">Can only be raised, never lowered.</p>
+            </div>
+          </div>
+          {settings.studentLogin?.preview && (
+            <p className="text-[11px] text-on-surface-variant">
+              Next student will get: <span className="font-mono font-semibold text-on-surface">{settings.studentLogin.preview}</span>
+            </p>
+          )}
         </div>
 
         {/* Section: Head of Institution (report cards) */}

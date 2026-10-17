@@ -13,6 +13,14 @@ import { getDefaultAcademicYear, realPrincipalName } from "@/lib/school-display"
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import { DEFAULT_SCHOOL_TIMEZONE } from "@/lib/lesson-plan-schedule";
 import { EXAM_CATEGORIES, EXAM_CATEGORY_PERMISSION_DEFAULTS } from "@/lib/exam-results";
+import {
+  cleanLoginPart,
+  formatStudentLoginEmail,
+  loginDomainFor,
+  peekLoginSequence,
+  raiseLoginSequence,
+  resolveLoginConfig,
+} from "@/lib/student-login-id";
 
 /** A conservative allowlist check: must parse as a real IANA zone (Intl throws on a bad one). */
 function isValidTimeZone(tz: string): boolean {
@@ -22,6 +30,21 @@ function isValidTimeZone(tz: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Student login-ID pattern + the sequence the next enrolment will receive, with a preview. */
+async function studentLoginView(settings: SchoolSettingsDoc) {
+  const config = resolveLoginConfig(settings);
+  const nextSequence = await peekLoginSequence(settings.schoolId);
+  const domain = loginDomainFor(settings.email);
+  return {
+    prefix: config.prefix,
+    campus: config.campus,
+    padding: config.padding,
+    nextSequence,
+    domain,
+    preview: formatStudentLoginEmail(config, nextSequence, domain),
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -94,6 +117,7 @@ export async function GET(req: NextRequest) {
         ...EXAM_CATEGORY_PERMISSION_DEFAULTS,
         ...(settings.examCategoryPermissions || {}),
       },
+      studentLogin: await studentLoginView(settings),
     };
 
     return NextResponse.json({ success: true, settings: formatted, sessions });
@@ -124,6 +148,11 @@ const settingsSchema = z.object({
   logoUrl: safeUrl.optional().nullable(),
   principalName: text(120),
   principalTitle: text(80),
+  studentLoginPrefix: text(20),
+  studentLoginCampus: text(20),
+  studentLoginPadding: z.number().int().min(1).max(8).optional(),
+  /** Raises the login counter to at least this value; it can never move backwards. */
+  studentLoginNextSequence: z.number().int().min(1).max(99_999_999).optional(),
   examCategoryPermissions: z
     .record(z.enum(EXAM_CATEGORIES as [ExamCategory, ...ExamCategory[]]), z.enum(["ALLOWED", "READ_ONLY"]))
     .optional(),
@@ -195,10 +224,20 @@ export async function PUT(req: NextRequest) {
       examCategoryPermissions: body.examCategoryPermissions !== undefined
         ? body.examCategoryPermissions
         : current?.examCategoryPermissions,
+      studentLoginPrefix: body.studentLoginPrefix !== undefined
+        ? cleanLoginPart(body.studentLoginPrefix, "ASD")
+        : current?.studentLoginPrefix,
+      studentLoginCampus: body.studentLoginCampus !== undefined
+        ? cleanLoginPart(body.studentLoginCampus, "campus")
+        : current?.studentLoginCampus,
+      studentLoginPadding: body.studentLoginPadding ?? current?.studentLoginPadding,
       updatedAt: new Date().toISOString(),
     };
 
     await updateSchoolSettingsServer(updated);
+    if (body.studentLoginNextSequence !== undefined) {
+      await raiseLoginSequence(authUser.schoolId, body.studentLoginNextSequence);
+    }
 
     await createAuditLogServer(
       authUser.schoolId,
@@ -215,7 +254,10 @@ export async function PUT(req: NextRequest) {
           : "Updated institution profile and system configuration in Firestore."
     );
 
-    return NextResponse.json({ success: true, settings: updated });
+    return NextResponse.json({
+      success: true,
+      settings: { ...updated, studentLogin: await studentLoginView(updated) },
+    });
   } catch (error: any) {
     if (error instanceof Response) return error;
     const busy = serviceBusyResponseFor(error, "/api/settings");

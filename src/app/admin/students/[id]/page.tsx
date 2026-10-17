@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, use } from "react";
 import Link from "next/link";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
+import StudentAccountCard from "@/components/StudentAccountCard";
 import { CONDUCT_RATING_LABELS, OBSERVATION_CATEGORIES, OBSERVATION_CATEGORY_LABELS } from "@/lib/exam-results";
 
 export default function StudentDossierPage({
@@ -589,6 +590,7 @@ export default function StudentDossierPage({
           </div>
         </div>
       )}
+      {activeTab === "overview" && <StudentAccountCard studentId={id} loginEmail={student.user?.username || ""} />}
 
       {/* Tab 2: Attendance History */}
       {activeTab === "attendance" && (

@@ -844,6 +844,80 @@ export async function revokeSessionIdServer(uid: string, sid: string): Promise<v
 }
 
 // ---------------------------------------------------------------------------
+// MONOTONIC COUNTERS (server-only collection "counters", id = caller supplied key)
+// ---------------------------------------------------------------------------
+const localCounters = new Map<string, number>();
+
+/**
+ * Atomically hands out the next value of a counter and advances it, so two concurrent callers can
+ * never receive the same value. A value is never handed out twice, even if the record it was used
+ * for is later deleted (the counter only moves forward). The first value is `start`.
+ */
+export async function allocateCounterValueServer(key: string, start = 1): Promise<number> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("counters").doc(key);
+      return await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        const stored = snap.exists ? Number(snap.data()?.next) : NaN;
+        const value = Number.isInteger(stored) && stored >= start ? stored : start;
+        tx.set(ref, { next: value + 1, updatedAt: new Date().toISOString() }, { merge: true });
+        return value;
+      });
+    } catch (e) {
+      onFirestoreError(`allocateCounterValueServer(${key})`, e);
+      throw e;
+    }
+  }
+  // No await between the read and the write: atomic on the single JS thread.
+  const stored = localCounters.get(key);
+  const value = stored !== undefined && stored >= start ? stored : start;
+  localCounters.set(key, value + 1);
+  return value;
+}
+
+/** Moves a counter forward to at least `next` (never backwards, so issued values stay unique). */
+export async function raiseCounterToAtLeastServer(key: string, next: number): Promise<number> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("counters").doc(key);
+      return await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        const stored = snap.exists ? Number(snap.data()?.next) : NaN;
+        const value = Number.isInteger(stored) && stored >= next ? stored : next;
+        tx.set(ref, { next: value, updatedAt: new Date().toISOString() }, { merge: true });
+        return value;
+      });
+    } catch (e) {
+      onFirestoreError(`raiseCounterToAtLeastServer(${key})`, e);
+      throw e;
+    }
+  }
+  const stored = localCounters.get(key);
+  const value = stored !== undefined && stored >= next ? stored : next;
+  localCounters.set(key, value);
+  return value;
+}
+
+/** The value the next allocation would return (1 if the counter was never used). */
+export async function peekCounterServer(key: string, start = 1): Promise<number> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb.collection("counters").doc(key).get();
+      const stored = snap.exists ? Number(snap.data()?.next) : NaN;
+      return Number.isInteger(stored) && stored >= start ? stored : start;
+    } catch (e) {
+      onFirestoreError(`peekCounterServer(${key})`, e);
+      throw e;
+    }
+  }
+  const stored = localCounters.get(key);
+  return stored !== undefined && stored >= start ? stored : start;
+}
+
+// ---------------------------------------------------------------------------
 // ONE-TIME SCHOOL REGISTRATION SECRETS (server-only collection, id = sha256(secret))
 // ---------------------------------------------------------------------------
 const localConsumedRegistrationSecrets = new Set<string>();

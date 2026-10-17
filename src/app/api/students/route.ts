@@ -17,6 +17,7 @@ import { linkGuardianEmailToStudent } from "@/lib/link-parent";
 import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic-access";
 import { validateStudentDates } from "@/lib/date-utils";
 import { BCRYPT_COST, generateInitialPassword } from "@/lib/password-reset";
+import { allocateStudentLoginEmail, loginDomainFor, resolveLoginConfig } from "@/lib/student-login-id";
 import { z } from "zod";
 import { cnicNumber, documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
@@ -201,26 +202,12 @@ export async function POST(req: NextRequest) {
     const studentId = `std_${uniqueSuffix}`;
     const schoolSettings = await getSchoolSettingsServer(authUser.schoolId);
     const school = await getSchoolServer(authUser.schoolId);
-    const schoolEmail = schoolSettings?.email || school?.email || authUser.email || "alliedschool.edu";
-    const domain = schoolEmail.includes("@") ? schoolEmail.split("@")[1].trim().toLowerCase() : "alliedschool.edu";
-
-    const cleanFirst = firstName.trim().toLowerCase().replace(/[^a-z0-9]/g, "") || "student";
-    const cleanLast = lastName.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-    const rollSlug = rollNumber ? rollNumber.trim().toLowerCase().replace(/[^a-z0-9]/g, "") : "";
-    const baseUsername = cleanLast ? `student.${cleanFirst}.${cleanLast}` : `student.${cleanFirst}`;
-
-    const emailCandidates = [
-      `${baseUsername}@${domain}`,
-      rollSlug ? `${baseUsername}.${rollSlug}@${domain}` : `${baseUsername}.${count}@${domain}`,
-      `${baseUsername}.${studentId.replace(/[^a-z0-9]/g, "")}@${domain}`,
-    ];
-    let studentEmail = emailCandidates[0];
-    for (const candidate of emailCandidates) {
-      studentEmail = candidate;
-      const taken = await getUserByEmailServer(candidate);
-      if (!taken) break;
-    }
-    if (await getUserByEmailServer(studentEmail)) {
+    // Login ID: <prefix><campus><sequence>@<school domain> from an atomic, never-reused counter.
+    const domain = loginDomainFor(schoolSettings?.email || school?.email || authUser.email);
+    let studentEmail: string;
+    try {
+      studentEmail = (await allocateStudentLoginEmail(authUser.schoolId, domain, resolveLoginConfig(schoolSettings))).email;
+    } catch {
       return NextResponse.json({ error: "Could not allocate a unique student login email." }, { status: 409 });
     }
 

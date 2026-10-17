@@ -14,6 +14,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { generateInitialPassword } from "@/lib/password-reset";
+import { allocateStudentLoginEmail, isLoginEmailTaken, loginDomainFor, resolveLoginConfig } from "@/lib/student-login-id";
 import { neutralizeSpreadsheetFormula } from "@/lib/spreadsheet-parser";
 import { StudentDoc, UserProfile } from "@/lib/firebase/types";
 import { parseCsv, parseXlsx, SheetRows, SpreadsheetParseError } from "@/lib/spreadsheet-parser";
@@ -139,10 +140,6 @@ function sanitizeInput(raw: unknown): ImportRowInput {
   return input;
 }
 
-function emailSlug(v: string): string {
-  return v.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 type RowOutcome = {
   rowNumber: number;
   status: "IMPORTED" | "SKIPPED" | "FAILED";
@@ -207,26 +204,30 @@ async function commit(authUser: AuthenticatedUser, req: NextRequest) {
     return candidate;
   };
 
-  // Login emails: the row's own email, else the same student.first.last@<school domain> pattern
-  // as single enrollment. All candidates are checked in batched lookups, not one query per row.
+  // Login emails: the row's own email when given (and free), else the next <prefix><campus><sequence>
+  // address from the atomic counter shared with single enrolment.
   const [schoolSettings, school] = await Promise.all([getSchoolSettingsServer(schoolId), getSchoolServer(schoolId)]);
-  const schoolEmail = schoolSettings?.email || school?.email || authUser.email || "";
-  const domain = schoolEmail.includes("@") ? schoolEmail.split("@")[1].trim().toLowerCase() : "alliedschool.edu";
+  const domain = loginDomainFor(schoolSettings?.email || school?.email || authUser.email);
+  const loginConfig = resolveLoginConfig(schoolSettings);
 
-  const planned = accepted.map((r) => {
-    const admissionNo = r.student.admissionNo || nextAdmissionNo();
-    const parts = r.student.fullName.toLowerCase().split(/\s+/).map(emailSlug).filter(Boolean);
-    const base = `student.${parts[0] || "student"}${parts.length > 1 ? `.${parts[parts.length - 1]}` : ""}`;
-    const candidates = r.student.email
-      ? [r.student.email]
-      : [`${base}@${domain}`, `${base}.${emailSlug(admissionNo)}@${domain}`];
-    return { row: r, admissionNo, candidates };
-  });
-  const taken = await getUsersByEmailsServer(planned.flatMap((p) => p.candidates));
+  const planned = accepted.map((r) => ({ row: r, admissionNo: r.student.admissionNo || nextAdmissionNo() }));
+  const taken = await getUsersByEmailsServer(planned.map((p) => p.row.student.email).filter((e): e is string => !!e));
   const assigned = new Set<string>();
   const ready: { row: (typeof planned)[number]["row"]; admissionNo: string; loginEmail: string }[] = [];
   for (const p of planned) {
-    const loginEmail = p.candidates.find((c) => !taken.has(c) && !assigned.has(c));
+    let loginEmail: string | undefined;
+    const own = p.row.student.email;
+    if (own) {
+      loginEmail = !taken.has(own) && !assigned.has(own) ? own : undefined;
+    } else {
+      try {
+        loginEmail = (
+          await allocateStudentLoginEmail(schoolId, domain, loginConfig, async (e) => assigned.has(e) || (await isLoginEmailTaken(e)))
+        ).email;
+      } catch {
+        loginEmail = undefined;
+      }
+    }
     if (!loginEmail) {
       outcomes.push({ rowNumber: p.row.rowNumber, status: "FAILED", reason: "Could not allocate a unique login email." });
       continue;

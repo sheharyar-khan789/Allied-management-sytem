@@ -322,7 +322,7 @@ service cloud.firestore {
 
     // -------------------------------------------------------------
     // Everything not matched above (payrollRecords, passwordResetTokens, registrationSecrets,
-    // studentFeeLedgers, studentCharges and any future collection) is denied: Firestore rules deny every path no rule allows.
+    // studentFeeLedgers, studentCharges, counters and any future collection) is denied: Firestore rules deny every path no rule allows.
     // -------------------------------------------------------------
   }
 }

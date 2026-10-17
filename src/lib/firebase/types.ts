@@ -556,6 +556,15 @@ export interface SchoolSettingsDoc {
    * /api/exams PUT (marks), not just hidden in the UI.
    */
   examCategoryPermissions?: Partial<Record<ExamCategory, "ALLOWED" | "READ_ONLY">>;
+  /**
+   * Student login ID pattern: `<prefix><campus><sequence>@<school email domain>`, e.g.
+   * ASD + campus + 001 -> asdcampus001@<domain>. The sequence itself lives in a server-only
+   * counter (never reused); `studentLoginNextSequence` is only a value an admin asked the counter
+   * to be raised to.
+   */
+  studentLoginPrefix?: string;
+  studentLoginCampus?: string;
+  studentLoginPadding?: number;
   updatedAt: string;
 }
 
