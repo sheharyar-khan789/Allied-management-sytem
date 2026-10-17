@@ -1,32 +1,67 @@
 "use client";
 
 import React, { useEffect, useState, useCallback } from "react";
-import { calculateGrade, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
+import MarksEntryGrid from "@/components/MarksEntryGrid";
+import { DEFAULT_GRADING_SCALE, EXAM_CATEGORIES, EXAM_CATEGORY_LABELS } from "@/lib/exam-results";
 
+const STATUS_LABELS: Record<string, string> = {
+  UPCOMING: "Upcoming",
+  ONGOING: "Ongoing",
+  COMPLETED: "Completed",
+  PUBLISHED: "Published (visible to students & parents)",
+};
+
+const EMPTY_SCHEDULE = {
+  classId: "", subjectId: "", examDate: "", startTime: "", endTime: "", totalMarks: "100", passingMarks: "33", roomNo: "",
+};
+
+const inputCls =
+  "w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20";
+const labelCls = "block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1";
+const btnCls =
+  "inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container text-on-surface font-label-md text-xs font-semibold hover:bg-surface-container-high transition-all disabled:opacity-50";
+
+/**
+ * Exams & results workflow:
+ *  1. New Exam — name, term, dates (saved to `exams/{examId}`, tagged with the active session).
+ *  2. Add Subject — class, subject, date/time, max & passing marks (`examSchedules/{sch-exam-class-subject}`).
+ *  3. Enter marks per subject (`examResults/{schoolId_examId_studentId_subjectId}`).
+ *  4. Set the status to Published so students and parents can see the results and report cards.
+ */
 export default function ExamsManagementPage() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [selectedExamId, setSelectedExamId] = useState("");
   const [activeSheetUrl, setActiveSheetUrl] = useState("");
   const [showSheetUploader, setShowSheetUploader] = useState(false);
+  // Bumped to force the result-sheet FileUpload to remount and re-sync its preview to
+  // activeSheetUrl whenever a delete is cancelled or a save fails — see handleUpdateResultSheet.
+  const [sheetResetKey, setSheetResetKey] = useState(0);
   const [classes, setClasses] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [selectedScheduleId, setSelectedScheduleId] = useState("");
-  const [studentMarks, setStudentMarks] = useState<any[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [gradingScale, setGradingScale] = useState(DEFAULT_GRADING_SCALE);
 
   const [showNewExam, setShowNewExam] = useState(false);
-  const [newExam, setNewExam] = useState({ title: "", term: "", startDate: "", endDate: "", resultSheetUrl: "" });
+  const [newExam, setNewExam] = useState({ title: "", term: "", category: "", startDate: "", endDate: "", resultSheetUrl: "" });
   const [creatingExam, setCreatingExam] = useState(false);
 
-  const [showAddSchedule, setShowAddSchedule] = useState(false);
-  const [newSchedule, setNewSchedule] = useState({
-    classId: "", subjectId: "", examDate: "", startTime: "", endTime: "", totalMarks: "100", passingMarks: "33",
-  });
-  const [addingSchedule, setAddingSchedule] = useState(false);
+  const [showEditExam, setShowEditExam] = useState(false);
+  const [editExam, setEditExam] = useState({ title: "", term: "", category: "", startDate: "", endDate: "", status: "UPCOMING" });
+  const [savingExam, setSavingExam] = useState(false);
+  const [confirmDeleteExam, setConfirmDeleteExam] = useState(false);
+
+  const [showScheduleForm, setShowScheduleForm] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState(false);
+  const [newSchedule, setNewSchedule] = useState(EMPTY_SCHEDULE);
+  const [savingSchedule, setSavingSchedule] = useState(false);
+  const [confirmRemoveScheduleId, setConfirmRemoveScheduleId] = useState("");
+
   const [formError, setFormError] = useState("");
+  const [notice, setNotice] = useState("");
 
   const loadClasses = useCallback(() => {
     fetch("/api/classes")
@@ -37,76 +72,110 @@ export default function ExamsManagementPage() {
       .catch(console.error);
   }, []);
 
-  const loadExams = useCallback((examId?: string) => {
-    setLoading(true);
-    // Only the selected schedule's roster is loaded; others are fetched when selected.
-    const qs = `?rosters=one${examId ? `&examId=${encodeURIComponent(examId)}` : ""}`;
-    return fetch(`/api/exams${qs}`)
-      .then((res) => res.json())
-      .then((json) => {
-        if (json.success) {
-          setData(json);
-          const activeId = examId || json.activeExam?.id || json.exams[0]?.id || "";
-          setSelectedExamId(activeId);
-          setActiveSheetUrl(json.activeExam?.resultSheetUrl || "");
-          const scheds = json.activeExam?.schedules || [];
-          setSchedules(scheds);
-          if (scheds.length > 0) {
-            setSelectedScheduleId(scheds[0].id);
-            initStudentMarks(scheds[0]);
-          } else {
-            setSelectedScheduleId("");
-            setStudentMarks([]);
-          }
-        }
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
-
-  const handleUpdateResultSheet = async (url: string) => {
-    if (!selectedExamId) return;
+  // silent: refresh without the full-page spinner (used after saving marks, so the grid stays).
+  const loadExams = useCallback(async (examId?: string, scheduleId?: string, silent = false) => {
+    if (!silent) setLoading(true);
+    setLoadError("");
     try {
-      const res = await fetch("/api/exams", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ examId: selectedExamId, resultSheetUrl: url }),
-      });
-      if (res.ok) {
-        setActiveSheetUrl(url);
-        await loadExams(selectedExamId);
+      const params = new URLSearchParams({ rosters: "one" });
+      if (examId) params.set("examId", examId);
+      if (scheduleId) params.set("scheduleId", scheduleId);
+      const res = await fetch(`/api/exams?${params.toString()}`, { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        setLoadError(json.error || "Could not load exams.");
+        return;
       }
-    } catch (err) {
-      console.error(err);
+      setData(json);
+      setGradingScale(json.gradingScale || DEFAULT_GRADING_SCALE);
+      const active = json.activeExam;
+      setSelectedExamId(active?.id || "");
+      setActiveSheetUrl(active?.resultSheetUrl || "");
+      if (active) {
+        setEditExam({
+          title: active.title || "",
+          term: active.term || "",
+          category: active.category || "",
+          startDate: active.startDate || "",
+          endDate: active.endDate || "",
+          status: active.status || "UPCOMING",
+        });
+      }
+      const scheds = active?.schedules || [];
+      setSchedules(scheds);
+      setSelectedScheduleId((scheds.find((s: any) => s.results) || scheds[0])?.id || "");
+    } catch {
+      setLoadError("Could not load exams. Check your connection and try again.");
+    } finally {
+      setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadExams();
     loadClasses();
   }, [loadExams, loadClasses]);
 
+  const activeExam = data?.activeExam;
+  const activeSchedule = schedules.find((s) => s.id === selectedScheduleId);
+
+  const callApi = async (method: string, body?: unknown, query = "") => {
+    const res = await fetch(`/api/exams${query}`, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok && json.success !== false, json };
+  };
+
+  const handleUpdateResultSheet = async (url: string) => {
+    if (!selectedExamId) return;
+    setFormError("");
+    // Removing the attached document is a real, immediate deletion (it's already persisted and
+    // the underlying file is cleaned up from Storage) — confirm before it happens. A new
+    // upload replacing the existing one is not gated: the old file is still safely retired by
+    // the server, and re-attaching is one click away.
+    if (!url && activeSheetUrl) {
+      const confirmed = window.confirm(
+        "Delete the attached date sheet / result sheet from this exam? This cannot be undone."
+      );
+      if (!confirmed) {
+        setSheetResetKey((k) => k + 1); // re-sync the uploader's preview back to the current document
+        return;
+      }
+    }
+    const { ok, json } = await callApi("PUT", { examId: selectedExamId, resultSheetUrl: url });
+    if (!ok) {
+      setFormError(json.error || "Could not attach the document.");
+      setSheetResetKey((k) => k + 1); // the upload may have succeeded client-side; re-sync to what's actually saved
+      return;
+    }
+    setActiveSheetUrl(url);
+    await loadExams(selectedExamId, selectedScheduleId, true);
+  };
+
   const handleCreateExam = async () => {
     setFormError("");
-    if (!newExam.title || !newExam.startDate || !newExam.endDate) {
+    setNotice("");
+    if (!newExam.title.trim() || !newExam.startDate || !newExam.endDate) {
       setFormError("Title, start date, and end date are required.");
       return;
     }
     setCreatingExam(true);
     try {
-      const res = await fetch("/api/exams", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newExam),
-      });
-      const json = await res.json();
-      if (!res.ok) {
+      const { ok, json } = await callApi("POST", newExam);
+      if (!ok) {
         setFormError(json.error || "Failed to create exam.");
         return;
       }
       setShowNewExam(false);
-      setNewExam({ title: "", term: "", startDate: "", endDate: "", resultSheetUrl: "" });
+      setNewExam({ title: "", term: "", category: "", startDate: "", endDate: "", resultSheetUrl: "" });
+      setNotice(`Exam "${json.exam.name}" created. Next: add its subjects.`);
       await loadExams(json.exam.id);
+      setShowScheduleForm(true);
+      setEditingSchedule(false);
+      setNewSchedule(EMPTY_SCHEDULE);
     } catch {
       setFormError("Failed to create exam.");
     } finally {
@@ -114,164 +183,133 @@ export default function ExamsManagementPage() {
     }
   };
 
-  const handleAddSchedule = async () => {
+  const handleSaveExam = async () => {
+    if (!selectedExamId) return;
     setFormError("");
+    setNotice("");
+    setSavingExam(true);
+    try {
+      const { ok, json } = await callApi("PUT", { examId: selectedExamId, ...editExam });
+      if (!ok) {
+        setFormError(json.error || "Could not update the exam.");
+        return;
+      }
+      setShowEditExam(false);
+      setNotice(
+        editExam.status === "PUBLISHED"
+          ? "Exam saved and published — students and parents can now see its results."
+          : "Exam details saved."
+      );
+      await loadExams(selectedExamId, selectedScheduleId, true);
+    } finally {
+      setSavingExam(false);
+    }
+  };
+
+  const handleDeleteExam = async () => {
+    if (!selectedExamId) return;
+    setFormError("");
+    setNotice("");
+    const { ok, json } = await callApi("DELETE", undefined, `?examId=${encodeURIComponent(selectedExamId)}`);
+    setConfirmDeleteExam(false);
+    if (!ok) {
+      setFormError(json.error || "Could not delete the exam.");
+      return;
+    }
+    setShowEditExam(false);
+    setNotice("Exam deleted.");
+    await loadExams();
+  };
+
+  const openScheduleForm = (sched?: any) => {
+    setFormError("");
+    setEditingSchedule(Boolean(sched));
+    setNewSchedule(
+      sched
+        ? {
+            classId: sched.classId,
+            subjectId: sched.subjectId,
+            examDate: sched.examDate || "",
+            startTime: sched.startTime || "",
+            endTime: sched.endTime || "",
+            totalMarks: String(sched.maxMarks ?? 100),
+            passingMarks: String(sched.passingMarks ?? 33),
+            roomNo: sched.roomNo || "",
+          }
+        : EMPTY_SCHEDULE
+    );
+    setShowScheduleForm(true);
+  };
+
+  const handleSaveSchedule = async () => {
+    setFormError("");
+    setNotice("");
     if (!selectedExamId || !newSchedule.classId || !newSchedule.subjectId || !newSchedule.examDate || !newSchedule.startTime || !newSchedule.endTime) {
       setFormError("Class, subject, date, and both times are required.");
       return;
     }
-    setAddingSchedule(true);
+    const total = Number(newSchedule.totalMarks);
+    const passing = Number(newSchedule.passingMarks);
+    if (!(total > 0)) return setFormError("Maximum marks must be a positive number.");
+    if (!(passing >= 0) || passing > total) return setFormError("Passing marks must be between 0 and the maximum marks.");
+    setSavingSchedule(true);
     try {
-      const res = await fetch("/api/exams", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ examId: selectedExamId, ...newSchedule }),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        setFormError(json.error || "Failed to add schedule.");
+      const { ok, json } = await callApi("PATCH", { examId: selectedExamId, ...newSchedule });
+      if (!ok) {
+        setFormError(json.error || "Failed to save the subject schedule.");
         return;
       }
-      setShowAddSchedule(false);
-      setNewSchedule({ classId: "", subjectId: "", examDate: "", startTime: "", endTime: "", totalMarks: "100", passingMarks: "33" });
-      await loadExams(selectedExamId);
-    } catch {
-      setFormError("Failed to add schedule.");
-    } finally {
-      setAddingSchedule(false);
-    }
-  };
-
-  const initStudentMarks = (schedule: any) => {
-    if (schedule.results && schedule.results.length > 0) {
-      setStudentMarks(
-        schedule.results.map((r: any) => ({
-          studentId: r.studentId,
-          name: `${r.student?.firstName} ${r.student?.lastName}`,
-          rollNumber: r.student?.rollNumber,
-          admissionNumber: r.student?.admissionNumber,
-          marksObtained: r.marksObtained,
-          maxMarks: r.maxMarks,
-          grade: r.grade,
-          gpa: r.gpa,
-          remarks: r.remarks || "",
-          cardUrl: r.cardUrl || "",
-        }))
+      setShowScheduleForm(false);
+      setNewSchedule(EMPTY_SCHEDULE);
+      setNotice(
+        json.updated
+          ? `Subject schedule updated${json.resultsRecomputed ? `; ${json.resultsRecomputed} recorded result(s) re-graded with the new marks` : ""}.`
+          : "Subject added. Select it below to enter marks."
       );
-    } else {
-      setStudentMarks([]);
+      await loadExams(selectedExamId, json.schedule?.id);
+    } catch {
+      setFormError("Failed to save the subject schedule.");
+    } finally {
+      setSavingSchedule(false);
     }
   };
 
-  const handleScheduleSelect = async (schedId: string) => {
-    setSelectedScheduleId(schedId);
-    const sched = schedules.find((s) => s.id === schedId);
-    if (!sched) return;
-    if (sched.results) {
-      initStudentMarks(sched);
+  const handleRemoveSchedule = async (scheduleId: string) => {
+    setFormError("");
+    setNotice("");
+    const { ok, json } = await callApi("DELETE", undefined, `?scheduleId=${encodeURIComponent(scheduleId)}`);
+    setConfirmRemoveScheduleId("");
+    if (!ok) {
+      setFormError(json.error || "Could not remove the subject.");
       return;
     }
-    // Roster not loaded yet: fetch just this schedule's roster and marks.
-    setStudentMarks([]);
-    try {
-      const params = new URLSearchParams({ rosters: "one", scheduleId: schedId });
-      if (selectedExamId) params.set("examId", selectedExamId);
-      const json = await fetch(`/api/exams?${params.toString()}`).then((res) => res.json());
-      const loaded = json?.activeExam?.schedules?.find((s: any) => s.id === schedId);
-      if (loaded) {
-        setSchedules((prev) => prev.map((s) => (s.id === schedId ? loaded : s)));
-        initStudentMarks(loaded);
-      }
-    } catch (err) {
-      console.error(err);
-    }
+    setNotice("Subject removed from this exam.");
+    await loadExams(selectedExamId, undefined, true);
   };
 
-  const handleMarkChange = (studentId: string, marks: number, maxMarks: number = 100) => {
-    const clamped = Math.max(0, Math.min(maxMarks, marks));
-    const pct = (clamped / maxMarks) * 100;
-    const { grade, gpa, remarks } = calculateGrade(pct);
-
-    setStudentMarks((prev) =>
-      prev.map((sm) =>
-        sm.studentId === studentId
-          ? { ...sm, marksObtained: clamped, grade, gpa, remarks }
-          : sm
-      )
-    );
-    setSaveSuccess(false);
-  };
-
-  const handleSaveMarks = async () => {
-    if (!selectedScheduleId) return;
-    setSaving(true);
-
-    try {
-      const res = await fetch("/api/exams", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          examScheduleId: selectedScheduleId,
-          studentMarks: studentMarks.map((sm) => ({
-            studentId: sm.studentId,
-            marksObtained: Number(sm.marksObtained),
-            remarks: sm.remarks,
-            cardUrl: sm.cardUrl || undefined,
-          })),
-        }),
-      });
-
-      if (res.ok) {
-        setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 3000);
-        // The cached roster of this schedule is now stale: reload it if it is selected again.
-        const savedId = selectedScheduleId;
-        setSchedules((prev) => prev.map((s) => (s.id === savedId ? { ...s, results: null } : s)));
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const activeSchedule = schedules.find((s) => s.id === selectedScheduleId);
+  const scheduleClass = classes.find((c) => c.id === newSchedule.classId);
 
   return (
     <div className="flex flex-col w-full gap-space-lg">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="font-headline-lg text-2xl font-bold text-on-surface">
-              Examinations & Rapid Gradebook
-            </h1>
-            <span className="px-2.5 py-0.5 rounded-full bg-secondary/10 text-secondary font-label-sm text-xs font-bold">
-              Gradebook Terminal
-            </span>
-          </div>
-          <p className="font-body-md text-xs text-on-surface-variant mt-0.5">
-            Manage examination timetables, process mark sheets, and auto-compute GPA & letter grades.
-          </p>
+      <div>
+        <div className="flex items-center gap-2">
+          <h1 className="font-headline-lg text-2xl font-bold text-on-surface">Examinations &amp; Results</h1>
+          <span className="px-2.5 py-0.5 rounded-full bg-secondary/10 text-secondary font-label-sm text-xs font-bold">Gradebook</span>
         </div>
-
-        <button
-          onClick={handleSaveMarks}
-          disabled={saving || !selectedScheduleId}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 shadow-sm transition-all disabled:opacity-50 self-start sm:self-auto"
-        >
-          <span className="material-symbols-outlined text-[18px]">save</span>
-          <span>{saving ? "Saving Marks..." : "Save & Finalize Grades"}</span>
-        </button>
+        <p className="font-body-md text-xs text-on-surface-variant mt-0.5">
+          1. Create an exam • 2. Add its subjects with maximum and passing marks • 3. Enter marks per subject • 4. Publish to show results to students and parents.
+        </p>
       </div>
 
-      {saveSuccess && (
+      {loadError && (
+        <div className="p-3 rounded-lg bg-error-container/10 border border-error/30 text-error text-xs font-bold">{loadError}</div>
+      )}
+      {notice && (
         <div className="p-3 rounded-lg bg-tertiary-container/10 border border-on-tertiary-container/30 text-on-tertiary-container text-xs font-bold flex items-center gap-2">
           <span className="material-symbols-outlined text-[18px]">check_circle</span>
-          <span>Exam grades computed and saved into student academic records successfully.</span>
+          <span>{notice}</span>
         </div>
       )}
-
       {formError && (
         <div className="p-3 rounded-lg bg-error-container/10 border border-error/30 text-error text-xs font-bold flex items-center gap-2">
           <span className="material-symbols-outlined text-[18px]">error</span>
@@ -279,65 +317,79 @@ export default function ExamsManagementPage() {
         </div>
       )}
 
-      {/* Exam cycle selection + creation */}
+      {/* Exam selection + actions */}
       <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-wrap items-center justify-between gap-4">
         <div>
-          <label htmlFor="exams-examination-cycle-1" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">
-            Examination Cycle
-          </label>
+          <label htmlFor="exams-examination-cycle-1" className={labelCls}>Exam</label>
           {data?.exams?.length > 0 ? (
-            <select id="exams-examination-cycle-1"
-              value={selectedExamId}
-              onChange={(e) => loadExams(e.target.value)}
-              className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-            >
-              {data.exams.map((e: any) => (
-                <option key={e.id} value={e.id}>
-                  {e.title} ({e.term})
-                </option>
-              ))}
-            </select>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                id="exams-examination-cycle-1"
+                value={selectedExamId}
+                onChange={(e) => {
+                  setNotice("");
+                  setFormError("");
+                  setShowEditExam(false);
+                  loadExams(e.target.value);
+                }}
+                className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+              >
+                {data.exams.map((e: any) => (
+                  <option key={e.id} value={e.id}>{e.title} ({e.term})</option>
+                ))}
+              </select>
+              {activeExam && (
+                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${activeExam.status === "PUBLISHED" ? "bg-tertiary-container/10 text-on-tertiary-container" : "bg-surface-container text-on-surface-variant"}`}>
+                  {STATUS_LABELS[activeExam.status] || activeExam.status}
+                </span>
+              )}
+              {activeExam?.category && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-secondary/10 text-secondary">
+                  {EXAM_CATEGORY_LABELS[activeExam.category as keyof typeof EXAM_CATEGORY_LABELS] || activeExam.category}
+                </span>
+              )}
+              {activeExam && activeExam.teacherMarksPermission === "READ_ONLY" && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-error-container/10 text-error" title="Teachers can view this exam's marks but cannot enter or edit them; only an administrator can.">
+                  Teachers: Read-only
+                </span>
+              )}
+            </div>
           ) : (
-            <p className="text-xs text-on-surface-variant">No examination cycles created yet.</p>
+            <p className="text-xs text-on-surface-variant">{loading ? "Loading..." : "No exams created for this session yet."}</p>
+          )}
+          {activeExam && (
+            <p className="text-[11px] text-on-surface-variant mt-1">
+              Session {activeExam.session || "—"} • {formatDate(activeExam.startDate)} – {formatDate(activeExam.endDate)}
+            </p>
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {activeSheetUrl && (
-            <a
-              href={activeSheetUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/10 text-primary font-label-md text-xs font-semibold hover:bg-primary/20 transition-all"
-              title="View or download attached exam result sheet / timetable"
-            >
+            <a href={activeSheetUrl} target="_blank" rel="noopener noreferrer" className={btnCls} title="View or download the attached date sheet / result sheet">
               <span className="material-symbols-outlined text-[18px]">description</span>
-              <span>View Date Sheet / Results</span>
+              <span>View / Download Date Sheet</span>
             </a>
           )}
           {selectedExamId && (
-            <button
-              onClick={() => setShowSheetUploader((v) => !v)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container text-on-surface font-label-md text-xs font-semibold hover:bg-surface-container-high transition-all"
-              title="Attach or replace result sheet / timetable document"
-            >
+            <button type="button" onClick={() => setShowSheetUploader((v) => !v)} className={btnCls}>
               <span className="material-symbols-outlined text-[18px]">upload_file</span>
               <span>{activeSheetUrl ? "Update Document" : "Attach Document"}</span>
             </button>
           )}
-          <button
-            onClick={() => setShowNewExam((v) => !v)}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-container text-on-surface font-label-md text-xs font-semibold hover:bg-surface-container-high transition-all"
-          >
+          {selectedExamId && (
+            <button type="button" onClick={() => { setShowEditExam((v) => !v); setConfirmDeleteExam(false); }} className={btnCls}>
+              <span className="material-symbols-outlined text-[18px]">edit</span>
+              <span>Edit / Publish</span>
+            </button>
+          )}
+          <button type="button" onClick={() => setShowNewExam((v) => !v)} className={btnCls}>
             <span className="material-symbols-outlined text-[18px]">add</span>
             <span>New Exam</span>
           </button>
           {selectedExamId && (
-            <button
-              onClick={() => setShowAddSchedule((v) => !v)}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-container text-on-surface font-label-md text-xs font-semibold hover:bg-surface-container-high transition-all"
-            >
+            <button type="button" onClick={() => openScheduleForm()} className={btnCls}>
               <span className="material-symbols-outlined text-[18px]">event</span>
-              <span>Add Subject Schedule</span>
+              <span>Add Subject</span>
             </button>
           )}
         </div>
@@ -347,22 +399,18 @@ export default function ExamsManagementPage() {
         <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-3">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold text-on-surface">Attach Exam Date Sheet / Consolidated Result Sheet</h4>
-            <button
-              onClick={() => setShowSheetUploader(false)}
-              className="text-on-surface-variant hover:text-on-surface"
-            >
+            <button type="button" onClick={() => setShowSheetUploader(false)} className="text-on-surface-variant hover:text-on-surface">
               <span className="material-symbols-outlined text-[18px]">close</span>
             </button>
           </div>
           <FileUpload
+            key={sheetResetKey}
             folder="result-cards"
             value={activeSheetUrl}
-            onChange={(url) => {
-              handleUpdateResultSheet(url);
-            }}
+            onChange={(url) => handleUpdateResultSheet(url)}
             accept="image/*,application/pdf"
             previewType="file"
-            helperText="Upload official exam timetable, date sheet, or consolidated result sheet (Max 10MB)"
+            helperText="Upload official exam timetable, date sheet, or consolidated result sheet (Max 10MB). Removing it deletes the file."
           />
         </div>
       )}
@@ -370,45 +418,39 @@ export default function ExamsManagementPage() {
       {showNewExam && (
         <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
           <div>
-            <label htmlFor="exams-title-2" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Title</label>
-            <input id="exams-title-2"
-              value={newExam.title}
+            <label htmlFor="exams-title-2" className={labelCls}>Title</label>
+            <input id="exams-title-2" maxLength={160} value={newExam.title}
               onChange={(e) => setNewExam((s) => ({ ...s, title: e.target.value }))}
-              placeholder="Mid-Term Examination"
-              className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-            />
+              placeholder="Mid-Term Examination" className={inputCls} />
           </div>
           <div>
-            <label htmlFor="exams-term-3" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Term</label>
-            <input id="exams-term-3"
-              value={newExam.term}
+            <label htmlFor="exams-term-3" className={labelCls}>Term</label>
+            <input id="exams-term-3" maxLength={80} value={newExam.term}
               onChange={(e) => setNewExam((s) => ({ ...s, term: e.target.value }))}
-              placeholder="Mid-Term"
-              className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-            />
+              placeholder="Mid-Term" className={inputCls} />
           </div>
           <div>
-            <label htmlFor="exams-start-date-4" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Start Date</label>
-            <input id="exams-start-date-4"
-              type="date"
-              value={newExam.startDate}
-              onChange={(e) => setNewExam((s) => ({ ...s, startDate: e.target.value }))}
-              className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-            />
+            <label htmlFor="exams-category" className={labelCls}>Category</label>
+            <select id="exams-category" value={newExam.category}
+              onChange={(e) => setNewExam((s) => ({ ...s, category: e.target.value }))} className={inputCls}>
+              <option value="">— Uncategorized —</option>
+              {EXAM_CATEGORIES.map((c) => (
+                <option key={c} value={c}>{EXAM_CATEGORY_LABELS[c]}</option>
+              ))}
+            </select>
           </div>
           <div>
-            <label htmlFor="exams-end-date-5" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">End Date</label>
-            <input id="exams-end-date-5"
-              type="date"
-              value={newExam.endDate}
-              onChange={(e) => setNewExam((s) => ({ ...s, endDate: e.target.value }))}
-              className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-            />
+            <label htmlFor="exams-start-date-4" className={labelCls}>Start Date</label>
+            <input id="exams-start-date-4" type="date" value={newExam.startDate}
+              onChange={(e) => setNewExam((s) => ({ ...s, startDate: e.target.value }))} className={inputCls} />
+          </div>
+          <div>
+            <label htmlFor="exams-end-date-5" className={labelCls}>End Date</label>
+            <input id="exams-end-date-5" type="date" value={newExam.endDate}
+              onChange={(e) => setNewExam((s) => ({ ...s, endDate: e.target.value }))} className={inputCls} />
           </div>
           <div className="sm:col-span-4">
-            <label className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">
-              Result Sheet / Timetable Document (Optional)
-            </label>
+            <label className={labelCls}>Result Sheet / Timetable Document (Optional)</label>
             <FileUpload
               folder="result-cards"
               value={newExam.resultSheetUrl}
@@ -419,26 +461,85 @@ export default function ExamsManagementPage() {
             />
           </div>
           <div className="sm:col-span-4">
-            <button
-              onClick={handleCreateExam}
-              disabled={creatingExam}
-              className="px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50"
-            >
-              {creatingExam ? "Creating..." : "Create Exam Cycle"}
+            <button type="button" onClick={handleCreateExam} disabled={creatingExam}
+              className="px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50">
+              {creatingExam ? "Creating..." : "Create Exam"}
             </button>
           </div>
         </div>
       )}
 
-      {showAddSchedule && selectedExamId && (
-        <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+      {showEditExam && activeExam && (
+        <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 grid grid-cols-1 sm:grid-cols-5 gap-3 items-end">
           <div>
-            <label htmlFor="exams-class-6" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Class</label>
-            <select id="exams-class-6"
-              value={newSchedule.classId}
-              onChange={(e) => setNewSchedule((s) => ({ ...s, classId: e.target.value, subjectId: "" }))}
-              className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-            >
+            <label htmlFor="exams-edit-title" className={labelCls}>Title</label>
+            <input id="exams-edit-title" maxLength={160} value={editExam.title}
+              onChange={(e) => setEditExam((s) => ({ ...s, title: e.target.value }))} className={inputCls} />
+          </div>
+          <div>
+            <label htmlFor="exams-edit-term" className={labelCls}>Term</label>
+            <input id="exams-edit-term" maxLength={80} value={editExam.term}
+              onChange={(e) => setEditExam((s) => ({ ...s, term: e.target.value }))} className={inputCls} />
+          </div>
+          <div>
+            <label htmlFor="exams-edit-category" className={labelCls}>Category</label>
+            <select id="exams-edit-category" value={editExam.category}
+              onChange={(e) => setEditExam((s) => ({ ...s, category: e.target.value }))} className={inputCls}>
+              <option value="">— Uncategorized —</option>
+              {EXAM_CATEGORIES.map((c) => (
+                <option key={c} value={c}>{EXAM_CATEGORY_LABELS[c]}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="exams-edit-start" className={labelCls}>Start Date</label>
+            <input id="exams-edit-start" type="date" value={editExam.startDate}
+              onChange={(e) => setEditExam((s) => ({ ...s, startDate: e.target.value }))} className={inputCls} />
+          </div>
+          <div>
+            <label htmlFor="exams-edit-end" className={labelCls}>End Date</label>
+            <input id="exams-edit-end" type="date" value={editExam.endDate}
+              onChange={(e) => setEditExam((s) => ({ ...s, endDate: e.target.value }))} className={inputCls} />
+          </div>
+          <div>
+            <label htmlFor="exams-edit-status" className={labelCls}>Status</label>
+            <select id="exams-edit-status" value={editExam.status}
+              onChange={(e) => setEditExam((s) => ({ ...s, status: e.target.value }))} className={inputCls}>
+              {Object.entries(STATUS_LABELS).map(([v, l]) => (
+                <option key={v} value={v}>{l}</option>
+              ))}
+            </select>
+          </div>
+          <div className="sm:col-span-5 flex flex-wrap items-center gap-2">
+            <button type="button" onClick={handleSaveExam} disabled={savingExam}
+              className="px-4 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50">
+              {savingExam ? "Saving..." : "Save Exam"}
+            </button>
+            {confirmDeleteExam ? (
+              <>
+                <span className="text-xs text-error font-semibold">Delete this exam and its subject schedules? Only possible while no marks are recorded.</span>
+                <button type="button" onClick={handleDeleteExam} className="px-3 py-2 rounded-lg bg-error text-on-error text-xs font-semibold">Yes, delete</button>
+                <button type="button" onClick={() => setConfirmDeleteExam(false)} className={btnCls}>Keep</button>
+              </>
+            ) : (
+              <button type="button" onClick={() => setConfirmDeleteExam(true)} className={`${btnCls} text-error`}>
+                <span className="material-symbols-outlined text-[18px]">delete</span>
+                <span>Delete Exam</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showScheduleForm && selectedExamId && (
+        <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+          <p className="sm:col-span-3 text-xs font-bold text-on-surface">
+            {editingSchedule ? "Edit subject schedule" : "Add a subject to this exam"}
+          </p>
+          <div>
+            <label htmlFor="exams-class-6" className={labelCls}>Class</label>
+            <select id="exams-class-6" value={newSchedule.classId} disabled={editingSchedule}
+              onChange={(e) => setNewSchedule((s) => ({ ...s, classId: e.target.value, subjectId: "" }))} className={`${inputCls} disabled:opacity-60`}>
               <option value="">Select class</option>
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>{c.displayName}</option>
@@ -446,214 +547,117 @@ export default function ExamsManagementPage() {
             </select>
           </div>
           <div>
-            <label htmlFor="exams-subject-7" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Subject</label>
-            <select id="exams-subject-7"
-              value={newSchedule.subjectId}
-              onChange={(e) => setNewSchedule((s) => ({ ...s, subjectId: e.target.value }))}
-              disabled={!newSchedule.classId}
-              className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20 disabled:opacity-50"
-            >
+            <label htmlFor="exams-subject-7" className={labelCls}>Subject</label>
+            <select id="exams-subject-7" value={newSchedule.subjectId} disabled={!newSchedule.classId || editingSchedule}
+              onChange={(e) => setNewSchedule((s) => ({ ...s, subjectId: e.target.value }))} className={`${inputCls} disabled:opacity-60`}>
               <option value="">Select subject</option>
-              {(classes.find((c) => c.id === newSchedule.classId)?.subjects || []).map((sub: any) => (
+              {(scheduleClass?.subjects || []).map((sub: any) => (
                 <option key={sub.id} value={sub.id}>{sub.name}</option>
               ))}
             </select>
+            {newSchedule.classId && (scheduleClass?.subjects || []).length === 0 && (
+              <p className="text-[10px] text-error mt-1">This class has no subjects. Add them in Classes first.</p>
+            )}
           </div>
           <div>
-            <label htmlFor="exams-exam-date-8" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Exam Date</label>
-            <input id="exams-exam-date-8"
-              type="date"
-              value={newSchedule.examDate}
-              onChange={(e) => setNewSchedule((s) => ({ ...s, examDate: e.target.value }))}
-              className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-            />
+            <label htmlFor="exams-exam-date-8" className={labelCls}>Exam Date</label>
+            <input id="exams-exam-date-8" type="date" value={newSchedule.examDate}
+              onChange={(e) => setNewSchedule((s) => ({ ...s, examDate: e.target.value }))} className={inputCls} />
           </div>
           <div>
-            <label htmlFor="exams-start-time-9" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Start Time</label>
-            <input id="exams-start-time-9"
-              type="time"
-              value={newSchedule.startTime}
-              onChange={(e) => setNewSchedule((s) => ({ ...s, startTime: e.target.value }))}
-              className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-            />
+            <label htmlFor="exams-start-time-9" className={labelCls}>Start Time</label>
+            <input id="exams-start-time-9" type="time" value={newSchedule.startTime}
+              onChange={(e) => setNewSchedule((s) => ({ ...s, startTime: e.target.value }))} className={inputCls} />
           </div>
           <div>
-            <label htmlFor="exams-end-time-10" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">End Time</label>
-            <input id="exams-end-time-10"
-              type="time"
-              value={newSchedule.endTime}
-              onChange={(e) => setNewSchedule((s) => ({ ...s, endTime: e.target.value }))}
-              className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-            />
+            <label htmlFor="exams-end-time-10" className={labelCls}>End Time</label>
+            <input id="exams-end-time-10" type="time" value={newSchedule.endTime}
+              onChange={(e) => setNewSchedule((s) => ({ ...s, endTime: e.target.value }))} className={inputCls} />
           </div>
           <div>
-            <label htmlFor="exams-max-passing-marks-11" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Max / Passing Marks</label>
+            <label htmlFor="exams-max-marks-11" className={labelCls}>Max / Passing Marks</label>
             <div className="flex gap-2">
-              <input id="exams-max-passing-marks-11"
-                type="number"
-                value={newSchedule.totalMarks}
-                onChange={(e) => setNewSchedule((s) => ({ ...s, totalMarks: e.target.value }))}
-                className="w-1/2 h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-              />
-              <input
-                type="number"
-                value={newSchedule.passingMarks}
-                onChange={(e) => setNewSchedule((s) => ({ ...s, passingMarks: e.target.value }))}
-                className="w-1/2 h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-              />
+              <input id="exams-max-marks-11" type="number" min={1} aria-label="Maximum marks" value={newSchedule.totalMarks}
+                onChange={(e) => setNewSchedule((s) => ({ ...s, totalMarks: e.target.value }))} className={inputCls} />
+              <input type="number" min={0} aria-label="Passing marks" value={newSchedule.passingMarks}
+                onChange={(e) => setNewSchedule((s) => ({ ...s, passingMarks: e.target.value }))} className={inputCls} />
             </div>
           </div>
-          <div className="sm:col-span-3">
-            <button
-              onClick={handleAddSchedule}
-              disabled={addingSchedule}
-              className="px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50"
-            >
-              {addingSchedule ? "Adding..." : "Add Schedule"}
+          <div>
+            <label htmlFor="exams-room-12" className={labelCls}>Room (optional)</label>
+            <input id="exams-room-12" maxLength={40} value={newSchedule.roomNo}
+              onChange={(e) => setNewSchedule((s) => ({ ...s, roomNo: e.target.value }))} className={inputCls} />
+          </div>
+          <div className="sm:col-span-3 flex gap-2">
+            <button type="button" onClick={handleSaveSchedule} disabled={savingSchedule}
+              className="px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50">
+              {savingSchedule ? "Saving..." : editingSchedule ? "Save Changes" : "Add Subject"}
             </button>
+            <button type="button" onClick={() => setShowScheduleForm(false)} className={btnCls}>Cancel</button>
           </div>
         </div>
       )}
 
-      {/* Selector Ribbon: Schedule selection */}
-      <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <div>
-            <label htmlFor="exams-select-examination-subject-schedule-12" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">
-              Select Examination Subject Schedule
-            </label>
-            {schedules.length > 0 ? (
-              <select id="exams-select-examination-subject-schedule-12"
-                value={selectedScheduleId}
-                onChange={(e) => handleScheduleSelect(e.target.value)}
-                className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-              >
-                {schedules.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.subject?.name} — {s.class?.name}-{s.class?.section} (Max: {s.maxMarks} Marks)
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <p className="text-xs text-on-surface-variant">No subject schedules configured for this exam yet.</p>
-            )}
-          </div>
-        </div>
-
-        {activeSchedule && (
-          <div className="flex items-center gap-3 text-xs">
-            <div className="px-3 py-1.5 rounded-lg bg-surface-container font-semibold text-on-surface">
-              Exam Date: {formatDate(activeSchedule.examDate)}
-            </div>
-            <div className="px-3 py-1.5 rounded-lg bg-surface-container font-semibold text-on-surface">
-              Passing: {activeSchedule.passingMarks} / {activeSchedule.maxMarks}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Rapid Marks Entry Grid */}
-      <div className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">
-        {loading ? (
-          <div className="p-12 flex flex-col items-center justify-center space-y-3">
-            <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
-            <p className="text-xs text-on-surface-variant">Loading exam mark sheets...</p>
-          </div>
-        ) : studentMarks.length === 0 ? (
-          <div className="p-12 text-center space-y-2">
-            <span className="material-symbols-outlined text-4xl text-outline-variant">assignment_turned_in</span>
-            <p className="text-sm font-semibold text-on-surface">No student mark entries found for this schedule</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
+      {/* Subjects of the selected exam */}
+      {selectedExamId && (
+        <div className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-x-auto">
+          {schedules.length === 0 ? (
+            <p className="p-6 text-xs text-on-surface-variant text-center">
+              No subjects added to this exam yet. Use “Add Subject” to configure subjects and their maximum marks.
+            </p>
+          ) : (
+            <table className="w-full text-left text-xs">
               <thead>
-                <tr className="bg-surface-container-low text-on-surface-variant font-label-sm text-[11px] uppercase tracking-wider border-b border-surface-container-high/40">
-                  <th className="py-3 px-4 font-bold">Roll #</th>
-                  <th className="py-3 px-4 font-bold">Student Name</th>
-                  <th className="py-3 px-4 font-bold">Admission #</th>
-                  <th className="py-3 px-4 font-bold">Marks Obtained (Max: 100)</th>
-                  <th className="py-3 px-4 font-bold">Percentage</th>
-                  <th className="py-3 px-4 font-bold">Grade</th>
-                  <th className="py-3 px-4 font-bold">GPA</th>
-                  <th className="py-3 px-4 font-bold">Remarks</th>
-                  <th className="py-3 px-4 font-bold text-right">Result Card</th>
+                <tr className="bg-surface-container-low text-on-surface-variant text-[11px] uppercase tracking-wider">
+                  <th className="py-2.5 px-4">Subject</th>
+                  <th className="py-2.5 px-4">Class</th>
+                  <th className="py-2.5 px-4">Date &amp; Time</th>
+                  <th className="py-2.5 px-4">Max / Pass</th>
+                  <th className="py-2.5 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container-low">
-                {studentMarks.map((sm) => {
-                  const pct = Math.round((sm.marksObtained / (sm.maxMarks || 100)) * 100);
-                  return (
-                    <tr key={sm.studentId} className="hover:bg-surface-container-low/40 transition-colors">
-                      <td className="py-3 px-4 font-mono font-bold text-on-surface">{sm.rollNumber}</td>
-                      <td className="py-3 px-4 font-bold text-on-surface">{sm.name}</td>
-                      <td className="py-3 px-4 font-mono text-on-surface-variant">{sm.admissionNumber}</td>
-
-                      {/* Marks Input */}
-                      <td className="py-3 px-4">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          value={sm.marksObtained}
-                          onChange={(e) =>
-                            handleMarkChange(sm.studentId, Number(e.target.value), sm.maxMarks || 100)
-                          }
-                          className="w-24 h-8 px-2.5 rounded bg-surface-container-low font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
-                        />
-                      </td>
-
-                      {/* Percentage */}
-                      <td className="py-3 px-4 font-semibold text-on-surface">{pct}%</td>
-
-                      {/* Grade Badge */}
-                      <td className="py-3 px-4">
-                        <span
-                          className={`px-2 py-0.5 rounded font-bold text-xs ${
-                            sm.grade === "A+" || sm.grade === "A"
-                              ? "bg-tertiary-container/10 text-on-tertiary-container"
-                              : sm.grade === "B+" || sm.grade === "B"
-                              ? "bg-secondary/10 text-secondary"
-                              : sm.grade === "C"
-                              ? "bg-amber-100 text-amber-800"
-                              : "bg-error-container text-on-error-container"
-                          }`}
-                        >
-                          {sm.grade}
-                        </span>
-                      </td>
-
-                      {/* GPA */}
-                      <td className="py-3 px-4 font-bold text-secondary">{sm.gpa.toFixed(1)}</td>
-
-                      {/* Remarks */}
-                      <td className="py-3 px-4 text-on-surface-variant text-[11px]">{sm.remarks}</td>
-
-                      {/* Result Card */}
-                      <td className="py-3 px-4 text-right whitespace-nowrap">
-                        {sm.cardUrl ? (
-                          <a
-                            href={sm.cardUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-primary hover:underline font-semibold text-[11px]"
-                            title="View Student Result Card"
-                          >
-                            <span className="material-symbols-outlined text-[14px]">badge</span>
-                            Card
-                          </a>
-                        ) : (
-                          <span className="text-on-surface-variant/50 text-[10px]">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {schedules.map((s) => (
+                  <tr key={s.id} className={s.id === selectedScheduleId ? "bg-secondary/5" : ""}>
+                    <td className="py-2 px-4 font-bold">{s.subject?.name}</td>
+                    <td className="py-2 px-4">{s.class?.name}{s.class?.section ? `-${s.class.section}` : ""}</td>
+                    <td className="py-2 px-4">{formatDate(s.examDate)} {s.startTime}–{s.endTime}</td>
+                    <td className="py-2 px-4">{s.maxMarks} / {s.passingMarks}</td>
+                    <td className="py-2 px-4 text-right whitespace-nowrap space-x-2">
+                      <button type="button" onClick={() => { setNotice(""); loadExams(selectedExamId, s.id); }}
+                        className="text-secondary font-semibold hover:underline">Enter marks</button>
+                      <button type="button" onClick={() => openScheduleForm(s)} className="text-on-surface font-semibold hover:underline">Edit</button>
+                      {confirmRemoveScheduleId === s.id ? (
+                        <>
+                          <button type="button" onClick={() => handleRemoveSchedule(s.id)} className="text-error font-semibold hover:underline">Confirm remove</button>
+                          <button type="button" onClick={() => setConfirmRemoveScheduleId("")} className="text-on-surface-variant hover:underline">Keep</button>
+                        </>
+                      ) : (
+                        <button type="button" onClick={() => setConfirmRemoveScheduleId(s.id)} className="text-error font-semibold hover:underline">Remove</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
+
+      {/* Marks entry for the selected subject */}
+      {loading ? (
+        <div className="p-12 flex flex-col items-center justify-center space-y-3 bg-surface-container-lowest rounded-xl">
+          <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-xs text-on-surface-variant">Loading exam mark sheets...</p>
+        </div>
+      ) : activeSchedule?.results ? (
+        <MarksEntryGrid
+          examTitle={activeExam?.title || ""}
+          schedule={activeSchedule}
+          gradingScale={gradingScale}
+          onSaved={() => loadExams(selectedExamId, activeSchedule.id, true)}
+        />
+      ) : null}
     </div>
   );
 }

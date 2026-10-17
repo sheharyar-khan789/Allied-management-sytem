@@ -25,6 +25,21 @@ export interface UploadResult {
   size: number;
 }
 
+/**
+ * Thrown when the upload itself was valid (right auth, right type, right size) but the Storage
+ * backend could not take the write — most commonly because Cloud Storage was never enabled for
+ * this Firebase project, so its default bucket doesn't exist yet. Distinguished from any other
+ * failure so the API route can tell the caller something actionable instead of a dead-end
+ * generic message, without leaking the underlying error detail (that still only goes to the
+ * server log).
+ */
+export class StorageUnavailableError extends Error {
+  constructor(message = "Document storage is not set up for this school yet.") {
+    super(message);
+    this.name = "StorageUnavailableError";
+  }
+}
+
 // 5MB for images, 10MB for documents / receipts / cards
 export const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 export const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
@@ -100,6 +115,21 @@ export function validateUpload(
 }
 
 /**
+ * Whether `err` is Google Cloud Storage's "no such bucket" response — the exact failure mode
+ * when Cloud Storage was never enabled for a Firebase project, so no default bucket was ever
+ * created. Checked by HTTP status first (reliable across @google-cloud/storage versions), with
+ * the message text as a fallback for older error shapes.
+ */
+export function isBucketNotFoundError(err: unknown): boolean {
+  const e = err as { code?: unknown; status?: unknown; response?: { status?: unknown }; message?: string } | null;
+  if (!e) return false;
+  const status = Number(e.code ?? e.status ?? e.response?.status ?? NaN);
+  if (status === 404) return true;
+  const message = (e.message || "").toLowerCase();
+  return message.includes("bucket does not exist") || message.includes("no such bucket") || message.includes("notfound");
+}
+
+/**
  * Uploads a file buffer to the tenant-isolated Firebase Storage directory
  * and returns a download URL.
  */
@@ -152,10 +182,18 @@ export async function uploadFileToStorage(options: UploadOptions): Promise<Uploa
         size: buffer.length,
       };
     } catch (err) {
+      // Full detail (including the Google Cloud error) goes to the server log only; callers
+      // only ever get a distinguishing error type plus a safe, generic message.
+      console.error("[storage] Firebase Storage upload failed:", (err as Error)?.message || "error");
       if (process.env.NODE_ENV === "production") {
-        // Details go to the server log only; the API returns a generic message.
-        console.error("[storage] Firebase Storage upload failed:", (err as Error)?.message || "error");
-        throw new Error("Firebase Storage upload failed. Ensure Firebase Storage is enabled in the Firebase Console.");
+        if (isBucketNotFoundError(err)) {
+          // The single most common real-world cause: Cloud Storage was never enabled for this
+          // Firebase project in the console, so its default bucket doesn't exist. Code-level
+          // retrying can't fix this — it needs a one-time console step — so it is reported
+          // distinctly rather than as a generic "failed, try again" error.
+          throw new StorageUnavailableError();
+        }
+        throw new Error("Firebase Storage upload failed. Please try again, and contact support if this continues.");
       }
       // In development, fall through to data URI fallback
       console.warn("[storage] Firebase Storage upload failed, falling back to data URI:", (err as Error).message);
@@ -196,4 +234,34 @@ export async function deleteFileFromStorage(storagePath: string | undefined, sch
     console.error("[storage] delete failed:", (err as Error)?.message || "error");
     return false;
   }
+}
+
+/**
+ * Recovers the `schools/{schoolId}/...` storage path from one of our own download URLs (the
+ * `.../o/{encodedPath}?alt=media&token=...` shape `uploadFileToStorage` returns), for callers
+ * that only persisted the URL and now need to clean up the file it points to — e.g. an exam
+ * document being replaced. Lets that cleanup reuse the existing `storagePath`-based
+ * `deleteFileFromStorage` without adding a second persisted field everywhere a URL is stored.
+ * Returns null for anything that isn't really one of our own stored-file URLs (a dev-fallback
+ * data URI, a foreign URL, or a path outside this school) so nothing is ever deleted on a guess.
+ */
+export function storagePathFromDownloadUrl(url: string | undefined | null, schoolId: string): string | null {
+  if (!url) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.hostname !== "firebasestorage.googleapis.com") return null;
+  const match = parsed.pathname.match(/\/v0\/b\/[^/]+\/o\/([^/]+)$/);
+  if (!match) return null;
+  let storagePath: string;
+  try {
+    storagePath = decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
+  if (!storagePath.startsWith(`schools/${schoolId}/`) || storagePath.includes("..")) return null;
+  return storagePath;
 }

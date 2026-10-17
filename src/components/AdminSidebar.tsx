@@ -46,6 +46,7 @@ export default function AdminSidebar({
     { label: "Fees & Payments", href: "/admin/fees", icon: "payments" },
     { label: "Payroll", href: "/admin/payroll", icon: "account_balance_wallet" },
     { label: "Exams & Results", href: "/admin/exams", icon: "assignment_turned_in" },
+    { label: "Observations", href: "/admin/observations", icon: "visibility" },
     { label: "Reports", href: "/admin/reports", icon: "bar_chart" },
     { label: "Announcements", href: "/admin/announcements", icon: "campaign" },
   ];

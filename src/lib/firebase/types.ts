@@ -320,11 +320,20 @@ export interface StudentChargeDoc {
   updatedAt: string;
 }
 
+/**
+ * The exam's category, used to look up its teacher mark-entry permission
+ * (see EXAM_CATEGORY_PERMISSION_DEFAULTS / SchoolSettingsDoc.examCategoryPermissions in
+ * exam-results.ts). Optional and absent on exams created before this field existed; an exam
+ * with no category is never category-gated (see resolveExamCategoryPermission).
+ */
+export type ExamCategory = "MONTHLY_TEST" | "WEEKLY_TEST" | "FIRST_TERM" | "SECOND_TERM" | "MIDTERM" | "FINAL_TERM";
+
 export interface ExamDoc {
   id: string;
   schoolId: string;
   name: string;
   term: string;
+  category?: ExamCategory;
   session: string;
   startDate: string;
   endDate: string;
@@ -348,6 +357,7 @@ export interface ExamScheduleDoc {
   passingMarks: number;
   roomNo?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface ExamResultDoc {
@@ -382,11 +392,27 @@ export interface StudentObservationDoc {
   studentName?: string;
   teacherId: string;
   teacherName?: string;
-  category: "ACADEMIC" | "BEHAVIORAL" | "LEADERSHIP" | "ATTENDANCE" | "SPORTS";
+  category: "ACADEMIC" | "CONDUCT" | "BEHAVIORAL" | "LEADERSHIP" | "PARTICIPATION" | "ATTENDANCE" | "SPORTS";
+  /** Short heading. Records saved before this field existed have the title merged into `note`. */
+  title?: string;
+  /** The written observation text. */
   note: string;
+  /** Conduct rating. */
   sentiment: "POSITIVE" | "NEUTRAL" | "NEEDS_IMPROVEMENT";
+  /** Class of the student when the observation was written. */
+  classId?: string;
+  /** Exam this observation is for (shown on that exam's report card); absent = general. */
+  examId?: string;
   academicYear?: string;
   createdAt: string;
+  updatedAt?: string;
+  updatedBy?: string;
+  /** Prior (title, note) pairs, oldest first, appended whenever an edit changes the text —
+   * a correction never erases what was originally written. */
+  editHistory?: { at: string; by: string; byName?: string; previousTitle?: string; previousNote: string }[];
+  /** Soft delete: kept for the audit trail, excluded from normal reads. */
+  deletedAt?: string | null;
+  deletedBy?: string;
 }
 
 /**
@@ -504,6 +530,8 @@ export interface SchoolSettingsDoc {
   website?: string;
   logoUrl?: string;
   principalName: string;
+  /** Designation printed under the head's name on report cards, e.g. "Principal". */
+  principalTitle?: string;
   academicYear: string;
   taxRegistration?: string;
   currencySymbol?: string;
@@ -520,6 +548,23 @@ export interface SchoolSettingsDoc {
    * silently shifts the deadline. Defaults to Asia/Karachi (see DEFAULT_SCHOOL_TIMEZONE) when unset.
    */
   timezone?: string;
+  /**
+   * Per-category override of whether an allocated TEACHER may enter/edit marks for an exam of
+   * that category (ADMIN can always write, regardless). A category absent from this map uses
+   * EXAM_CATEGORY_PERMISSION_DEFAULTS (exam-results.ts). "ALLOWED" = normal entry; "READ_ONLY" =
+   * teachers can see the exam and its marks but not write to it — enforced server-side in
+   * /api/exams PUT (marks), not just hidden in the UI.
+   */
+  examCategoryPermissions?: Partial<Record<ExamCategory, "ALLOWED" | "READ_ONLY">>;
+  /**
+   * Student login ID pattern: `<prefix><campus><sequence>@<school email domain>`, e.g.
+   * ASD + campus + 001 -> asdcampus001@<domain>. The sequence itself lives in a server-only
+   * counter (never reused); `studentLoginNextSequence` is only a value an admin asked the counter
+   * to be raised to.
+   */
+  studentLoginPrefix?: string;
+  studentLoginCampus?: string;
+  studentLoginPadding?: number;
   updatedAt: string;
 }
 

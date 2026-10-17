@@ -4,7 +4,9 @@ import { GET as examsGet, PUT as examsMarksPut } from "../src/app/api/exams/rout
 import { POST as observationsPost } from "../src/app/api/observations/route";
 import { GET as timetableGet } from "../src/app/api/timetable/route";
 import { GET as classesGet } from "../src/app/api/classes/route";
-import { GET as studentsGet } from "../src/app/api/students/route";
+import { GET as studentsGet, POST as studentsPost } from "../src/app/api/students/route";
+import { POST as teachersPost } from "../src/app/api/teachers/route";
+import { DELETE as teacherDelete } from "../src/app/api/teachers/[id]/route";
 import { createSessionCookieServer } from "../src/lib/firebase/server-auth";
 import {
   createUserServer,
@@ -218,6 +220,88 @@ async function run() {
 
   const studentsOtherClass = await studentsGet(reqFor(`http://x/api/students?classId=${classB.id}`));
   assert(studentsOtherClass.status === 403, "Students GET (classId=B): Teacher A blocked (403)");
+
+  // --- NEW ENROLLMENT VISIBILITY (bug-fix brief Phase 6): a student Admin enrolls through the
+  // real POST /api/students endpoint (not a raw DB write) must show up for the correct teacher
+  // immediately — no cache, no re-login, no second write needed — and never for an unrelated one.
+  {
+    const adminToken = await createSessionCookieServer({
+      uid: "uid-scope-admin", email: "admin@scope-test.school", role: "ADMIN", schoolId, name: "Scope Admin",
+    });
+    const adminReq = (url: string, body: any) =>
+      new NextRequest(url, {
+        method: "POST",
+        headers: { cookie: `allied_session=${adminToken}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const enrolled = await studentsPost(
+      adminReq("http://x/api/students", {
+        firstName: "New", lastName: "Enrollee", classId: classA.id,
+        guardianName: "Guardian G", guardianPhone: "03001234567",
+      })
+    );
+    const enrolledJson = await enrolled.json();
+    assert(enrolled.status === 201 && enrolledJson.student?.id, "Enrollment POST: admin enrolls a new student into Teacher A's class");
+    const newStudentId = enrolledJson.student.id;
+
+    const aSeesNew = await studentsGet(reqFor(`http://x/api/students`)).then((r) => r.json());
+    assert(
+      (aSeesNew.students || []).some((s: any) => s.id === newStudentId),
+      "Enrollment visibility: the newly enrolled student appears for Teacher A (the class's allocated teacher) without any extra step"
+    );
+
+    const teacherBToken = await createSessionCookieServer({
+      uid: "uid-scope-b", email: teacherB.email, role: "TEACHER", schoolId, teacherId: teacherB.id, name: teacherB.fullName,
+    });
+    const bReq = new NextRequest("http://x/api/students", { headers: { cookie: `allied_session=${teacherBToken}` } });
+    const bSees = await studentsGet(bReq).then((r) => r.json());
+    assert(
+      !(bSees.students || []).some((s: any) => s.id === newStudentId),
+      "Enrollment visibility: the newly enrolled student never appears for an unrelated teacher"
+    );
+  }
+
+  // --- TEACHER DELETE + RE-ENROLLMENT WITH THE SAME EMAIL (bug-fix brief Phase 8) ---
+  {
+    const adminToken2 = await createSessionCookieServer({
+      uid: "uid-scope-admin2", email: "admin2@scope-test.school", role: "ADMIN", schoolId, name: "Scope Admin 2",
+    });
+    const adminPostReq = (url: string, body: any) =>
+      new NextRequest(url, {
+        method: "POST",
+        headers: { cookie: `allied_session=${adminToken2}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const adminDeleteReq = (url: string) =>
+      new NextRequest(url, { method: "DELETE", headers: { cookie: `allied_session=${adminToken2}` } });
+
+    const reusedEmail = "reused.teacher@scope-test.school";
+    const created1 = await teachersPost(
+      adminPostReq("http://x/api/teachers", {
+        firstName: "First", lastName: "Hire", email: reusedEmail, phone: "03001111111",
+        designation: "Teacher", qualification: "B.Ed", specialization: "Math", joiningDate: "2026-01-01",
+      })
+    );
+    const created1Json = await created1.json();
+    assert(created1.status === 201 && created1Json.teacher?.id, "Teacher POST: first hire created with the email");
+
+    const del = await teacherDelete(adminDeleteReq(`http://x/api/teachers/${created1Json.teacher.id}`), {
+      params: Promise.resolve({ id: created1Json.teacher.id }),
+    });
+    assert(del.status === 200, "Teacher DELETE: admin deletes the teacher");
+
+    const created2 = await teachersPost(
+      adminPostReq("http://x/api/teachers", {
+        firstName: "Second", lastName: "Hire", email: reusedEmail, phone: "03002222222",
+        designation: "Teacher", qualification: "M.Ed", specialization: "Science", joiningDate: "2026-02-01",
+      })
+    );
+    const created2Json = await created2.json();
+    assert(
+      created2.status === 201 && created2Json.teacher?.id && created2Json.teacher.id !== created1Json.teacher.id,
+      "Teacher POST: a new hire can re-enroll with the same email after the previous teacher was deleted (previously rejected as already in use)"
+    );
+  }
 
   console.log("==================================================");
   console.log(`TEACHER SCOPING SUMMARY: ${passed} PASSED, ${failed} FAILED`);

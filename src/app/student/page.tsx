@@ -161,7 +161,7 @@ export default function StudentDashboardPage() {
             <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
               <h3 className="font-headline-md text-sm font-bold text-on-surface flex items-center gap-2">
                 <span className="material-symbols-outlined text-secondary text-[18px]">workspace_premium</span>
-                Mid-Term Exam Evaluation
+                Recent Exam Results
               </h3>
               <Link href="/student/results" className="text-xs font-semibold text-secondary hover:underline">
                 Full Report Card →
@@ -181,8 +181,9 @@ export default function StudentDashboardPage() {
                   >
                     <div>
                       <span className="font-bold text-on-surface">{r.examSchedule?.subject?.name}</span>
-                      <span className="text-[10px] text-on-surface-variant block font-mono">
-                        Code: {r.examSchedule?.subject?.code}
+                      <span className="text-[10px] text-on-surface-variant block">
+                        {r.examSchedule?.exam?.name}
+                        {r.examSchedule?.subject?.code ? ` • ${r.examSchedule.subject.code}` : ""}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
@@ -222,12 +223,12 @@ export default function StudentDashboardPage() {
                     className="p-3 rounded-lg bg-surface-container-low/60 border border-surface-container-high/30 space-y-1 text-xs"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-secondary">{obs.title}</span>
+                      <span className="font-bold text-secondary">{obs.title || obs.categoryLabel}</span>
                       <span className="text-[10px] text-on-surface-variant">{formatDate(obs.date)}</span>
                     </div>
-                    <p className="text-[11px] text-on-surface-variant leading-relaxed">{obs.content}</p>
+                    <p className="text-[11px] text-on-surface-variant leading-relaxed whitespace-pre-wrap">{obs.note}</p>
                     <span className="text-[10px] text-on-surface-variant italic block pt-1">
-                      — {obs.teacher?.firstName} {obs.teacher?.lastName}
+                      Conduct: {obs.conductLabel} • — {obs.teacherName}
                     </span>
                   </div>
                 ))

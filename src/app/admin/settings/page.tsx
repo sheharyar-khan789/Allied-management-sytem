@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import AdminTwoFactorCard from "@/components/AdminTwoFactorCard";
 import FileUpload from "@/components/FileUpload";
+import { EXAM_CATEGORIES, EXAM_CATEGORY_LABELS, EXAM_CATEGORY_PERMISSION_DEFAULTS } from "@/lib/exam-results";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>({
@@ -17,6 +18,9 @@ export default function SettingsPage() {
     currencySymbol: "Rs.",
     gradingSystem: "Standard 4.0 / Percentage",
     logoUrl: "",
+    principalName: "",
+    principalTitle: "",
+    examCategoryPermissions: { ...EXAM_CATEGORY_PERMISSION_DEFAULTS },
   });
   const [sessions, setSessions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,7 +33,20 @@ export default function SettingsPage() {
       .then((res) => res.json())
       .then((json) => {
         if (json.success) {
-          if (json.settings) setSettings(json.settings);
+          if (json.settings) {
+            const login = json.settings.studentLogin;
+            setSettings({
+              ...json.settings,
+              ...(login
+                ? {
+                    studentLoginPrefix: login.prefix,
+                    studentLoginCampus: login.campus,
+                    studentLoginPadding: login.padding,
+                    studentLoginNextSequence: login.nextSequence,
+                  }
+                : {}),
+            });
+          }
           if (json.sessions) setSessions(json.sessions);
         }
       })
@@ -40,6 +57,18 @@ export default function SettingsPage() {
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setSettings((prev: any) => ({ ...prev, [name]: value }));
+  };
+
+  const handleNumberChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setSettings((prev: any) => ({ ...prev, [name]: value === "" ? "" : Number(value) }));
+  };
+
+  const handleCategoryPermissionChange = (category: string, value: "ALLOWED" | "READ_ONLY") => {
+    setSettings((prev: any) => ({
+      ...prev,
+      examCategoryPermissions: { ...prev.examCategoryPermissions, [category]: value },
+    }));
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -64,6 +93,11 @@ export default function SettingsPage() {
             timezone: json.settings.timezone ?? prev.timezone,
             currencySymbol: json.settings.currencySymbol ?? prev.currencySymbol,
             gradingSystem: json.settings.gradingSystemLabel ?? prev.gradingSystem,
+            principalName: json.settings.principalName ?? prev.principalName,
+            principalTitle: json.settings.principalTitle ?? prev.principalTitle,
+            examCategoryPermissions: json.settings.examCategoryPermissions ?? prev.examCategoryPermissions,
+            studentLogin: json.settings.studentLogin ?? prev.studentLogin,
+            studentLoginNextSequence: json.settings.studentLogin?.nextSequence ?? prev.studentLoginNextSequence,
           }));
         }
         setSaveSuccess(true);
@@ -269,6 +303,119 @@ export default function SettingsPage() {
               </select>
             </div>
           </div>
+        </div>
+
+        {/* Section: Exam Category Teacher Permissions */}
+        <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-surface-container-low">
+            <span className="material-symbols-outlined text-secondary text-[20px]">rule</span>
+            <h2 className="font-headline-md text-sm font-bold text-on-surface">Exam Category Teacher Permissions</h2>
+          </div>
+          <p className="text-[11px] text-on-surface-variant">
+            Controls whether an allocated teacher can enter or edit marks for an exam of each category. Administrators can always enter and correct marks. Enforced on every save request, not just hidden in the interface.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            {EXAM_CATEGORIES.map((category) => {
+              const value = settings.examCategoryPermissions?.[category] || EXAM_CATEGORY_PERMISSION_DEFAULTS[category];
+              return (
+                <div key={category} className="flex items-center justify-between gap-3 p-3 rounded-lg bg-surface-container-low">
+                  <span className="font-semibold text-on-surface">{EXAM_CATEGORY_LABELS[category]}</span>
+                  <select
+                    aria-label={`Teacher permission for ${EXAM_CATEGORY_LABELS[category]}`}
+                    value={value}
+                    onChange={(e) => handleCategoryPermissionChange(category, e.target.value as "ALLOWED" | "READ_ONLY")}
+                    className="h-8 px-2 rounded-lg bg-surface-container-lowest text-on-surface border border-outline-variant/40 font-semibold"
+                  >
+                    <option value="ALLOWED">Teachers can enter marks</option>
+                    <option value="READ_ONLY">Read-only for teachers</option>
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Section: Student login IDs */}
+        <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-surface-container-low">
+            <span className="material-symbols-outlined text-secondary text-[20px]">badge</span>
+            <h2 className="font-headline-md text-sm font-bold text-on-surface">Student Login IDs</h2>
+          </div>
+          <p className="text-[11px] text-on-surface-variant">
+            New students get the next login ID in the form <span className="font-mono">prefix + campus + number</span> on the school&apos;s own email domain. Numbers are never reused, even after a student is deleted. These are sign-in names, not real mailboxes.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-xs">
+            <div>
+              <label htmlFor="settings-login-prefix" className="block font-semibold text-on-surface mb-1">Prefix</label>
+              <input id="settings-login-prefix" type="text" name="studentLoginPrefix" maxLength={20}
+                value={settings.studentLoginPrefix ?? ""} onChange={handleChange}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono" />
+            </div>
+            <div>
+              <label htmlFor="settings-login-campus" className="block font-semibold text-on-surface mb-1">Campus</label>
+              <input id="settings-login-campus" type="text" name="studentLoginCampus" maxLength={20}
+                value={settings.studentLoginCampus ?? ""} onChange={handleChange}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono" />
+            </div>
+            <div>
+              <label htmlFor="settings-login-padding" className="block font-semibold text-on-surface mb-1">Digits</label>
+              <input id="settings-login-padding" type="number" name="studentLoginPadding" min={1} max={8}
+                value={settings.studentLoginPadding ?? 3} onChange={handleNumberChange}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40" />
+            </div>
+            <div>
+              <label htmlFor="settings-login-next" className="block font-semibold text-on-surface mb-1">Next number</label>
+              <input id="settings-login-next" type="number" name="studentLoginNextSequence" min={1}
+                value={settings.studentLoginNextSequence ?? 1} onChange={handleNumberChange}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40" />
+              <p className="mt-1 text-[10px] text-on-surface-variant">Can only be raised, never lowered.</p>
+            </div>
+          </div>
+          {settings.studentLogin?.preview && (
+            <p className="text-[11px] text-on-surface-variant">
+              Next student will get: <span className="font-mono font-semibold text-on-surface">{settings.studentLogin.preview}</span>
+            </p>
+          )}
+        </div>
+
+        {/* Section: Head of Institution (report cards) */}
+        <div id="report-card" className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-surface-container-low">
+            <span className="material-symbols-outlined text-secondary text-[20px]">workspace_premium</span>
+            <h2 className="font-headline-md text-sm font-bold text-on-surface">Report Card &amp; Head of Institution</h2>
+          </div>
+          {!settings.principalName && (
+            <p className="text-[11px] font-semibold text-error">
+              No head of institution is configured — report cards show &quot;School information not configured&quot; in the signature block until you add one.
+            </p>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            <div>
+              <label htmlFor="settings-principal-name" className="block font-semibold text-on-surface mb-1">Head / Principal Name</label>
+              <input id="settings-principal-name"
+                type="text"
+                name="principalName"
+                maxLength={120}
+                value={settings.principalName || ""}
+                onChange={handleChange}
+                placeholder="Full name as it should appear on report cards"
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40"
+              />
+            </div>
+            <div>
+              <label htmlFor="settings-principal-title" className="block font-semibold text-on-surface mb-1">Designation</label>
+              <input id="settings-principal-title"
+                type="text"
+                name="principalTitle"
+                maxLength={80}
+                value={settings.principalTitle || ""}
+                onChange={handleChange}
+                placeholder="e.g. Principal, Headmistress (default: Principal / Head)"
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40"
+              />
+            </div>
+          </div>
+          <p className="text-[10px] text-on-surface-variant">Printed in the signature block of every report card of this school.</p>
         </div>
 
         {/* Section 3: System Status */}

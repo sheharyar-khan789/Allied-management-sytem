@@ -14,6 +14,8 @@ export async function GET(
     const student = await assertCanViewStudent(authUser, studentId);
     const payload = await buildStudentAcademicPayload(authUser.schoolId, student, {
       publishedResultsOnly: authUser.role === "PARENT" || authUser.role === "STUDENT",
+      reportCard: true,
+      examId: new URL(req.url).searchParams.get("examId"),
     });
     // Attendance belongs to the class incharge: a subject teacher's report card carries none.
     // Fees are never part of a teacher's view.
@@ -24,6 +26,8 @@ export async function GET(
       ...rest,
       ...(showAttendance ? { attendance } : {}),
       ...(authUser.role !== "TEACHER" ? { fees } : {}),
+      // Only an admin can fix missing school/head details (Settings), so only they get the link.
+      canConfigure: authUser.role === "ADMIN",
     });
   } catch (error: unknown) {
     if (error instanceof Response) return error;

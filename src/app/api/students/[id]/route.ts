@@ -12,8 +12,17 @@ import {
   createAuditLogServer,
   getClassesServer,
   getSubjectsServer,
-  getExamsServer
+  getExamsServer,
+  getExamSchedulesServer,
+  getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
+import {
+  resolveGradingScale,
+  resultSubjectName,
+  sortObservationsNewestFirst,
+  summarizeResults,
+  toObservationView,
+} from "@/lib/exam-results";
 import { assertCanViewStudent, canViewStudentAttendance } from "@/lib/academic-access";
 import { linkGuardianEmailToStudent } from "@/lib/link-parent";
 import { requireRecentAuth } from "@/lib/firebase/server-auth";
@@ -81,19 +90,32 @@ export async function GET(
     // Fees are school finances: a TEACHER's dossier carries no challans or balances at all.
     const showFees = authUser.role !== "TEACHER";
 
-    const [attendanceRecords, challans, examResults, observations, classes, subjects, exams] = await Promise.all([
+    const [attendanceRecords, challans, examResults, observations, classes, subjects, allSubjects, exams, settings] = await Promise.all([
       getStudentAttendanceServer(authUser.schoolId, id),
       showFees ? getStudentFeeChallansServer(authUser.schoolId, id) : Promise.resolve([]),
       getExamResultsServer(authUser.schoolId, undefined, undefined, id),
       getStudentObservationsServer(authUser.schoolId, id),
       getClassesServer(authUser.schoolId),
       getSubjectsServer(authUser.schoolId, student.classId),
-      getExamsServer(authUser.schoolId)
+      getSubjectsServer(authUser.schoolId),
+      getExamsServer(authUser.schoolId),
+      getSchoolSettingsServer(authUser.schoolId),
     ]);
 
     const attendances = showAttendance ? attendanceRecords : [];
     const targetClass = classes.find((c) => c.id === student.classId);
     const examNameById = new Map(exams.map((e) => [e.id, e.name]));
+    const examById = new Map(exams.map((e) => [e.id, e]));
+    const subjectsById = new Map(allSubjects.map((s) => [s.id, s]));
+    const gradingScale = resolveGradingScale(settings);
+    // The real exam date of each result comes from its schedule (the result's createdAt used to be
+    // shown as the exam date). Only the exams this student has results in are read.
+    const resultExamIds = Array.from(new Set(examResults.map((r) => r.examId)));
+    const schedules = (await Promise.all(resultExamIds.map((eid) => getExamSchedulesServer(authUser.schoolId, eid)))).flat();
+    const scheduleById = new Map(schedules.map((s) => [s.id, s]));
+    const scheduleOf = (r: (typeof examResults)[number]) =>
+      (r.scheduleId && scheduleById.get(r.scheduleId)) ||
+      schedules.find((s) => s.examId === r.examId && s.classId === r.classId && s.subjectId === r.subjectId);
 
     // Attendance stats
     const totalAtt = attendances.length;
@@ -109,12 +131,8 @@ export async function GET(
     const totalOutstandingFee = Math.max(0, totalExpectedFee - totalPaidFee);
 
     // Academics stats
-    const totalMaxMarks = examResults.reduce((s, r) => s + (r.totalMarks || 100), 0);
-    const totalObtainedMarks = examResults.reduce((s, r) => s + (r.obtainedMarks || 0), 0);
-    const examPct = totalMaxMarks > 0 ? ((totalObtainedMarks / totalMaxMarks) * 100).toFixed(1) : "0";
-    const avgGpa = examResults.length > 0
-      ? (examResults.reduce((s, r) => s + (r.gpa || 0), 0) / examResults.length).toFixed(2)
-      : "0.00";
+    // Same arithmetic as the report card (src/lib/exam-results.ts).
+    const academics = summarizeResults(examResults, gradingScale);
 
     const formattedStudent = {
       id: student.id,
@@ -175,28 +193,41 @@ export async function GET(
         status: c.status === "PAID" ? "PAID" : c.paidAmount > 0 ? "PARTIAL" : "UNPAID",
         payments: []
       })),
-      examResults: examResults.map((r) => ({
-        id: r.id,
-        marksObtained: r.obtainedMarks,
-        maxMarks: r.totalMarks,
-        percentage: r.percentage,
-        grade: r.grade,
-        gpa: r.gpa,
-        remarks: r.remarks || "",
-        examSchedule: {
-          examDate: r.createdAt.split("T")[0],
-          exam: { name: examNameById.get(r.examId) || "" },
-          subject: { name: r.subjectName || "", code: "" }
-        }
-      })),
-      observations: observations.map((o) => ({
-        id: o.id,
-        category: o.category,
-        sentiment: o.sentiment,
-        note: o.note,
-        date: o.createdAt,
-        teacher: { firstName: o.teacherName || "Faculty", lastName: "" }
-      }))
+      examResults: examResults
+        .map((r) => {
+          const subject = resultSubjectName(r, subjectsById);
+          const schedule = scheduleOf(r);
+          const exam = examById.get(r.examId);
+          return {
+            id: r.id,
+            examId: r.examId,
+            examStatus: exam?.status || "",
+            marksObtained: r.obtainedMarks,
+            maxMarks: r.totalMarks,
+            passingMarks: typeof schedule?.passingMarks === "number" ? schedule.passingMarks : null,
+            percentage: r.percentage,
+            grade: r.grade,
+            gpa: r.gpa,
+            status: r.status,
+            remarks: r.remarks || "",
+            examSchedule: {
+              examDate: schedule?.examDate || "",
+              exam: { name: examNameById.get(r.examId) || "" },
+              subject: { name: subject.name, code: subject.code }
+            }
+          };
+        })
+        .sort((a, b) =>
+          a.examSchedule.exam.name.localeCompare(b.examSchedule.exam.name) ||
+          a.examSchedule.subject.name.localeCompare(b.examSchedule.subject.name)
+        ),
+      observations: sortObservationsNewestFirst(
+        observations.map((o) => ({
+          ...toObservationView(o, examNameById),
+          teacher: { firstName: o.teacherName || "Faculty", lastName: "" }
+        }))
+      ),
+      examOptions: exams.map((e) => ({ id: e.id, name: e.name, term: e.term }))
     };
 
     return NextResponse.json({
@@ -221,10 +252,13 @@ export async function GET(
             }
           : {}),
         academics: {
-          totalMarks: totalMaxMarks,
-          obtainedMarks: totalObtainedMarks,
-          percentage: Number(examPct),
-          gpa: Number(avgGpa),
+          totalMarks: academics.totalMarks,
+          obtainedMarks: academics.obtainedMarks,
+          percentage: academics.percentage,
+          gpa: academics.gpa,
+          grade: academics.grade,
+          passed: academics.passed,
+          failed: academics.failed,
           totalExamsAppeared: examResults.length,
         },
       },
