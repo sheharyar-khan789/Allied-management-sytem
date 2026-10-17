@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import StudentImportModal from "@/components/StudentImportModal";
+import StudentBulkPasswordPanel from "@/components/StudentBulkPasswordPanel";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 
 export default function StudentsManagementPage() {
@@ -15,6 +16,15 @@ export default function StudentsManagementPage() {
   const [selectedClass, setSelectedClass] = useState("all");
   const [selectedStatus, setSelectedStatus] = useState("all");
   const [importOpen, setImportOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [passwordPanelOpen, setPasswordPanelOpen] = useState(false);
+  const toggleSelected = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   // One request per typed query, not one per keystroke.
   const debouncedSearch = useDebouncedValue(search.trim(), 400);
 
@@ -237,6 +247,22 @@ export default function StudentsManagementPage() {
         </div>
       </div>
 
+      {selectedIds.size > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-secondary/10 border border-secondary/30 text-xs">
+          <span className="font-semibold text-on-surface">{selectedIds.size} selected</span>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setSelectedIds(new Set())} className="px-3 h-8 rounded-lg bg-surface-container text-on-surface font-semibold">Clear</button>
+            <button type="button" onClick={() => setPasswordPanelOpen(true)} className="px-3 h-8 rounded-lg bg-secondary text-on-secondary font-semibold">Reset passwords</button>
+          </div>
+        </div>
+      )}
+      {passwordPanelOpen && (
+        <StudentBulkPasswordPanel
+          students={students.filter((st) => selectedIds.has(st.id)).map((st) => ({ id: st.id, fullName: st.fullName }))}
+          onClose={() => setPasswordPanelOpen(false)}
+        />
+      )}
+
       {/* Students Table */}
       <div className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">
         {loading ? (
@@ -255,6 +281,14 @@ export default function StudentsManagementPage() {
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-surface-container-low text-on-surface-variant font-label-sm text-[11px] uppercase tracking-wider border-b border-surface-container-high/40">
+                  <th className="py-3 px-4 w-8">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all listed students"
+                      checked={students.length > 0 && students.every((st) => selectedIds.has(st.id))}
+                      onChange={(e) => setSelectedIds(e.target.checked ? new Set(students.map((st) => st.id)) : new Set())}
+                    />
+                  </th>
                   <th className="py-3 px-4 font-bold">Student</th>
                   <th className="py-3 px-4 font-bold">Adm # / Roll</th>
                   <th className="py-3 px-4 font-bold">Class</th>
@@ -268,6 +302,14 @@ export default function StudentsManagementPage() {
               <tbody className="divide-y divide-surface-container-low">
                 {students.map((st) => (
                   <tr key={st.id} className="hover:bg-surface-container-low/40 transition-colors">
+                    <td className="py-3 px-4">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${st.fullName}`}
+                        checked={selectedIds.has(st.id)}
+                        onChange={() => toggleSelected(st.id)}
+                      />
+                    </td>
                     {/* Student Avatar & Name */}
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-2.5">
