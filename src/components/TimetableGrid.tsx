@@ -16,6 +16,8 @@ export interface TimetableEntry {
   teacherName?: string;
   teacherId?: string;
   roomNo?: string;
+  /** Group of the class when the class splits (empty = whole class). */
+  group?: string;
 }
 
 /** "HH:MM" (24h) or legacy "hh:mm AM/PM" → minutes, for ordering only. */
@@ -47,6 +49,7 @@ function Cell({ items, onSelect }: { items: TimetableEntry[]; onSelect?: (e: Tim
         const body = (
           <>
             <span className="block font-bold text-on-surface">{e.subjectName}</span>
+            {e.group && <span className="block text-[10px] font-semibold text-secondary">{e.group} group</span>}
             {e.teacherName && <span className="block text-on-surface-variant">{e.teacherName}</span>}
             <span className="block font-mono text-[10px] text-on-surface-variant">
               {e.startTime}–{e.endTime}
@@ -149,6 +152,7 @@ export default function TimetableGrid({
                   <li key={e.id} className="px-4 py-2.5 flex items-start justify-between gap-3 text-xs">
                     <div>
                       <span className="block font-bold text-on-surface">{e.subjectName}</span>
+                      {e.group && <span className="block text-[10px] font-semibold text-secondary">{e.group} group</span>}
                       {e.teacherName && <span className="block text-on-surface-variant">{e.teacherName}</span>}
                     </div>
                     <div className="text-right shrink-0">

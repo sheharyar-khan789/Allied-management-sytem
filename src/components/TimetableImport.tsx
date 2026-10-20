@@ -4,7 +4,7 @@ import React, { useMemo, useState } from "react";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const DAY_SHORT: Record<string, string> = { Monday: "Mon", Tuesday: "Tue", Wednesday: "Wed", Thursday: "Thu", Friday: "Fri", Saturday: "Sat", Sunday: "Sun" };
-const TEMPLATE_COLUMNS = ["Day", "Period", "Start", "End", "Class", "Subject", "Teacher", "Room", "Friday Start", "Friday End"];
+const TEMPLATE_COLUMNS = ["Day", "Period", "Start", "End", "Class", "Group", "Subject", "Teacher", "Room", "Friday Start", "Friday End"];
 
 type Issue = { field: string; level: "error" | "warning"; message: string };
 type Row = {
@@ -20,6 +20,8 @@ type Row = {
   fridayEndTime: string;
   days: string[];
   roomNo: string;
+  /** Group of the class (e.g. "Biology"); empty = the whole class. */
+  group: string;
   issues: Issue[];
 };
 type Choices = {
@@ -141,7 +143,7 @@ export default function TimetableImport({ onClose, onImported }: { onClose: () =
     const key = `n${Date.now().toString(36)}`;
     setRows((prev) => [
       ...prev,
-      { key, raw: { className: "", subjectName: "", teacherName: "" }, classId: "", subjectId: "", teacherId: "", periodName: "", startTime: "", endTime: "", fridayStartTime: "", fridayEndTime: "", days: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"], roomNo: "", issues: [] },
+      { key, raw: { className: "", subjectName: "", teacherName: "" }, classId: "", subjectId: "", teacherId: "", periodName: "", startTime: "", endTime: "", fridayStartTime: "", fridayEndTime: "", days: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"], roomNo: "", group: "", issues: [] },
     ]);
   };
 
@@ -171,7 +173,7 @@ export default function TimetableImport({ onClose, onImported }: { onClose: () =
         );
       }
       setDone(
-        `Imported ${json.rows} rows as ${json.created} periods (0 skipped, 0 failed)${json.replaced ? `, replacing ${json.replaced} existing periods` : ""}.`
+        `Imported ${json.rows} rows as ${json.created} periods (0 skipped, 0 failed)${json.replaced ? `, replacing ${json.replaced} existing periods` : ""}.${json.warning ? ` ${json.warning}` : ""}`
       );
       onImported();
     } catch (e: any) {
@@ -328,6 +330,15 @@ export default function TimetableImport({ onClose, onImported }: { onClose: () =
                                   <option value="">{r.raw.className ? `“${r.raw.className}” → pick` : "Pick class"}</option>
                                   {choices.classes.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
                                 </select>
+                                <input
+                                  aria-label="Group"
+                                  value={r.group || ""}
+                                  maxLength={40}
+                                  placeholder="Group (whole class)"
+                                  title="Only when the class splits into groups at this time, e.g. Biology / Computer"
+                                  onChange={(e) => update(r.key, "group", { group: e.target.value })}
+                                  className={`${fieldClass(r.key, "group")} mt-1 w-full`}
+                                />
                               </td>
                               <td className="p-2">
                                 <select

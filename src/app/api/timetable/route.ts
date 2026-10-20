@@ -42,6 +42,7 @@ function toClassView(t: TimetableDoc) {
     subjectName: t.subjectName,
     teacherName: t.teacherId ? t.teacherName || "" : "",
     roomNo: t.roomNo || "",
+    group: t.group || "",
   };
 }
 
@@ -103,10 +104,11 @@ export async function GET(req: NextRequest) {
 /**
  * Validates an admin-submitted slot against this school's own records (shared with the timetable
  * import, see src/lib/timetable-import.ts). Names are always taken from the referenced
- * documents, never from the request. Teacher double-booking, duplicate periods and room clashes
- * between classes are refused; parallel periods of one class are allowed.
+ * documents, never from the request. Double-booked students (a class, or the same group of it),
+ * teacher double-booking (other than one combined lesson), duplicates and room clashes are
+ * refused; different groups of one class may run in parallel.
  */
-async function buildSlot(authUser: AuthenticatedUser, body: any, editingId?: string): Promise<SlotResult> {
+async function buildSlot(authUser: AuthenticatedUser, body: any, editing?: TimetableDoc): Promise<SlotResult> {
   const dayOfWeek = String(body?.dayOfWeek || "").trim();
   const [classes, subjects, teachers] = await Promise.all([
     getClassesServer(authUser.schoolId),
@@ -114,9 +116,9 @@ async function buildSlot(authUser: AuthenticatedUser, body: any, editingId?: str
     getTeachersServer(authUser.schoolId),
   ]);
   const sameDay = TIMETABLE_DAYS.includes(dayOfWeek as TimetableDoc["dayOfWeek"])
-    ? (await getTimetableServer(authUser.schoolId, undefined, undefined, dayOfWeek)).filter((t) => t.id !== editingId)
+    ? (await getTimetableServer(authUser.schoolId, undefined, undefined, dayOfWeek)).filter((t) => t.id !== editing?.id)
     : [];
-  return validateTimetableSlot(authUser.schoolId, body, { classes, subjects, teachers }, sameDay);
+  return validateTimetableSlot(authUser.schoolId, body, { classes, subjects, teachers }, sameDay, editing);
 }
 
 export async function POST(req: NextRequest) {
@@ -166,7 +168,7 @@ export async function PUT(req: NextRequest) {
     const existing = await getTimetableEntryByIdServer(authUser.schoolId, id);
     if (!existing) return jsonError("Timetable slot not found.", 404);
 
-    const built = await buildSlot(authUser, body, id);
+    const built = await buildSlot(authUser, body, existing);
     if (!built.ok) return jsonError(built.error, built.status);
 
     const updated: TimetableDoc = {

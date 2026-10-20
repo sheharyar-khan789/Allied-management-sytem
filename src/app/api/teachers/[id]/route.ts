@@ -11,6 +11,7 @@ import {
 import { validateDateString, isDateBefore } from "@/lib/date-utils";
 import { deleteTeacherCompletely } from "@/lib/teacher-lifecycle";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { deleteReplacedFiles } from "@/lib/storage";
 
 export async function GET(
   req: NextRequest,
@@ -268,6 +269,8 @@ export async function PUT(
     };
 
     await saveTeacherServer(updated);
+    // A replaced photo is removed from this school's storage once the record no longer uses it.
+    await deleteReplacedFiles(authUser.schoolId, [existing.photoUrl], [updated.photoUrl]);
 
     await createAuditLogServer(
       authUser.schoolId,

@@ -241,7 +241,9 @@ async function run() {
   assert((await importDelete(req(ADMIN_B, `http://x/api/timetable/import?id=${okJson.importId}`, "DELETE"))).status === 404, "Another school's admin cannot see or delete this school's imports");
 
   // ======================================================================
-  // 4b. Several periods of the SAME class in the SAME slot (different subjects / teachers)
+  // 4b. Several periods of the SAME class in the SAME slot (different subjects / teachers).
+  //     They are for different GROUPS of the class (electives / split groups), so each names its
+  //     group; without groups they would be the same students twice (see the refusal below).
   // ======================================================================
   const class5 = cls("cls-ti-5", A, "Class 5", "A", null);
   await saveClassServer(class5);
@@ -256,11 +258,11 @@ async function run() {
     await saveTeacherServer(teacher(id, name, [class5.id]));
   }
   const parallelCsv = [
-    "Class,Day,Start,End,Subject,Teacher,Period,Room",
-    "Class 5,Monday,09:00,09:40,Mathematics,Teacher Alpha,Period 3,R-5",
-    "Class 5,Monday,09:00,09:40,English,Teacher Bravo,Period 3,R-5",
-    "Class 5,Monday,09:00,09:40,Science,Teacher Charlie,Period 3,R-5",
-    "Class 5,Monday,09:00,09:40,Urdu,Teacher Delta,Period 3,R-5",
+    "Class,Group,Day,Start,End,Subject,Teacher,Period,Room",
+    "Class 5,Mathematics,Monday,09:00,09:40,Mathematics,Teacher Alpha,Period 3,R-5",
+    "Class 5,English,Monday,09:00,09:40,English,Teacher Bravo,Period 3,R-5",
+    "Class 5,Science,Monday,09:00,09:40,Science,Teacher Charlie,Period 3,R-5",
+    "Class 5,Urdu,Monday,09:00,09:40,Urdu,Teacher Delta,Period 3,R-5",
   ].join(String.fromCharCode(10));
   const pFile = () => new File([parallelCsv], "class5.csv", { type: "text/csv" });
   const pPreview = await json(await importPost(req(ADMIN, "http://x/api/timetable/import", "POST", form({ action: "preview", file: pFile() }))));
@@ -282,7 +284,16 @@ async function run() {
     plainPreview.rows?.length === 4 && plainPreview.rows.every((r: any) => r.issues.length === 0 && r.periodName === "09:00–09:40"),
     "A sheet without a Period column: all 4 rows clean, period labelled by its time (09:00–09:40)"
   );
+  assert(pPreview.rows.map((r: any) => r.group).join("|") === "Mathematics|English|Science|Urdu", "The Group column is read for every row");
   const before5 = (await getTimetableServer(A)).length;
+  // The same four lessons WITHOUT groups would put the whole of Class 5 in four lessons at once.
+  const ungrouped = await commit(plainPreview.rows, { title: "Class 5 ungrouped" });
+  const ungroupedJson = await json(ungrouped);
+  assert(
+    ungrouped.status === 409 && /Class 5-A already has/.test(JSON.stringify(ungroupedJson)) && /set a different Group/.test(JSON.stringify(ungroupedJson)) &&
+      (await getTimetableServer(A)).length === before5,
+    "Four whole-class lessons for one class at the same time are refused (same students) with a hint to set groups; nothing saved"
+  );
   const pCommit = await commit(pPreview.rows, { title: "Class 5 parallel" });
   const pCommitJson = await json(pCommit);
   assert(pCommit.status === 201 && pCommitJson.rows === 4 && pCommitJson.created === 4 && pCommitJson.skipped === 0 && pCommitJson.failedRows === 0, "All 4 parallel periods are imported (4 rows -> 4 created, 0 skipped, 0 failed)");
@@ -311,12 +322,12 @@ async function run() {
 
   // Manual add / edit / delete act on individual parallel records.
   const fifth = await timetablePost(req(ADMIN, "http://x/api/timetable", "POST", {
-    classId: class5.id, subjectId: c5Subjects[0].id, teacherId: "tch-ti-esha", dayOfWeek: "Monday", periodName: "Period 3", startTime: "09:00", endTime: "09:40",
+    classId: class5.id, subjectId: c5Subjects[0].id, teacherId: "tch-ti-esha", dayOfWeek: "Monday", periodName: "Period 3", startTime: "09:00", endTime: "09:40", group: "Mathematics 2",
   }));
   assert(fifth.status === 201, "A 5th parallel period can be added manually (Mathematics, second group, another teacher)");
   const target = saved5.find((t) => t.subjectName === "English")!;
   const editParallel = await timetablePut(req(ADMIN, "http://x/api/timetable", "PUT", {
-    id: target.id, classId: class5.id, subjectId: target.subjectId, teacherId: "tch-ti-tehreem", dayOfWeek: "Monday", periodName: "Period 3", startTime: "09:00", endTime: "09:40",
+    id: target.id, classId: class5.id, subjectId: target.subjectId, teacherId: "tch-ti-tehreem", dayOfWeek: "Monday", periodName: "Period 3", startTime: "09:00", endTime: "09:40", group: target.group,
   }));
   const afterEdit = (await getTimetableServer(A)).filter((t) => t.classId === class5.id && t.dayOfWeek === "Monday" && t.startTime === "09:00");
   assert(

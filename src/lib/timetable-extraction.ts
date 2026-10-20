@@ -65,14 +65,15 @@ const OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["className", "periodLabel", "subjectName", "teacherName", "days", "uncertain"],
+        required: ["className", "group", "periodLabel", "subjectName", "teacherName", "days", "uncertain"],
         properties: {
           className: str,
+          group: str,
           periodLabel: str,
           subjectName: str,
           teacherName: str,
           days: { type: "array", items: str },
-          uncertain: { type: "array", items: { type: "string", enum: ["class", "subject", "teacher", "time", "period", "days"] } },
+          uncertain: { type: "array", items: { type: "string", enum: ["class", "group", "subject", "teacher", "time", "period", "days"] } },
         },
       },
     },
@@ -90,7 +91,7 @@ function buildPrompt(hints: ExtractionHints): string {
     "- periods: one entry per period column/row, with its label as printed (e.g. \"1\") and its start/end time in 24-hour HH:MM. School days run in the morning and early afternoon, so a printed \"01:30\" after \"12:40\" is 13:30. If the timetable prints separate Friday timings, put them in fridayStartTime/fridayEndTime, otherwise leave those empty.",
     "- entries: one entry per class per period that has a lesson. periodLabel must match a periods label. If one cell spans several classes (a merged cell), output one entry for each class. Skip breaks, lunch, assembly, and rows that are not classes (such as a list of free teachers).",
     "- days: the weekdays the entry applies to if the timetable says so; otherwise an empty list.",
-    "- If a cell lists two subjects or teachers (for example \"Comp/Bio\" or \"Ms. A / Ms. B\"), keep the text as written and add that field to uncertain.",
+    "- group: empty for a lesson the whole class attends. When one class's cell lists lessons for different groups of that class at the same time (for example \"Comp/Bio\" with \"Ms. A/Ms. B\"), output one entry per group: pair each subject with the teacher in the same position, and set group to that group's name as written (e.g. \"Comp\", \"Bio\"). If the pairing is not clear, keep the cell text as written in one entry and add subject and teacher to uncertain.",
     "- Never guess. If any field is unreadable, leave it as an empty string and add the field name to uncertain. If you are not sure you read a name or time correctly, add it to uncertain.",
     "- title: the heading printed on the timetable (or empty). date: any date printed on it, as written (or empty).",
     "- notes: short remarks about anything the school should check (e.g. cells you could not read).",
@@ -105,7 +106,7 @@ interface RawExtraction {
   title?: string;
   date?: string;
   periods?: Array<{ label?: string; startTime?: string; endTime?: string; fridayStartTime?: string; fridayEndTime?: string }>;
-  entries?: Array<{ className?: string; periodLabel?: string; subjectName?: string; teacherName?: string; days?: string[]; uncertain?: string[] }>;
+  entries?: Array<{ className?: string; group?: string; periodLabel?: string; subjectName?: string; teacherName?: string; days?: string[]; uncertain?: string[] }>;
   notes?: string[];
 }
 
@@ -126,6 +127,7 @@ export function extractionToRows(raw: RawExtraction): ExtractionResult {
       className: clip(e.className),
       subjectName: clip(e.subjectName),
       teacherName: clip(e.teacherName),
+      group: clip(e.group, 40),
       periodName: label ? (/^\d+$/.test(label) ? `Period ${label}` : label) : "",
       startTime: clip(p?.startTime, 10),
       endTime: clip(p?.endTime, 10),

@@ -2,6 +2,10 @@
 
 import React, { useRef, useState } from "react";
 
+const UPLOAD_TIMEOUT_MS = 90_000;
+const IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+const DOCUMENT_TYPES = [...IMAGE_TYPES, "application/pdf"];
+
 export interface FileUploadProps {
   folder: "profile-photos" | "documents" | "fee-receipts" | "result-cards" | "school-logo";
   label?: string;
@@ -65,6 +69,14 @@ export default function FileUpload({
       return;
     }
 
+    // Client-side validation: type (the server re-checks the real bytes; this only saves a round trip)
+    const allowedTypes = previewType === "image" ? IMAGE_TYPES : DOCUMENT_TYPES;
+    if (file.type && !allowedTypes.includes(file.type.toLowerCase())) {
+      setError(previewType === "image" ? "Only JPG, PNG or WebP images can be uploaded." : "Only PDF, JPG, PNG or WebP files can be uploaded.");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
     setFileName(file.name);
 
     // Show temporary local preview for images
@@ -86,18 +98,41 @@ export default function FileUpload({
       formData.append("file", file);
       formData.append("folder", folder);
 
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
+      // A stalled upload must end with an error the user can act on, not an endless spinner.
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+      let res: Response;
+      try {
+        res = await fetch("/api/upload", {
+          method: "POST",
+          body: formData,
+          signal: controller.signal,
+        });
+      } catch (netErr: any) {
+        throw new Error(
+          netErr?.name === "AbortError"
+            ? "The upload took too long and was stopped. Check your connection and try again."
+            : "Could not reach the server. Check your connection and try again."
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
 
       clearInterval(progressInterval);
-      setProgress(100);
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Upload failed.");
+      // A proxy/platform error page (e.g. "request too large") is not JSON.
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok || !data.url) {
+        throw new Error(
+          (data.error && data.storageStatus
+            ? `${data.error} The rest of this form can still be saved without the file.`
+            : data.error) ||
+            (res.status === 413
+              ? `File is too large (maximum ${maxSizeMB}MB).`
+              : `Upload failed (HTTP ${res.status}). Nothing was saved; please try again.`)
+        );
       }
+      setProgress(100);
 
       setPreview(data.url);
       if (onUploadComplete) {

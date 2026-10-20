@@ -19,6 +19,7 @@ import {
   getAuditLogsServer,
   getExamResultsServer,
   saveClassServer,
+  saveSchoolServer,
   saveStudentObservationServer,
   saveStudentServer,
   saveSubjectServer,
@@ -152,6 +153,31 @@ async function run() {
     assert(rcB.school.principalName === "Head of B", "Head of institution is isolated per school");
     assert((await settingsPut(req(T_MATH, "/api/settings", "PUT", { principalName: "X" }))).status === 403, "Settings PUT: teachers cannot change the head");
     assert((await settingsPut(req(ADMIN, "/api/settings", "PUT", { principalName: "x".repeat(121) }))).status === 400, "Settings PUT: overlong head name rejected");
+
+    // A school as registration used to create it: the registering admin's own name copied into
+    // both the school record and the settings' principalName. That is an account name, not the
+    // configured head, and must never be printed as the principal.
+    const C = "school-erx-c";
+    await saveSchoolServer({ id: C, name: "School C", code: "SCHC", academicYear: YEAR, principalName: "Mahnoor Admin", email: "m@c.edu", phone: "", address: "", createdAt: now, updatedAt: now } as any);
+    await updateSchoolSettingsServer({ ...settingsFor(C, YEAR, "Mahnoor Admin"), campusName: "City Campus" });
+    await saveClassServer({ id: "cls-erx-c", schoolId: C, name: "Class 7", section: "A", numericLevel: 7, capacity: 30, classTeacherId: null, academicYear: YEAR, createdAt: now, updatedAt: now });
+    await saveStudentServer({ ...student("std-erx-c", C, "cls-erx-c", "Noor", "1") });
+    const ADMIN_C = await session("uid-erx-admin-c", "ADMIN", C, { name: "Mahnoor Admin" } as any);
+    const gc = await json(await settingsGet(req(ADMIN_C, "/api/settings")));
+    assert(gc.settings?.principalName === "", "Settings GET: the registering admin's name copied at sign-up is not reported as the head");
+    const rcC = await json(await reportCardGet(req(ADMIN_C, "/api/print/report-card/std-erx-c"), sidParams("std-erx-c")));
+    assert(rcC.school?.principalConfigured === false && rcC.school?.principalName === SCHOOL_INFO_UNCONFIGURED && rcC.canConfigure === true, "Report card: an account name is never printed as principal; the configuration requirement is shown instead");
+    assert(rcC.success === true && rcC.student?.fullName === "Noor" && Array.isArray(rcC.exams), "Report card: the student's report card data is still retrieved");
+    assert(!JSON.stringify(rcC.school).includes("Mahnoor"), "Report card: the admin's account name does not appear in the school block");
+    await settingsPut(req(ADMIN_C, "/api/settings", "PUT", { principalName: "Prof. Saima Iqbal", principalTitle: "Principal, City Campus" }));
+    const rcC2 = await json(await reportCardGet(req(ADMIN_C, "/api/print/report-card/std-erx-c"), sidParams("std-erx-c")));
+    assert(rcC2.school.principalName === "Prof. Saima Iqbal" && rcC2.school.principalTitle === "Principal, City Campus" && rcC2.school.principalConfigured, "Report card: prints the head configured in this school/campus's Settings");
+    // An admin who IS the head can confirm their own name explicitly; once saved it counts.
+    await settingsPut(req(ADMIN_C, "/api/settings", "PUT", { principalName: "Mahnoor Admin" }));
+    const rcC3 = await json(await reportCardGet(req(ADMIN_C, "/api/print/report-card/std-erx-c"), sidParams("std-erx-c")));
+    assert(rcC3.school.principalName === "Mahnoor Admin" && rcC3.school.principalConfigured, "Report card: a name explicitly saved in Settings is printed even if it matches the admin's");
+    const rcStill = await json(await reportCardGet(req(ADMIN, `/api/print/report-card/${s1.id}`), sidParams(s1.id)));
+    assert(rcStill.school.principalName === "Mrs. Nadia Hussain", "Head of institution stays isolated per school after another school's change");
   }
 
   // ---------------------------------------------------------------- 2. exam creation / retrieval
@@ -334,6 +360,39 @@ async function run() {
     assert(byText.observations.some((o: any) => o.id === OBS), "Observation GET (search): free-text search matches the note body");
     const crossSchool = await json(await obsGet(req(ADMIN_B, "/api/observations")));
     assert(crossSchool.observations.every((o: any) => o.id !== OBS), "Observation GET (search): another school never sees this school's observations");
+
+    // Student names on the admin screen (it used to show only the raw studentId).
+    const hinaNote = (await json(await obsPost(req(ADMIN, "/api/observations", "POST", { studentId: s4.id, content: "Organised the science fair." })))).observation;
+    assert(hinaNote?.studentName === "Hina Ali", "Observation POST: the response carries the student's name");
+    // Historical records with no stored name/class: one for a real student of this school, one
+    // whose studentId belongs to ANOTHER school's student, one for a student that no longer exists.
+    await saveStudentObservationServer({
+      id: "obs-erx-noname", schoolId: A, studentId: s2.id, teacherId: "tch-erx-eng", teacherName: "Old", category: "SPORTS",
+      note: "Ran the relay.", sentiment: "POSITIVE", createdAt: "2026-08-01T08:00:00.000Z",
+    });
+    await saveStudentObservationServer({
+      id: "obs-erx-foreign", schoolId: A, studentId: sB.id, teacherId: "tch-erx-eng", teacherName: "Old", category: "SPORTS",
+      note: "Mis-keyed record.", sentiment: "NEUTRAL", createdAt: "2026-08-02T08:00:00.000Z",
+    });
+    await saveStudentObservationServer({
+      id: "obs-erx-gone", schoolId: A, studentId: "std-erx-deleted", teacherId: "tch-erx-eng", teacherName: "Old", category: "SPORTS",
+      note: "Student since removed.", sentiment: "NEUTRAL", createdAt: "2026-08-03T08:00:00.000Z",
+    });
+    const named = await json(await obsGet(req(ADMIN, "/api/observations")));
+    const byId = (id: string) => named.observations.find((o: any) => o.id === id);
+    assert(byId(OBS)?.studentName === "Ali Raza" && byId(OBS)?.className === "Class 7-A", "Observation search: a new observation shows its student's name and class");
+    assert(byId(hinaNote.id)?.studentName === "Hina Ali" && byId(hinaNote.id)?.className === "Class 8-A", "Observation search: each note maps to its own student (no cross-mapping)");
+    assert(byId("obs-erx-legacy")?.studentName === "Ali Raza", "Observation search: an older record without a stored name resolves to its own student");
+    assert(byId("obs-erx-noname")?.studentName === "Sara Khan" && byId("obs-erx-noname")?.className === "Class 7-A", "Observation search: an older record without stored name or class resolves both from its student");
+    assert(byId("obs-erx-foreign")?.studentName === "" && byId("obs-erx-foreign")?.className === "", "Observation search: an older record never shows another school's student's name");
+    assert(byId("obs-erx-gone")?.studentName === "", "Observation search: an older record whose student no longer exists is left unnamed, not guessed");
+    assert(named.observations.every((o: any) => typeof o.studentName === "string"), "Observation search: every row has a studentName string (no crash on missing data)");
+    const byName = await json(await obsGet(req(ADMIN, "/api/observations?q=hina")));
+    assert(byName.observations.length === 1 && byName.observations[0].id === hinaNote.id, "Observation search: free-text search matches the student's name");
+    assert((await obsGet(req(T_SCI, "/api/observations?q=hina"))).status === 400, "Observation search by name: teachers still cannot use the school-wide search");
+    assert((await obsGet(req(STUDENT1, "/api/observations"))).status === 403, "Observation search by name: students are blocked");
+    const crossNames = await json(await obsGet(req(ADMIN_B, "/api/observations")));
+    assert(!crossNames.observations.some((o: any) => o.studentName === "Hina Ali" || o.id === "obs-erx-foreign"), "Observation search: names never leak to another school's admin");
 
     // Delete (soft): ADMIN for any note, TEACHER only their own; gone from every normal read but
     // not actually destroyed. A dedicated note is created for this — adminNoteId ("Punctual all

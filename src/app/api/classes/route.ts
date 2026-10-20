@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getDefaultAcademicYear } from "@/lib/school-display";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import { classBodySchema, parseJsonBody } from "@/lib/input-validation";
 import {
@@ -134,7 +135,7 @@ export async function POST(req: NextRequest) {
     // merge-overwrite the previous session's "10-A" document and pull its whole history
     // (students, attendance, results, fees) into the new session.
     const schoolSettings = await getSchoolSettingsServer(authUser.schoolId);
-    const academicYear = schoolSettings?.academicYear || new Date().getFullYear().toString();
+    const academicYear = schoolSettings?.academicYear || getDefaultAcademicYear();
     const classId = `cls-${slug(authUser.schoolId)}-${slug(academicYear)}-${slug(name)}-${slug(section)}`;
 
     // A class is naturally keyed by name+section within a school. Without a duplicate check,

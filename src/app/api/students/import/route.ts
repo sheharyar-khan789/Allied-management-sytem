@@ -14,6 +14,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { generateInitialPassword } from "@/lib/password-reset";
+import { allocateAdmissionNumbers, reserveGivenAdmissionNumbers } from "@/lib/student-identifiers";
 import { allocateStudentLoginEmail, isLoginEmailTaken, loginDomainFor, resolveLoginConfig } from "@/lib/student-login-id";
 import { neutralizeSpreadsheetFormula } from "@/lib/spreadsheet-parser";
 import { StudentDoc, UserProfile } from "@/lib/firebase/types";
@@ -185,24 +186,22 @@ async function commit(authUser: AuthenticatedUser, req: NextRequest) {
   }
 
   // Admission numbers: given ones are kept; the rest continue the school-wide STD-YYYY-NNN
-  // sequence from the highest number already issued (same rule as single enrollment).
-  const currentYear = new Date().getFullYear();
-  let sequence = ctx.existingStudents.reduce((max, st) => {
-    const m = /^STD-\d{4}-(\d+)$/.exec(st.admissionNo || "");
-    const n = m ? parseInt(m[1], 10) : 0;
-    return n > max ? n : max;
-  }, 0);
+  // sequence, reserved as one block from the atomic counter shared with single enrollment, so an
+  // import running alongside enrollments can't reuse a number. The roster loaded above is the
+  // complete set of issued numbers, so no per-number lookups are needed.
   const usedAdmission = new Set(ctx.existingStudents.map((s) => (s.admissionNo || "").toLowerCase()));
   for (const r of accepted) if (r.student.admissionNo) usedAdmission.add(r.student.admissionNo.toLowerCase());
-  const nextAdmissionNo = () => {
-    let candidate: string;
-    do {
-      sequence += 1;
-      candidate = `STD-${currentYear}-${sequence.toString().padStart(3, "0")}`;
-    } while (usedAdmission.has(candidate.toLowerCase()));
-    usedAdmission.add(candidate.toLowerCase());
-    return candidate;
-  };
+  await reserveGivenAdmissionNumbers(
+    schoolId,
+    accepted.map((r) => r.student.admissionNo || "").filter(Boolean),
+    ctx.existingStudents
+  );
+  const generatedAdmission = await allocateAdmissionNumbers(
+    schoolId,
+    accepted.filter((r) => !r.student.admissionNo).length,
+    { alsoTaken: usedAdmission, roster: ctx.existingStudents }
+  );
+  const nextAdmissionNo = () => generatedAdmission.shift()!;
 
   // Login emails: the row's own email when given (and free), else the next <prefix><campus><sequence>
   // address from the atomic counter shared with single enrolment.

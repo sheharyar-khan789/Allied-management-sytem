@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { todayLocalISO } from "@/lib/date-utils";
+import { calendarYearOptions } from "@/lib/academic-year";
 
 const CHARGE_TYPES = [
   { value: "EVENT", label: "Event Fee" },
@@ -237,7 +238,7 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
         <div>
           <label htmlFor="fee-acct-year" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Year</label>
           <select id="fee-acct-year" value={year} onChange={(e) => setYear(Number(e.target.value))} className={selectClass}>
-            {[thisYear - 2, thisYear - 1, thisYear, thisYear + 1].map((y) => (
+            {calendarYearOptions({ include: [year] }).map((y) => (
               <option key={y} value={y}>{y}</option>
             ))}
           </select>

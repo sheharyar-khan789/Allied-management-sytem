@@ -4,6 +4,7 @@ import React, { useEffect, useState, use } from "react";
 import { formatDisplayDate } from "@/lib/date-utils";
 import Link from "next/link";
 import FileUpload from "@/components/FileUpload";
+import TeacherObservationsPanel from "@/components/TeacherObservationsPanel";
 
 export default function TeacherProfilePage({
   params,
@@ -529,6 +530,9 @@ export default function TeacherProfilePage({
           </div>
         </div>
       </div>
+
+      {/* Admin-only observations about this teacher */}
+      <TeacherObservationsPanel mode="admin" teacherId={id} />
 
       {/* Edit Teacher Modal */}
       {editModalOpen && (

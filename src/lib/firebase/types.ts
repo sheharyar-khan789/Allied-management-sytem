@@ -161,6 +161,12 @@ export interface TimetableDoc {
   startTime: string; // e.g. "08:00 AM"
   endTime: string; // e.g. "08:45 AM"
   roomNo?: string;
+  /**
+   * The group of the class this period is for, when the class splits (e.g. "Biology" and
+   * "Computer" of 9th Science at the same time). Empty/absent = the whole class. Two periods of
+   * one class may overlap only when both name a group and the groups differ.
+   */
+  group?: string;
   topic?: string;
   academicYear?: string;
   /** Set on periods created by a timetable import (see TimetableImportDoc). */
@@ -416,6 +422,36 @@ export interface StudentObservationDoc {
 }
 
 /**
+ * A written observation ABOUT a teacher (classroom visit, professional conduct, ...), stored in
+ * `teacherObservations/{id}`. Separate from StudentObservationDoc on purpose: only an ADMIN of the
+ * school writes one, and it is readable only by that school's admins and the teacher it is about
+ * (enforced in /api/teacher-observations; there is no client-side Firestore access).
+ */
+export interface TeacherObservationDoc {
+  id: string;
+  schoolId: string;
+  /** The teacher the observation is about (TeacherDoc.id). */
+  teacherId: string;
+  /** Teacher's name when written (display only; teacherId is the reference). */
+  teacherName: string;
+  category: string;
+  title?: string;
+  /** The full written text. */
+  note: string;
+  /** Author (always an ADMIN user of the school). */
+  authorUid: string;
+  authorName: string;
+  createdAt: string;
+  updatedAt?: string;
+  updatedBy?: string;
+  /** Prior (title, note) pairs, oldest first, appended whenever an edit changes the text. */
+  editHistory?: { at: string; by: string; byName?: string; previousTitle?: string; previousNote: string }[];
+  /** Soft delete: kept for the audit trail, excluded from normal reads. */
+  deletedAt?: string | null;
+  deletedBy?: string;
+}
+
+/**
  * ASD Weekly & Daily Lesson Plan (see src/lib/lesson-plan-schedule.ts for the Saturday
  * submission-window/lock rules this record is governed by).
  *
@@ -530,6 +566,10 @@ export interface SchoolSettingsDoc {
   website?: string;
   logoUrl?: string;
   principalName: string;
+  /** Set whenever an admin saves the head's name in Settings. Without it, a principalName equal
+   * to the registration copy (School.principalName) is the registering admin's own name, not a
+   * configured head — see officialPrincipalName. */
+  principalNameConfirmedAt?: string;
   /** Designation printed under the head's name on report cards, e.g. "Principal". */
   principalTitle?: string;
   academicYear: string;

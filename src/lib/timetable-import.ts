@@ -189,13 +189,15 @@ export interface ImportRowInput {
   fridayEndTime?: string;
   days: string[];
   roomNo?: string;
+  /** Group of the class (e.g. "Biology") when the period is only for part of it; empty = whole class. */
+  group?: string;
   /** Fields the reader itself was unsure about (e.g. hard-to-read handwriting). */
   uncertain?: string[];
 }
 
 export type IssueLevel = "error" | "warning";
 export interface RowIssue {
-  field: "class" | "subject" | "teacher" | "period" | "time" | "fridayTime" | "days" | "room";
+  field: "class" | "subject" | "teacher" | "period" | "time" | "fridayTime" | "days" | "room" | "group";
   level: IssueLevel;
   message: string;
 }
@@ -214,6 +216,8 @@ export interface PreviewRow {
   fridayEndTime: string;
   days: TimetableDoc["dayOfWeek"][];
   roomNo: string;
+  /** Group of the class; empty = whole class. */
+  group: string;
   issues: RowIssue[];
 }
 
@@ -291,6 +295,7 @@ export function buildPreviewRows(inputs: ImportRowInput[], ctx: ImportContext): 
     const fieldFor: Record<string, RowIssue["field"]> = {
       class: "class", classname: "class", subject: "subject", subjectname: "subject", teacher: "teacher", teachername: "teacher",
       time: "time", starttime: "time", endtime: "time", period: "period", periodname: "period", days: "days", room: "room",
+      group: "group",
     };
     for (const u of uncertain) {
       const f = fieldFor[u.replace(/[^a-z]/g, "")];
@@ -312,6 +317,7 @@ export function buildPreviewRows(inputs: ImportRowInput[], ctx: ImportContext): 
       fridayEndTime: fEnd.value,
       days,
       roomNo: (input.roomNo || "").trim().slice(0, 40),
+      group: normalizeGroup(input.group),
     };
     return { ...row, issues: rowIssues(row, ctx, extra) };
   });
@@ -320,7 +326,7 @@ export function buildPreviewRows(inputs: ImportRowInput[], ctx: ImportContext): 
 // ---------------------------------------------------------------------------------------------
 // Spreadsheet rows (CSV / XLSX): one period per line
 // ---------------------------------------------------------------------------------------------
-export const SPREADSHEET_COLUMNS = ["Day", "Period", "Start", "End", "Class", "Subject", "Teacher", "Room", "Friday Start", "Friday End"];
+export const SPREADSHEET_COLUMNS = ["Day", "Period", "Start", "End", "Class", "Group", "Subject", "Teacher", "Room", "Friday Start", "Friday End"];
 
 const HEADER_ALIASES: Record<string, keyof ImportRowInput | "day"> = {
   day: "day", days: "day", weekday: "day",
@@ -331,6 +337,7 @@ const HEADER_ALIASES: Record<string, keyof ImportRowInput | "day"> = {
   subject: "subjectName", subjectname: "subjectName", course: "subjectName",
   teacher: "teacherName", teachername: "teacherName", faculty: "teacherName",
   room: "roomNo", roomno: "roomNo", roomnumber: "roomNo",
+  group: "group", stream: "group", batch: "group", subgroup: "group", classgroup: "group",
   fridaystart: "fridayStartTime", fristart: "fridayStartTime", fridaystarttime: "fridayStartTime",
   fridayend: "fridayEndTime", friend: "fridayEndTime", fridayendtime: "fridayEndTime",
 };
@@ -362,6 +369,7 @@ export function sheetRowsToInputs(rows: string[][]): ImportRowInput[] {
       fridayEndTime: v.fridayEndTime || "",
       days: v.day ? [v.day] : [],
       roomNo: v.roomNo || "",
+      group: v.group || "",
     });
   }
   return out;
@@ -379,6 +387,7 @@ export interface SlotInput {
   startTime: string;
   endTime: string;
   roomNo?: string;
+  group?: string;
   topic?: string;
 }
 
@@ -386,17 +395,49 @@ export type SlotResult =
   | { ok: true; slot: Omit<TimetableDoc, "id" | "createdAt" | "updatedAt"> }
   | { ok: false; error: string; status: number };
 
+/** A class group label as stored: trimmed, single-spaced, at most 40 characters ("" = whole class). */
+export function normalizeGroup(raw: unknown): string {
+  return String(raw ?? "").trim().replace(/\s+/g, " ").slice(0, 40);
+}
+
+/**
+ * Whether two periods of the SAME class are for (partly) the same students: always, unless both
+ * name a group and the groups differ. A whole-class period (no group) includes every group.
+ */
+export function groupsOverlap(a: string | undefined, b: string | undefined): boolean {
+  const ga = normalizeGroup(a).toLowerCase();
+  const gb = normalizeGroup(b).toLowerCase();
+  return !ga || !gb || ga === gb;
+}
+
+const sameText = (a: string | undefined, b: string | undefined) =>
+  String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+
 /**
  * Validates one period against this school's own records. Names are always taken from the
- * referenced documents, never from the request. It may not overlap another period of the same
- * teacher, an identical period (duplicate), or another class's period in the same room
- * (`sameDay` = the other periods of that day). Parallel periods of one class are allowed.
+ * referenced documents, never from the request. `sameDay` = the other periods of that day.
+ *
+ * Refused (genuine conflicts):
+ *  - the same students twice at overlapping times: two periods of one class whose groups overlap
+ *    (see groupsOverlap). Different groups of a class (e.g. Biology and Computer of 9th Science)
+ *    may run at the same time with different subjects and teachers;
+ *  - an exact duplicate (same class, group, subject and teacher, overlapping);
+ *  - a teacher booked twice at overlapping times — except one combined lesson taught to several
+ *    classes together (same teacher, same subject, exactly the same times, and not in two
+ *    different rooms), which is how a school timetable's merged cells read;
+ *  - a room used at overlapping times by another class, other than that same combined lesson.
+ *
+ * `previous` is the stored version of the period being edited. A class/group overlap that pair of
+ * periods ALREADY had before this edit (saved under the older rules, which allowed any parallel
+ * periods of a class) is not held against the edit, so such records stay editable and can be
+ * given groups one at a time; the edit can never introduce a new overlap.
  */
 export function validateTimetableSlot(
   schoolId: string,
   body: SlotInput,
   ctx: ImportContext,
-  sameDay: TimetableDoc[]
+  sameDay: TimetableDoc[],
+  previous?: TimetableDoc | null
 ): SlotResult {
   const classId = String(body?.classId || "").trim();
   const subjectId = String(body?.subjectId || "").trim();
@@ -405,14 +446,18 @@ export function validateTimetableSlot(
   const startTime = String(body?.startTime || "").trim();
   const endTime = String(body?.endTime || "").trim();
   const roomNo = String(body?.roomNo || "").trim();
+  const group = normalizeGroup(body?.group);
   const topic = String(body?.topic || "").trim();
   const requestedTeacherId = String(body?.teacherId || "").trim();
 
   if (!classId || !subjectId || !dayOfWeek || !periodName || !startTime || !endTime) {
     return { ok: false, status: 400, error: "Class, Subject, Day, Period, Start Time, and End Time are required." };
   }
-  if ([classId, subjectId, requestedTeacherId].some((v) => v.length > 128) || periodName.length > 60 || roomNo.length > 40 || topic.length > 200) {
-    return { ok: false, status: 400, error: "One or more fields are too long (period max 60, room max 40, topic max 200 characters)." };
+  if (
+    [classId, subjectId, requestedTeacherId].some((v) => v.length > 128) ||
+    periodName.length > 60 || roomNo.length > 40 || topic.length > 200 || String(body?.group ?? "").trim().length > 40
+  ) {
+    return { ok: false, status: 400, error: "One or more fields are too long (period max 60, room and group max 40, topic max 200 characters)." };
   }
   if (!TIMETABLE_DAYS.includes(dayOfWeek)) return { ok: false, status: 400, error: "Day must be a weekday name (Monday–Sunday)." };
   const start = toMinutes(startTime);
@@ -432,35 +477,74 @@ export function validateTimetableSlot(
   const teacher = teacherId ? ctx.teachers.find((t) => t.id === teacherId) : null;
   if (teacherId && !teacher) return { ok: false, status: 404, error: "Teacher not found for this school." };
 
-  const overlaps = (t: TimetableDoc) => {
+  const overlapsWindow = (t: TimetableDoc, day: string, from: number, to: number) => {
     const s = toMinutes(t.startTime);
     const e = toMinutes(t.endTime);
-    return t.dayOfWeek === dayOfWeek && s !== null && e !== null && s < end && start < e;
+    return t.dayOfWeek === day && s !== null && e !== null && s < to && from < e;
   };
-  // Genuine conflicts only. A class may run several periods in the same slot (split groups,
-  // electives: e.g. Maths, English, Science and Urdu at 09:00 for Class 5), so the same class at
-  // the same time is NOT a clash by itself. What is refused:
-  //  - a teacher booked twice at overlapping times;
-  //  - the exact same period twice (same class + subject + teacher, overlapping) — a duplicate;
-  //  - a room used by two different classes at overlapping times (a class's own parallel groups
-  //    are often listed under the class's room).
-  const teacherClash = teacher ? sameDay.find((t) => t.teacherId === teacher.id && overlaps(t)) : undefined;
+  const overlaps = (t: TimetableDoc) => overlapsWindow(t, dayOfWeek, start, end);
+  const effectiveRoom = roomNo && roomNo !== "-" ? roomNo : "";
+  /** `t` and this period are one lesson taught to several classes together (a merged timetable cell). */
+  const combinedWith = (t: TimetableDoc) =>
+    !!teacher &&
+    t.teacherId === teacher.id &&
+    t.classId !== classId &&
+    sameText(t.subjectName, subject.name) &&
+    toMinutes(t.startTime) === start &&
+    toMinutes(t.endTime) === end &&
+    (!effectiveRoom || !t.roomNo || t.roomNo === "-" || sameText(t.roomNo, effectiveRoom));
+  /** The edited period already overlapped `t` for the same students before this edit. */
+  const preExistingOverlap = (t: TimetableDoc) => {
+    if (!previous || previous.classId !== t.classId) return false;
+    const ps = toMinutes(previous.startTime);
+    const pe = toMinutes(previous.endTime);
+    return ps !== null && pe !== null && overlapsWindow(t, previous.dayOfWeek, ps, pe) && groupsOverlap(previous.group, t.group);
+  };
+
   const duplicate = sameDay.find(
-    (t) => t.classId === classId && t.subjectId === subject.id && (t.teacherId || "") === (teacher?.id || "") && overlaps(t)
+    (t) =>
+      t.classId === classId &&
+      t.subjectId === subject.id &&
+      (t.teacherId || "") === (teacher?.id || "") &&
+      sameText(normalizeGroup(t.group), group) &&
+      overlaps(t)
   );
-  const roomClash =
-    roomNo && roomNo !== "-" ? sameDay.find((t) => t.roomNo === roomNo && t.classId !== classId && overlaps(t)) : undefined;
-  const clash = duplicate || teacherClash || roomClash;
-  if (clash) {
-    const when = `${dayOfWeek} ${clash.startTime}–${clash.endTime}`;
-    const error =
-      clash === duplicate
-        ? `This period already exists: ${clash.subjectName} for ${clash.className} on ${when} (duplicate).`
-        : clash === teacherClash
-          ? `${teacher!.fullName} is already scheduled on ${when} (${clash.subjectName}, ${clash.className}).`
-          : `Room ${roomNo} is already scheduled on ${when} (${clash.subjectName}, ${clash.className}).`;
-    return { ok: false, status: 409, error };
+  const studentClash = sameDay.find(
+    (t) => t.classId === classId && overlaps(t) && groupsOverlap(group, t.group) && !preExistingOverlap(t)
+  );
+  const teacherClash = teacher ? sameDay.find((t) => t.teacherId === teacher.id && overlaps(t) && !combinedWith(t)) : undefined;
+  const roomClash = effectiveRoom
+    ? sameDay.find((t) => sameText(t.roomNo, effectiveRoom) && t.classId !== classId && overlaps(t) && !combinedWith(t))
+    : undefined;
+  const when = (t: TimetableDoc) => `${dayOfWeek} ${t.startTime}–${t.endTime}`;
+  const forWhom = (t: TimetableDoc) => (t.group ? `${t.className}, ${t.group} group` : t.className);
+  if (duplicate) {
+    return {
+      ok: false,
+      status: 409,
+      error: `This period already exists: ${duplicate.subjectName} for ${forWhom(duplicate)} on ${when(duplicate)} (duplicate).`,
+    };
   }
+  // Every conflict that applies is reported, so the admin can fix them all at once.
+  const problems: string[] = [];
+  if (teacherClash) {
+    problems.push(
+      `${teacher!.fullName} is already scheduled on ${when(teacherClash)} (${teacherClash.subjectName}, ${forWhom(teacherClash)}).` +
+        (sameText(teacherClash.subjectName, subject.name) && teacherClash.classId !== classId
+          ? " A combined lesson for several classes needs exactly the same times and room."
+          : "")
+    );
+  }
+  if (studentClash) {
+    problems.push(
+      `${forWhom(studentClash)} already has ${studentClash.subjectName} on ${when(studentClash)}. ` +
+        (group && studentClash.group
+          ? "The same group can't have two lessons at once."
+          : "If these lessons are for different groups of the class (e.g. Biology and Computer), set a different Group on each period.")
+    );
+  }
+  if (roomClash) problems.push(`Room ${roomNo} is already scheduled on ${when(roomClash)} (${roomClash.subjectName}, ${forWhom(roomClash)}).`);
+  if (problems.length > 0) return { ok: false, status: 409, error: problems.join(" ") };
 
   return {
     ok: true,
@@ -477,6 +561,7 @@ export function validateTimetableSlot(
       startTime,
       endTime,
       roomNo: roomNo || cls.roomNo || "",
+      group,
       topic,
     },
   };
@@ -495,6 +580,7 @@ export function expandRow(row: PreviewRow): SlotInput[] {
       startTime: friday ? row.fridayStartTime : row.startTime,
       endTime: friday ? row.fridayEndTime : row.endTime,
       roomNo: row.roomNo,
+      group: row.group,
     };
   });
 }

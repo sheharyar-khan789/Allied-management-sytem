@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { calendarYearOptions } from "@/lib/academic-year";
 
 const CHARGE_LABELS: Record<string, string> = {
   EVENT: "Event Fee", TRIP: "Trip Fee", SPORTS: "Sports Fee", EXAM: "Exam Fee", ACTIVITY: "Activity Fee", OTHER: "Other Charges",
@@ -129,7 +130,7 @@ export default function StudentFeesPage() {
             onChange={(e) => setYear(Number(e.target.value))}
             className="h-8 px-2 rounded-lg bg-surface-container-low text-xs font-semibold text-on-surface border border-outline-variant/40"
           >
-            {[thisYear - 1, thisYear, thisYear + 1].map((y) => (
+            {calendarYearOptions({ futureYears: 1, include: [year] }).map((y) => (
               <option key={y} value={y}>{y}</option>
             ))}
           </select>

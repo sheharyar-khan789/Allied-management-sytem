@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { calendarYearOptions } from "@/lib/academic-year";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -10,7 +11,6 @@ const MONTHS = [
 ];
 
 const CURRENT_YEAR = new Date().getFullYear();
-const YEARS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1];
 
 export default function PayrollManagementPage() {
   const [data, setData] = useState<any>(null);
@@ -191,7 +191,7 @@ export default function PayrollManagementPage() {
             onChange={(e) => setSelectedYear(Number(e.target.value))}
             className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
           >
-            {YEARS.map((y) => (
+            {calendarYearOptions({ include: [selectedYear] }).map((y) => (
               <option key={y} value={y}>
                 {y}
               </option>

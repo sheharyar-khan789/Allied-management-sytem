@@ -56,12 +56,20 @@ export const adminAuth: Auth = getAuth(adminApp);
 export const adminDb: Firestore = getFirestore(adminApp);
 export const adminStorage: Storage = getStorage(adminApp);
 
-const resolvedBucketName =
-  process.env.FIREBASE_STORAGE_BUCKET ||
-  process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ||
-  `${process.env.FIREBASE_PROJECT_ID || process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "allied-school-system"}.firebasestorage.app`;
+/**
+ * The Cloud Storage bucket uploads go to: FIREBASE_STORAGE_BUCKET, else the client's
+ * NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET (the same value the Firebase console shows as
+ * "storageBucket"). Empty when neither is set — the name is never guessed from the project id,
+ * because a guessed name points at a bucket that may not exist (or not belong to this project)
+ * and turns a configuration gap into a confusing runtime failure. src/lib/storage.ts reports an
+ * empty name as "storage not configured".
+ */
+export const storageBucketName = (process.env.FIREBASE_STORAGE_BUCKET || process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "")
+  .trim()
+  .replace(/^gs:\/\//, "")
+  .replace(/\/+$/, "");
 
-export const adminBucket = adminStorage.bucket(resolvedBucketName);
+export const adminBucket = storageBucketName ? adminStorage.bucket(storageBucketName) : null;
 
 try {
   adminDb.settings({ ignoreUndefinedProperties: true });

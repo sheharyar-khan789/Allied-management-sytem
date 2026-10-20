@@ -37,6 +37,7 @@ export default function TeacherNav({
     { label: "Rapid Gradebook", href: "/teacher/gradebook", icon: "edit_note" },
     { label: "Lesson Plans", href: "/teacher/lesson-plans", icon: "edit_calendar" },
     { label: "Students & Notes", href: "/teacher/students", icon: "assignment_ind" },
+    { label: "My Observations", href: "/teacher/observations", icon: "rate_review" },
     { label: "Announcements", href: "/teacher/announcements", icon: "campaign" },
   ];
 

@@ -145,7 +145,7 @@ export default function AdminObservationsPage() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Text, title, or student ID..."
+            placeholder="Text, title, student name or ID..."
             className="w-full h-9 pl-9 pr-3 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40"
           />
         </div>
@@ -219,7 +219,7 @@ export default function AdminObservationsPage() {
                 {observations.map((o) => (
                   <tr key={o.id} className="hover:bg-surface-container-low/40 cursor-pointer" onClick={() => { setOpenId(o.id); setEditing(false); setNotice(""); }}>
                     <td className="py-3 px-4 text-on-surface-variant whitespace-nowrap font-mono text-[11px]">{formatDate(o.date)}</td>
-                    <td className="py-3 px-4 font-mono text-on-surface-variant text-[11px]">{o.studentId}</td>
+                    <td className="py-3 px-4 font-semibold text-on-surface">{o.studentName || <span className="font-normal italic text-on-surface-variant">Name not recorded ({o.studentId})</span>}</td>
                     <td className="py-3 px-4 font-semibold text-on-surface">{o.className || "—"}</td>
                     <td className="py-3 px-4">
                       <span className="px-1.5 py-0.5 rounded bg-surface-container-high text-[10px] font-semibold text-on-surface">{o.categoryLabel}</span>
@@ -246,7 +246,7 @@ export default function AdminObservationsPage() {
                 <p className="text-[10px] font-bold text-on-surface-variant uppercase">{openObservation.categoryLabel} • {CONDUCT_RATING_LABELS[openObservation.sentiment] || openObservation.conductLabel}</p>
                 <h2 className="font-headline-md text-base font-bold text-on-surface mt-0.5">{openObservation.title || "Untitled note"}</h2>
                 <p className="text-[11px] text-on-surface-variant mt-0.5">
-                  Student {openObservation.studentId} • {openObservation.className || "Unknown class"} • Written by {openObservation.teacherName} on {formatDate(openObservation.date)}
+                  {openObservation.studentName || `Unknown student (${openObservation.studentId})`} • {openObservation.className || "Unknown class"} • Written by {openObservation.teacherName} on {formatDate(openObservation.date)}
                   {openObservation.updatedAt !== openObservation.date ? ` • last edited ${formatDate(openObservation.updatedAt)}` : ""}
                   {openObservation.examName ? ` • ${openObservation.examName}` : ""}
                 </p>

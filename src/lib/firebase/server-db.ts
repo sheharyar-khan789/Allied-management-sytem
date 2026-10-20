@@ -38,6 +38,7 @@ import {
   ExamScheduleDoc,
   ExamResultDoc,
   StudentObservationDoc,
+  TeacherObservationDoc,
   LessonPlanDoc,
   LockedRecordDoc,
   AuditLogDoc,
@@ -69,6 +70,7 @@ const localStore: {
   examSchedules: Map<string, ExamScheduleDoc>;
   examResults: Map<string, ExamResultDoc>;
   studentObservations: Map<string, StudentObservationDoc>;
+  teacherObservations: Map<string, TeacherObservationDoc>;
   lessonPlans: Map<string, LessonPlanDoc>;
   lockedRecords: Map<string, LockedRecordDoc>;
   auditLogs: Map<string, AuditLogDoc>;
@@ -94,6 +96,7 @@ const localStore: {
   examSchedules: new Map(),
   examResults: new Map(),
   studentObservations: new Map(),
+  teacherObservations: new Map(),
   lessonPlans: new Map(),
   lockedRecords: new Map(),
   auditLogs: new Map(),
@@ -901,6 +904,48 @@ export async function raiseCounterToAtLeastServer(key: string, next: number): Pr
   return value;
 }
 
+/**
+ * Like allocateCounterValueServer, but reserves `count` consecutive values (0 only initialises)
+ * and, for a counter that doesn't exist yet, starts at `seedNext()` instead of a fixed value — for
+ * sequences that already have values issued before the counter existed (e.g. admission numbers).
+ * Same `{ next }` document format, so raiseCounterToAtLeastServer / peekCounterServer apply.
+ *
+ * First use is safe under concurrency: both callers read the missing document inside their
+ * transaction, Firestore lets only one commit, and the other retries and sees the created counter.
+ * Nothing but the counter document is written; existing records are only read (by `seedNext`).
+ */
+export async function allocateSeededCounterBlockServer(
+  key: string,
+  count: number,
+  seedNext: () => Promise<number>
+): Promise<number> {
+  assertProductionDbReady();
+  const n = Math.max(0, Math.floor(count));
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("counters").doc(key);
+      return await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        const stored = snap.exists ? Number(snap.data()?.next) : NaN;
+        const value = Number.isInteger(stored) && stored >= 1 ? stored : Math.max(1, await seedNext());
+        tx.set(ref, { next: value + n, updatedAt: new Date().toISOString() }, { merge: true });
+        return value;
+      });
+    } catch (e) {
+      onFirestoreError(`allocateSeededCounterBlockServer(${key})`, e);
+      throw e;
+    }
+  }
+  if (!localCounters.has(key)) {
+    const seeded = Math.max(1, await seedNext());
+    if (!localCounters.has(key)) localCounters.set(key, seeded);
+  }
+  // No await between the read and the write: atomic on the single JS thread.
+  const value = localCounters.get(key)!;
+  localCounters.set(key, value + n);
+  return value;
+}
+
 /** The value the next allocation would return (1 if the counter was never used). */
 export async function peekCounterServer(key: string, start = 1): Promise<number> {
   if (hasAdminCredentials) {
@@ -1320,6 +1365,26 @@ export async function getStudentByUserIdServer(schoolId: string, userId: string)
 
   for (const st of localStore.students.values()) {
     if (st.schoolId === schoolId && st.userId === userId) return st;
+  }
+  return null;
+}
+
+/** A student of `schoolId` whose admission number is exactly `admissionNo` (case-sensitive), if any. */
+export async function getStudentByAdmissionNoServer(schoolId: string, admissionNo: string): Promise<StudentDoc | null> {
+  if (!admissionNo) return null;
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("getStudentByAdmissionNoServer", () =>
+        adminDb.collection("students").where("schoolId", "==", schoolId).where("admissionNo", "==", admissionNo).limit(1).get()
+      );
+      return snap.empty ? null : ({ id: snap.docs[0].id, ...snap.docs[0].data() } as StudentDoc);
+    } catch (e) {
+      onFirestoreError(`getStudentByAdmissionNoServer(${schoolId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  for (const st of localStore.students.values()) {
+    if (st.schoolId === schoolId && st.admissionNo === admissionNo) return st;
   }
   return null;
 }
@@ -3452,6 +3517,76 @@ export async function saveStudentObservationServer(obs: StudentObservationDoc): 
     }
   }
   return id;
+}
+
+// ---------------------------------------------------------------------------
+// TEACHER OBSERVATIONS (admin-written notes about a teacher)
+// ---------------------------------------------------------------------------
+
+/**
+ * A school's teacher observations, newest first, soft-deleted ones excluded. With `teacherId`,
+ * only that teacher's — the filter runs in the query itself, so a teacher-scoped read never
+ * loads another teacher's notes.
+ */
+export async function getTeacherObservationsServer(
+  schoolId: string,
+  teacherId?: string
+): Promise<TeacherObservationDoc[]> {
+  let list: TeacherObservationDoc[] | null = null;
+  if (hasAdminCredentials) {
+    try {
+      let q = adminDb.collection("teacherObservations").where("schoolId", "==", schoolId);
+      if (teacherId) q = q.where("teacherId", "==", teacherId);
+      const snap = await withFirestoreRetry("getTeacherObservationsServer", () => q.get());
+      list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherObservationDoc));
+    } catch (e) {
+      onFirestoreError(`getTeacherObservationsServer(${schoolId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  if (!list) {
+    list = Array.from(localStore.teacherObservations.values()).filter(
+      (o) => o.schoolId === schoolId && (!teacherId || o.teacherId === teacherId)
+    );
+  }
+  return list.filter((o) => !o.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** One teacher observation by id, only if it belongs to `schoolId` (soft-deleted included). */
+export async function getTeacherObservationByIdServer(
+  schoolId: string,
+  id: string
+): Promise<TeacherObservationDoc | null> {
+  if (!id) return null;
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getTeacherObservationByIdServer", () =>
+        adminDb.collection("teacherObservations").doc(id).get()
+      );
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as TeacherObservationDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getTeacherObservationByIdServer(${id})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  const local = localStore.teacherObservations.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+export async function saveTeacherObservationServer(obs: TeacherObservationDoc): Promise<string> {
+  localStore.teacherObservations.set(obs.id, obs);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("teacherObservations").doc(obs.id).set(cleanUndefined(obs));
+    } catch (e) {
+      onFirestoreError(`saveTeacherObservationServer(${obs.id})`, e);
+      // Never let the page report a note as saved when the write failed.
+      throw e;
+    }
+  }
+  return obs.id;
 }
 
 // ---------------------------------------------------------------------------

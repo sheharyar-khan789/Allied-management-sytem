@@ -9,8 +9,10 @@ import {
   getSchoolServer
 } from "@/lib/firebase/server-db";
 import { ExamCategory, SchoolSettingsDoc } from "@/lib/firebase/types";
-import { getDefaultAcademicYear, realPrincipalName } from "@/lib/school-display";
+import { getDefaultAcademicYear, officialPrincipalName } from "@/lib/school-display";
+import { isValidAcademicYear } from "@/lib/academic-year";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { deleteReplacedFiles } from "@/lib/storage";
 import { DEFAULT_SCHOOL_TIMEZONE } from "@/lib/lesson-plan-schedule";
 import { EXAM_CATEGORIES, EXAM_CATEGORY_PERMISSION_DEFAULTS } from "@/lib/exam-results";
 import {
@@ -66,7 +68,7 @@ export async function GET(req: NextRequest) {
         phone: school?.phone || "",
         email: school?.email || authUser.email,
         // Never a placeholder name: an unset head is shown as "not configured" with a link here.
-        principalName: school?.principalName || "",
+        principalName: "",
         principalTitle: "",
         academicYear: school?.academicYear || getDefaultAcademicYear(),
         timezone: DEFAULT_SCHOOL_TIMEZONE,
@@ -109,7 +111,7 @@ export async function GET(req: NextRequest) {
       currentSessionId: sessions[0].id,
       logoUrl: settings.logoUrl || school?.logoUrl || "",
       // Head of institution as printed on report cards (signature block).
-      principalName: realPrincipalName(settings.principalName) || realPrincipalName(school?.principalName) || "",
+      principalName: officialPrincipalName(settings, school),
       principalTitle: settings.principalTitle || "",
       // Always the full map (defaults filled in) so the settings UI has a definite value per
       // category to show/toggle, not just whatever overrides happen to be stored.
@@ -174,14 +176,6 @@ export async function PUT(req: NextRequest) {
     if (body.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(body.contactEmail).trim())) {
       return NextResponse.json({ error: "Please enter a valid contact email address." }, { status: 400 });
     }
-    if (body.academicYear !== undefined && String(body.academicYear).trim().length > 0) {
-      if (!/^\d{4}-\d{4}$/.test(String(body.academicYear).trim())) {
-        return NextResponse.json(
-          { error: "Academic session must be in the format YYYY-YYYY, e.g. 2025-2026." },
-          { status: 400 }
-        );
-      }
-    }
     if (body.timezone !== undefined && String(body.timezone).trim().length > 0 && !isValidTimeZone(String(body.timezone).trim())) {
       return NextResponse.json(
         { error: "Timezone must be a valid IANA timezone name, e.g. Asia/Karachi." },
@@ -190,6 +184,16 @@ export async function PUT(req: NextRequest) {
     }
 
     const current = await getSchoolSettingsServer(authUser.schoolId);
+    // Only a session that is being changed has to be two consecutive years: the Settings form
+    // re-sends the stored value on every save, and a school whose existing session predates this
+    // rule must still be able to save its other settings without touching it.
+    const requestedYear = body.academicYear !== undefined ? String(body.academicYear).trim() : "";
+    if (requestedYear && requestedYear !== (current?.academicYear || "").trim() && !isValidAcademicYear(requestedYear)) {
+      return NextResponse.json(
+        { error: "Academic session must be two consecutive years in the format YYYY-YYYY, e.g. 2025-2026." },
+        { status: 400 }
+      );
+    }
     const school = await getSchoolServer(authUser.schoolId);
 
     const updated: SchoolSettingsDoc = {
@@ -204,7 +208,9 @@ export async function PUT(req: NextRequest) {
       principalName:
         body.principalName !== undefined
           ? body.principalName
-          : current?.principalName ?? school?.principalName ?? "",
+          : current?.principalName ?? "",
+      principalNameConfirmedAt:
+        body.principalName !== undefined ? new Date().toISOString() : current?.principalNameConfirmedAt,
       principalTitle: body.principalTitle !== undefined ? body.principalTitle : current?.principalTitle ?? "",
       academicYear: (body.academicYear && String(body.academicYear).trim())
         || current?.academicYear
@@ -235,6 +241,10 @@ export async function PUT(req: NextRequest) {
     };
 
     await updateSchoolSettingsServer(updated);
+    // The settings now point at the new logo: remove the replaced/removed one from this school's
+    // storage. Only after the save succeeded (a failed save keeps the old logo intact), and never
+    // a file the school record itself still references.
+    await deleteReplacedFiles(authUser.schoolId, [current?.logoUrl], [updated.logoUrl, school?.logoUrl]);
     if (body.studentLoginNextSequence !== undefined) {
       await raiseLoginSequence(authUser.schoolId, body.studentLoginNextSequence);
     }
