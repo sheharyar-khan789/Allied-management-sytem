@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateStudentDates } from "@/lib/date-utils";
+import { deleteReplacedFiles } from "@/lib/storage";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getStudentByIdServer,
@@ -349,6 +350,13 @@ export async function PUT(
     }
 
     await saveStudentServer(updated);
+    // Replaced photo / removed documents: delete them from this school's storage now that the
+    // record no longer points at them (never before the save, so a failed save loses nothing).
+    await deleteReplacedFiles(
+      authUser.schoolId,
+      [existing.photoUrl, ...(existing.documents || []).map((d) => d.url)],
+      [updated.photoUrl, ...(updated.documents || []).map((d) => d.url)]
+    );
     if (updated.status !== existing.status) {
       await syncLoginActive(existing.userId, authUser.schoolId, updated.status === "ACTIVE");
     }

@@ -203,6 +203,8 @@ export const CONDUCT_RATING_LABELS: Record<string, string> = {
 export interface ObservationView {
   id: string;
   studentId: string;
+  /** Empty for records saved before the student's name was captured on the observation. */
+  studentName: string;
   /** Short heading; empty for records saved before titles were stored separately. */
   title: string;
   /** The written observation text exactly as saved. */
@@ -235,6 +237,7 @@ export function toObservationView(
   return {
     id: o.id,
     studentId: o.studentId,
+    studentName: o.studentName || "",
     title: o.title || "",
     note: o.note || "",
     category: o.category,

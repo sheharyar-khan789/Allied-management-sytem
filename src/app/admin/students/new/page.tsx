@@ -1,16 +1,28 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { todayLocalISO } from "@/lib/date-utils";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import FileUpload from "@/components/FileUpload";
+
+/** One key per enrollment attempt; see the Idempotency-Key handling in /api/students. */
+function newIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
 
 export default function AddNewStudentPage() {
   const router = useRouter();
   const [classes, setClasses] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [classesError, setClassesError] = useState("");
+  // Set when a retry turned out to be for a student an earlier attempt already enrolled.
+  const [alreadyEnrolled, setAlreadyEnrolled] = useState<{ id: string; name: string } | null>(null);
+  // Kept across retries of the same enrollment (so a retry after a timeout or "temporarily busy"
+  // can never enroll the student twice) and replaced only after the server confirms the save.
+  const idempotencyKey = useRef(newIdempotencyKey());
   // /api/students provisions real Firebase Auth accounts for the student (and, when a guardian
   // email is supplied, for the parent) and returns their one-time passwords exactly once. The
   // page previously redirected straight to the dossier and threw both values away, leaving
@@ -49,14 +61,20 @@ export default function AddNewStudentPage() {
 
   useEffect(() => {
     fetch("/api/classes")
-      .then((res) => res.json())
-      .then((json) => {
-        if (json.success && json.classes.length > 0) {
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.success) {
+          setClassesError(json.error || `Could not load classes (HTTP ${res.status}).`);
+          return;
+        }
+        if (json.classes.length > 0) {
           setClasses(json.classes);
           setFormData((prev) => ({ ...prev, classId: json.classes[0].id }));
+        } else {
+          setClassesError("No classes exist in the active academic session yet. Create a class first.");
         }
       })
-      .catch(console.error);
+      .catch(() => setClassesError("Could not load classes. Check your connection and reload the page."));
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
@@ -66,13 +84,15 @@ export default function AddNewStudentPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     setError("");
+    setAlreadyEnrolled(null);
     setLoading(true);
 
     try {
       const res = await fetch("/api/students", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey.current },
         body: JSON.stringify({
           ...formData,
           monthlyFee: formData.monthlyFee === "" ? undefined : Number(formData.monthlyFee),
@@ -80,9 +100,23 @@ export default function AddNewStudentPage() {
         }),
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to create student.");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.student) {
+        throw new Error(
+          data.error ||
+            (res.status === 503 || res.status === 504
+              ? "The server is temporarily busy. Please try again in a few minutes — retrying will not create a duplicate student."
+              : `Failed to create student (HTTP ${res.status}). Retrying will not create a duplicate student.`)
+        );
+      }
+      // Saved: the next enrollment from this page is a new one.
+      idempotencyKey.current = newIdempotencyKey();
+      if (data.replayed) {
+        // An earlier attempt of this same submission was already saved (e.g. its response was
+        // lost). Its one-time password can't be shown again — say so instead of leaving the
+        // admin without a password and no explanation.
+        setAlreadyEnrolled({ id: data.student.id, name: data.student.fullName });
+        return;
       }
 
       if (data.temporaryPassword || data.parentTemporaryPassword) {
@@ -99,7 +133,11 @@ export default function AddNewStudentPage() {
         router.push(`/admin/students/${data.student.id}`);
       }
     } catch (err: any) {
-      setError(err.message);
+      setError(
+        err instanceof TypeError
+          ? "Could not reach the server. Check your connection and try again — retrying will not create a duplicate student."
+          : err.message
+      );
     } finally {
       setLoading(false);
     }
@@ -131,6 +169,25 @@ export default function AddNewStudentPage() {
           <span>{error}</span>
         </div>
       )}
+      {alreadyEnrolled && (
+        <div role="status" className="p-3 rounded-lg bg-secondary-container text-on-secondary-container text-xs flex items-start gap-2 border border-secondary/20">
+          <span className="material-symbols-outlined text-[18px]">info</span>
+          <span>
+            {alreadyEnrolled.name} was already enrolled by an earlier attempt of this submission, so no
+            duplicate was created. Their one-time password cannot be shown again —{" "}
+            <Link href={`/admin/students/${alreadyEnrolled.id}`} className="underline font-semibold">
+              open the student&apos;s profile
+            </Link>{" "}
+            and use Login &amp; Access → Reset password to issue a new one.
+          </span>
+        </div>
+      )}
+      {classesError && (
+        <div className="p-3 rounded-lg bg-error-container text-on-error-container text-xs flex items-center gap-2 border border-error/20">
+          <span className="material-symbols-outlined text-[18px]">error</span>
+          <span>{classesError}</span>
+        </div>
+      )}
 
       {credentials && (
         <div
@@ -146,18 +203,19 @@ export default function AddNewStudentPage() {
           <p className="text-[11px] leading-relaxed text-on-surface-variant">
             These one-time passwords are shown here once and are not stored anywhere. Copy them
             now and pass them on securely, asking each person to change their password after the
-            first sign-in. If lost, they must be reset from the authentication console.
+            first sign-in. If lost, reset it from the student&apos;s profile (Login &amp; Access → Reset password).
           </p>
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
             {credentials.studentPassword && (
               <>
                 <div className="p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/40">
                   <dt className="text-[10px] uppercase tracking-wider font-bold text-on-surface-variant">
-                    Student email
+                    Student sign-in ID
                   </dt>
                   <dd className="font-mono font-semibold text-on-surface break-all mt-0.5">
                     {credentials.studentEmail}
                   </dd>
+                  <dd className="text-[10px] text-on-surface-variant mt-0.5">A sign-in ID, not a mailbox the student reads. Password-reset links for students go to the guardian email on file.</dd>
                 </div>
                 <div className="p-2.5 rounded-lg bg-surface-container-lowest border border-surface-container-high/40">
                   <dt className="text-[10px] uppercase tracking-wider font-bold text-on-surface-variant">

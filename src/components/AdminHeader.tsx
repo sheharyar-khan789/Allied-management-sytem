@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { academicYearOptions, currentAcademicYear, isValidAcademicYear } from "@/lib/academic-year";
 
 // The "Portals" dropdown that used to live in this header (commented in-source as a
 // "Role / Portal Switcher for rapid demo testing") linked an ADMIN session to /teacher and
@@ -11,7 +12,7 @@ import { useRouter } from "next/navigation";
 // could never do anything except bounce. Removed as leftover demo scaffolding.
 
 function parseSessionString(raw: string) {
-  let year = "2026-2027";
+  let year = currentAcademicYear();
   let campus = "Main Campus";
 
   if (!raw) return { year, campus };
@@ -30,6 +31,11 @@ function parseSessionString(raw: string) {
   return { year, campus };
 }
 
+/** Every valid session is in the generated options (they always include it); anything else is custom. */
+function presetFor(year: string) {
+  return isValidAcademicYear(year) ? year : "CUSTOM";
+}
+
 interface AdminHeaderProps {
   sessionName?: string;
   title?: string;
@@ -39,7 +45,7 @@ interface AdminHeaderProps {
 const STORAGE_KEY = "admin_active_session";
 
 export default function AdminHeader({
-  sessionName = "Session 2026-2027 | Main Campus",
+  sessionName = `Session ${currentAcademicYear()} | Main Campus`,
   title,
   onMenuClick,
 }: AdminHeaderProps) {
@@ -49,11 +55,15 @@ export default function AdminHeader({
   // Interactive Academic Session state
   const [displaySession, setDisplaySession] = useState(sessionName);
   const [isSessionOpen, setIsSessionOpen] = useState(false);
-  const [sessionInput, setSessionInput] = useState("2026-2027");
+  const [sessionInput, setSessionInput] = useState(currentAcademicYear());
   const [campusInput, setCampusInput] = useState("Main Campus");
-  const [selectedPreset, setSelectedPreset] = useState("2026-2027");
+  const [selectedPreset, setSelectedPreset] = useState(currentAcademicYear());
   const [isSaving, setIsSaving] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  // Generated, never a fixed list: past sessions for corrections through 15 years ahead, plus the
+  // active (configured) session wherever it falls. Selecting one only fills the form — the
+  // session is not created until the admin saves it.
+  const sessionOptions = academicYearOptions({ include: [parseSessionString(displaySession).year] });
 
   // Initialize from the server's active session. The server value decides which session's data
   // every page shows, so a stale localStorage label must never override it; localStorage is
@@ -67,13 +77,13 @@ export default function AdminHeader({
         const parsed = parseSessionString(stored);
         setSessionInput(parsed.year);
         setCampusInput(parsed.campus);
-        setSelectedPreset(parsed.year);
+        setSelectedPreset(presetFor(parsed.year));
       } else if (sessionName) {
         setDisplaySession(sessionName);
         const parsed = parseSessionString(sessionName);
         setSessionInput(parsed.year);
         setCampusInput(parsed.campus);
-        setSelectedPreset(parsed.year);
+        setSelectedPreset(presetFor(parsed.year));
       }
     } catch {
       setDisplaySession(sessionName);
@@ -128,18 +138,13 @@ export default function AdminHeader({
       const parsed = parseSessionString(displaySession);
       setSessionInput(parsed.year);
       setCampusInput(parsed.campus);
-      const standardPresets = ["2024-2025", "2025-2026", "2026-2027", "2027-2028", "2028-2029", "2029-2030"];
-      if (standardPresets.includes(parsed.year)) {
-        setSelectedPreset(parsed.year);
-      } else {
-        setSelectedPreset("CUSTOM");
-      }
+      setSelectedPreset(presetFor(parsed.year));
     }
     setIsSessionOpen((prev) => !prev);
   };
 
   const handleSaveSession = async () => {
-    const year = sessionInput.trim() || "2026-2027";
+    const year = sessionInput.trim() || currentAcademicYear();
     const campus = campusInput.trim() || "Main Campus";
     const formatted = `Session ${year} | ${campus}`;
 
@@ -147,7 +152,7 @@ export default function AdminHeader({
 
     // Switching sessions changes which session's records every page reads, so persist it on the
     // server first and only reflect it locally once the server has accepted it.
-    if (/^\d{4}-\d{4}$/.test(year)) {
+    if (isValidAcademicYear(year)) {
       try {
         const res = await fetch("/api/settings", {
           method: "PUT",
@@ -167,7 +172,7 @@ export default function AdminHeader({
         return;
       }
     } else {
-      alert("Academic session must be in the format YYYY-YYYY, e.g. 2026-2027.");
+      alert(`Academic session must be two consecutive years in the format YYYY-YYYY, e.g. ${currentAcademicYear()}.`);
       setIsSaving(false);
       return;
     }
@@ -303,12 +308,9 @@ export default function AdminHeader({
                       }}
                       className="w-full h-9 px-3 rounded-lg bg-surface-container-low border border-outline-variant/40 text-on-surface text-xs font-medium focus:outline-none focus:ring-2 focus:ring-secondary/20 focus:border-secondary transition-all"
                     >
-                      <option value="2024-2025">2024-2025</option>
-                      <option value="2025-2026">2025-2026</option>
-                      <option value="2026-2027">2026-2027</option>
-                      <option value="2027-2028">2027-2028</option>
-                      <option value="2028-2029">2028-2029</option>
-                      <option value="2029-2030">2029-2030</option>
+                      {sessionOptions.map((y) => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
                       <option value="CUSTOM">Custom Session...</option>
                     </select>
                   </div>
@@ -325,7 +327,7 @@ export default function AdminHeader({
                         setSessionInput(e.target.value);
                         setSelectedPreset("CUSTOM");
                       }}
-                      placeholder="e.g. 2026-2027"
+                      placeholder={`e.g. ${currentAcademicYear()}`}
                       className="w-full h-9 px-3 rounded-lg bg-surface-container-low border border-outline-variant/40 text-on-surface text-xs font-medium focus:outline-none focus:ring-2 focus:ring-secondary/20 focus:border-secondary transition-all"
                     />
                   </div>
@@ -352,7 +354,7 @@ export default function AdminHeader({
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
                       <span className="material-symbols-outlined text-[16px]">calendar_today</span>
                       <span>
-                        Session {sessionInput.trim() || "2026-2027"} | {campusInput.trim() || "Main Campus"}
+                        Session {sessionInput.trim() || currentAcademicYear()} | {campusInput.trim() || "Main Campus"}
                       </span>
                     </div>
                   </div>

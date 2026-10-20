@@ -60,6 +60,22 @@ async function resolveExamId(schoolId: string, examId: string | null | undefined
 }
 
 /**
+ * Observations written before `studentName`/`classId` were stored on the note carry only the
+ * studentId. Those (and only those) are resolved by an exact, school-scoped id lookup, once per
+ * distinct student; a student that no longer resolves stays unnamed rather than being matched
+ * to anyone else.
+ */
+async function studentsMissingFromObservations(schoolId: string, observations: StudentObservationDoc[]) {
+  const ids = Array.from(
+    new Set(observations.filter((o) => !o.studentName || !o.classId).map((o) => o.studentId))
+  );
+  const found = await Promise.all(ids.map((id) => getStudentByIdServer(schoolId, id)));
+  return new Map(
+    found.filter((s): s is NonNullable<typeof s> => !!s).map((s) => [s.id, s] as const)
+  );
+}
+
+/**
  * Admin-only, school-wide observation search (Admin Observations screen): no single studentId,
  * filterable by class/teacher/category/date range. A TEACHER always goes through the per-student
  * path below — class/allocation scoping for a free cross-student search isn't meaningfully
@@ -82,17 +98,24 @@ async function searchObservations(req: NextRequest, authUser: Awaited<ReturnType
   ]);
   const examNameById = new Map(exams.map((e) => [e.id, e.name]));
   const classById = new Map(classes.map((c) => [c.id, `${c.name}-${c.section}`]));
+  const studentById = await studentsMissingFromObservations(authUser.schoolId, observations);
   const search = (searchParams.get("q") || "").trim().toLowerCase();
-  let list = observations.map((o) => ({
-    ...toObservationView(o, examNameById),
-    classId: o.classId || "",
-    className: (o.classId && classById.get(o.classId)) || "",
-  }));
+  let list = observations.map((o) => {
+    const student = studentById.get(o.studentId);
+    const classId = o.classId || student?.classId || "";
+    return {
+      ...toObservationView(o, examNameById),
+      studentName: o.studentName || student?.fullName || "",
+      classId,
+      className: (classId && classById.get(classId)) || "",
+    };
+  });
   if (search) {
     list = list.filter(
       (o) =>
         o.note.toLowerCase().includes(search) ||
         o.title.toLowerCase().includes(search) ||
+        o.studentName.toLowerCase().includes(search) ||
         o.studentId.toLowerCase().includes(search)
     );
   }

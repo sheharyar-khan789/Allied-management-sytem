@@ -1,4 +1,5 @@
 import { School, SchoolSettingsDoc } from "@/lib/firebase/types";
+import { currentAcademicYear } from "@/lib/academic-year";
 
 export const SCHOOL_INFO_UNCONFIGURED = "School information not configured";
 
@@ -11,10 +12,7 @@ export const SCHOOL_INFO_UNCONFIGURED = "School information not configured";
  * differs.
  */
 export function getDefaultAcademicYear(referenceDate: Date = new Date()): string {
-  const year = referenceDate.getFullYear();
-  const month = referenceDate.getMonth(); // 0-indexed
-  const startYear = month >= 6 ? year : year - 1;
-  return `${startYear}-${startYear + 1}`;
+  return currentAcademicYear(referenceDate);
 }
 
 function nonempty(value?: string | null): string {
@@ -30,6 +28,25 @@ function nonempty(value?: string | null): string {
 export function realPrincipalName(value?: string | null): string {
   const name = nonempty(value);
   return name.toLowerCase() === "principal" ? "" : name;
+}
+
+/**
+ * The official head of institution, from the school's Settings only — never an account name.
+ *
+ * Registration used to copy the registering admin's own name into both School.principalName
+ * and the settings' principalName, so report cards printed that account holder (e.g. the admin
+ * who signed up) as the principal. School.principalName is therefore never used, and a settings
+ * value identical to that registration copy only counts once an admin has saved it in Settings
+ * (principalNameConfirmedAt). Empty = not configured.
+ */
+export function officialPrincipalName(
+  settings: Pick<SchoolSettingsDoc, "principalName" | "principalNameConfirmedAt"> | null | undefined,
+  school: Pick<School, "principalName"> | null | undefined
+): string {
+  const name = realPrincipalName(settings?.principalName);
+  if (!name || settings?.principalNameConfirmedAt) return name;
+  const registrationCopy = nonempty(school?.principalName);
+  return registrationCopy && registrationCopy.toLowerCase() === name.toLowerCase() ? "" : name;
 }
 
 export const DEFAULT_PRINCIPAL_TITLE = "Principal / Head";
@@ -57,7 +74,7 @@ export function schoolPrintIdentity(
   const address = nonempty(settings?.address) || nonempty(school?.address);
   const phone = nonempty(settings?.phone) || nonempty(school?.phone);
   const email = nonempty(settings?.email) || nonempty(school?.email);
-  const principalName = realPrincipalName(settings?.principalName) || realPrincipalName(school?.principalName);
+  const principalName = officialPrincipalName(settings, school);
   const principalTitle = nonempty(settings?.principalTitle);
   const campusName = nonempty(settings?.campusName);
   const academicYear = nonempty(settings?.academicYear) || nonempty(school?.academicYear);

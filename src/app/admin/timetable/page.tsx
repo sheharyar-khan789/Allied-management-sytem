@@ -17,6 +17,7 @@ const EMPTY_SLOT = {
   startTime: "",
   endTime: "",
   roomNo: "",
+  group: "",
   topic: "",
 };
 
@@ -98,6 +99,7 @@ export default function TimetableManagementPage() {
       startTime: t.startTime || "",
       endTime: t.endTime || "",
       roomNo: t.roomNo && t.roomNo !== "-" ? t.roomNo : "",
+      group: t.group || "",
       topic: t.topic || "",
     });
     setFormError("");
@@ -332,6 +334,7 @@ export default function TimetableManagementPage() {
                       <td className="py-2.5 px-4 font-mono text-on-surface">{t.startTime} – {t.endTime}</td>
                       <td className="py-2.5 px-4">
                         <span className="px-2 py-0.5 rounded bg-surface-container text-[11px] font-bold text-primary">{t.className}</span>
+                        {t.group ? <span className="ml-1 text-[11px] text-on-surface-variant">({t.group} group)</span> : null}
                       </td>
                       <td className="py-2.5 px-4 font-semibold text-on-surface">{t.subjectName}</td>
                       <td className={`py-2.5 px-4 ${t.teacherId ? "text-on-surface" : "text-error font-semibold"}`}>
@@ -499,6 +502,21 @@ export default function TimetableManagementPage() {
                     placeholder={formClass?.roomNumber ? `Default: ${formClass.roomNumber}` : "e.g. R-101"}
                     className={inputClass}
                   />
+                </div>
+                <div>
+                  <label htmlFor="slot-group" className="block font-semibold text-on-surface mb-1">Group (optional)</label>
+                  <input
+                    id="slot-group"
+                    type="text"
+                    maxLength={40}
+                    value={form.group}
+                    onChange={(e) => setForm({ ...form, group: e.target.value })}
+                    placeholder="Whole class — or e.g. Biology"
+                    className={inputClass}
+                  />
+                  <p className="mt-0.5 text-[10px] text-on-surface-variant">
+                    Only when the class splits, e.g. Biology and Computer at the same time. Leave empty for the whole class.
+                  </p>
                 </div>
                 <div>
                   <label htmlFor="slot-topic" className="block font-semibold text-on-surface mb-1">Topic</label>

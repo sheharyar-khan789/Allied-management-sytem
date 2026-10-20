@@ -101,6 +101,7 @@ export default function TeacherTimetablePage() {
                     <td className="py-2.5 px-4 font-mono text-on-surface">{t.startTime} – {t.endTime}</td>
                     <td className="py-2.5 px-4">
                       <span className="px-2 py-0.5 rounded bg-surface-container text-[11px] font-bold text-primary">{t.className}</span>
+                      {t.group ? <span className="ml-1 text-[11px] text-on-surface-variant">({t.group} group)</span> : null}
                     </td>
                     <td className="py-2.5 px-4 font-semibold text-on-surface">{t.subjectName}</td>
                     <td className="py-2.5 px-4 font-mono text-on-surface-variant">{t.roomNo && t.roomNo !== "-" ? t.roomNo : "—"}</td>

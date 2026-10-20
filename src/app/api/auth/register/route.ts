@@ -223,7 +223,8 @@ export async function POST(req: NextRequest) {
       name: schoolName,
       code: (schoolSlug.toUpperCase().slice(0, 6) || "SCH001").replace(/-/g, ""),
       academicYear: defaultAcademicYear,
-      principalName: fullName,
+      // Not the registering admin's name: the head of institution is configured in Settings.
+      principalName: "",
       email,
       phone: "",
       address: "",
@@ -240,7 +241,8 @@ export async function POST(req: NextRequest) {
       address: "",
       phone: "",
       email,
-      principalName: fullName,
+      // Not the registering admin's name: the head of institution is configured in Settings.
+      principalName: "",
       academicYear: defaultAcademicYear,
       gradingScale: [
         { minPercentage: 90, grade: "A+", gpa: 4.0 },

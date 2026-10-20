@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import AdminTwoFactorCard from "@/components/AdminTwoFactorCard";
 import FileUpload from "@/components/FileUpload";
 import { EXAM_CATEGORIES, EXAM_CATEGORY_LABELS, EXAM_CATEGORY_PERMISSION_DEFAULTS } from "@/lib/exam-results";
+import { currentAcademicYear } from "@/lib/academic-year";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>({
@@ -27,6 +28,20 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Whether file uploads can work at all (checked on the server against the real bucket), so the
+  // logo section can explain a storage problem before an admin picks a file.
+  const [storageProblem, setStorageProblem] = useState<string | null>(null);
+  const [logoPendingSave, setLogoPendingSave] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/upload")
+      .then((res) => res.json().catch(() => null))
+      .then((json) => {
+        const status = json?.storage?.status;
+        if (status && status !== "READY" && status !== "DEV_INLINE" && json.storage.message) setStorageProblem(json.storage.message);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -101,6 +116,7 @@ export default function SettingsPage() {
           }));
         }
         setSaveSuccess(true);
+        setLogoPendingSave(false);
         setTimeout(() => setSaveSuccess(false), 3000);
       } else {
         setSaveError(json?.error || "Failed to save settings. Please try again.");
@@ -164,10 +180,27 @@ export default function SettingsPage() {
               label="Official School Logo / Crest"
               helperText="Upload official emblem (JPG, PNG, WebP up to 5MB)"
               currentUrl={settings.logoUrl}
-              onUploadComplete={(url) => setSettings((prev: any) => ({ ...prev, logoUrl: url }))}
-              onRemove={() => setSettings((prev: any) => ({ ...prev, logoUrl: "" }))}
+              onUploadComplete={(url) => {
+                setSettings((prev: any) => ({ ...prev, logoUrl: url }));
+                setLogoPendingSave(true);
+              }}
+              onRemove={() => {
+                setSettings((prev: any) => ({ ...prev, logoUrl: "" }));
+                setLogoPendingSave(true);
+              }}
               previewType="image"
             />
+            {storageProblem && (
+              <p role="alert" className="mt-2 text-[11px] text-error flex items-start gap-1">
+                <span className="material-symbols-outlined text-[14px]">cloud_off</span>
+                <span>{storageProblem} Your other settings can still be saved.</span>
+              </p>
+            )}
+            {logoPendingSave && (
+              <p className="mt-2 text-[11px] text-on-surface-variant">
+                Logo changed — click <span className="font-semibold">Save Configuration</span> to keep it.
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
@@ -257,7 +290,7 @@ export default function SettingsPage() {
                 name="academicYear"
                 value={settings.academicYear}
                 onChange={handleChange}
-                placeholder="e.g. 2025-2026"
+                placeholder={`e.g. ${currentAcademicYear()}`}
                 pattern="\d{4}-\d{4}"
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono"
               />

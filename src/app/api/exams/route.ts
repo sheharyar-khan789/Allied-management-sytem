@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getDefaultAcademicYear } from "@/lib/school-display";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getExamsServer,
@@ -283,7 +284,7 @@ export async function POST(req: NextRequest) {
       name: title.trim(),
       term: (term && term.trim()) || "Mid-Term",
       ...(category ? { category: category as ExamCategory } : {}),
-      session: settings?.academicYear || new Date().getFullYear().toString(),
+      session: settings?.academicYear || getDefaultAcademicYear(),
       startDate: examStart,
       endDate: examEnd,
       status: "UPCOMING",

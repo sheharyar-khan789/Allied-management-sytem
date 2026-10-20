@@ -17,13 +17,14 @@ import {
 import { TimetableDoc, TimetableImportDoc } from "@/lib/firebase/types";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import { parseCsv, parseXlsx, SpreadsheetParseError } from "@/lib/spreadsheet-parser";
-import { deleteFileFromStorage, MAX_DOCUMENT_SIZE_BYTES, sniffMimeType, uploadFileToStorage } from "@/lib/storage";
+import { deleteFileFromStorage, MAX_DOCUMENT_SIZE_BYTES, saveOrDiscardUpload, sniffMimeType, StorageUnavailableError, uploadFileToStorage } from "@/lib/storage";
 import {
   buildPreviewRows,
   classLabel,
   expandRow,
   IMPORT_MAX_ROWS,
   ImportContext,
+  normalizeGroup,
   PreviewRow,
   rowIssues,
   sheetRowsToInputs,
@@ -197,6 +198,7 @@ async function commit(authUser: AuthenticatedUser, form: FormData) {
     fridayEndTime: String(r?.fridayEndTime || "").slice(0, 10),
     days: (Array.isArray(r?.days) ? r.days : []).filter((d: string) => TIMETABLE_DAYS.includes(d as TimetableDoc["dayOfWeek"])),
     roomNo: String(r?.roomNo || "").slice(0, 40),
+    group: normalizeGroup(r?.group),
     issues: [],
   }));
 
@@ -246,41 +248,51 @@ async function commit(authUser: AuthenticatedUser, form: FormData) {
   }
 
   // The original image/PDF of an automatically read timetable is kept for reference.
+  // It is only a reference copy: when file storage isn't available the periods are still saved,
+  // and the response says the original file was not kept.
   let stored: { url: string; storagePath: string; contentType: string } | null = null;
+  let storageWarning: string | undefined;
   if (source === "image" || source === "pdf") {
     const file = await readFile(form);
     if (!(file instanceof NextResponse) && (file.kind === "image" || file.kind === "pdf")) {
-      stored = await uploadFileToStorage({ buffer: file.buf, folder: "timetables", filename: file.name, contentType: file.mime, schoolId: authUser.schoolId });
+      try {
+        stored = await uploadFileToStorage({ buffer: file.buf, folder: "timetables", filename: file.name, contentType: file.mime, schoolId: authUser.schoolId });
+      } catch (e) {
+        if (!(e instanceof StorageUnavailableError)) throw e;
+        storageWarning = `The periods were saved, but the original file was not kept: ${e.message}`;
+      }
     }
   }
 
-  if (toReplace.length > 0) await deleteTimetableEntriesServer(authUser.schoolId, toReplace.map((t) => t.id));
-  await saveTimetableEntriesBulkServer(accepted);
-  const record: TimetableImportDoc = {
-    id: importId,
-    schoolId: authUser.schoolId,
-    kind: "STRUCTURED",
-    title,
-    source,
-    fileName: String(form.get("fileName") || "").slice(0, 200) || undefined,
-    fileUrl: stored?.url,
-    storagePath: stored?.storagePath,
-    contentType: stored?.contentType,
-    printedDate: printedDate || undefined,
-    slotCount: accepted.length,
-    createdBy: authUser.uid,
-    createdByName: authUser.name,
-    createdAt: now,
-    updatedAt: now,
-  };
-  await saveTimetableImportServer(record);
+  await saveOrDiscardUpload(authUser.schoolId, stored?.storagePath, async () => {
+    if (toReplace.length > 0) await deleteTimetableEntriesServer(authUser.schoolId, toReplace.map((t) => t.id));
+    await saveTimetableEntriesBulkServer(accepted);
+    const record: TimetableImportDoc = {
+      id: importId,
+      schoolId: authUser.schoolId,
+      kind: "STRUCTURED",
+      title,
+      source,
+      fileName: String(form.get("fileName") || "").slice(0, 200) || undefined,
+      fileUrl: stored?.url,
+      storagePath: stored?.storagePath,
+      contentType: stored?.contentType,
+      printedDate: printedDate || undefined,
+      slotCount: accepted.length,
+      createdBy: authUser.uid,
+      createdByName: authUser.name,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await saveTimetableImportServer(record);
+  });
   await createAuditLogServer(
     authUser.schoolId, authUser.uid, authUser.email, authUser.role,
     "IMPORT_TIMETABLE", "TIMETABLE", importId,
     `Imported ${accepted.length} timetable periods ("${title}", ${source})${toReplace.length ? `, replacing ${toReplace.length} existing periods` : ""}.`
   );
   return NextResponse.json(
-    { success: true, importId, rows: clean.length, created: accepted.length, skipped: 0, failedRows: 0, replaced: toReplace.length },
+    { success: true, importId, rows: clean.length, created: accepted.length, skipped: 0, failedRows: 0, replaced: toReplace.length, ...(storageWarning ? { warning: storageWarning } : {}) },
     { status: 201 }
   );
 }
@@ -317,7 +329,9 @@ async function saveImage(authUser: AuthenticatedUser, form: FormData) {
     createdAt: previous?.createdAt || now,
     updatedAt: now,
   };
-  await saveTimetableImportServer(record);
+  // If the record can't be saved, only the new file is removed: the previous timetable (if any)
+  // stays exactly as it was, and a retry starts clean.
+  await saveOrDiscardUpload(authUser.schoolId, stored.storagePath, () => saveTimetableImportServer(record));
   if (previous?.storagePath && previous.storagePath !== stored.storagePath) {
     await deleteFileFromStorage(previous.storagePath, authUser.schoolId);
   }
@@ -374,6 +388,10 @@ export async function POST(req: NextRequest) {
     if (error instanceof Response) return error;
     const busy = serviceBusyResponseFor(error, "/api/timetable/import");
     if (busy) return busy;
+    if (error instanceof StorageUnavailableError) {
+      // An image timetable *is* the file: without storage there is nothing to save. Say why.
+      return bad(error.message, 503, { storageStatus: error.reason, retryable: false });
+    }
     console.error("Timetable import error:", (error as Error)?.message || error);
     securityLog("server.error", { route: "/api/timetable/import", status: 500 });
     return bad("Failed to process the timetable import.", 500);

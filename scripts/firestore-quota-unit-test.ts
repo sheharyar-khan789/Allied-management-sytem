@@ -7,7 +7,9 @@ import {
   isMissingIndexError,
   isQuotaExceededError,
   isServiceUnavailableError,
+  isServiceBusyDigest,
   isTransientFirestoreError,
+  SERVICE_BUSY_DIGEST_PREFIX,
   SERVICE_BUSY_MESSAGE,
   serviceBusyResponseFor,
   ServiceUnavailableError,
@@ -158,6 +160,19 @@ async function main() {
         !peekCached(cacheKeys.sessionProfile("school-b", "u1")) &&
         !!peekCached(cacheKeys.sessionProfile("school-a", "u10")),
       "invalidating a user drops exactly that user's cached profile (every school), nobody else's"
+    );
+  }
+
+  {
+    // src/app/error.tsx: production hides server error messages but keeps an existing digest, so
+    // a real outage is recognised by its digest and nothing else is shown as "busy".
+    const a = new ServiceUnavailableError({ code: 8 });
+    const b = new ServiceUnavailableError({ code: 14 });
+    assert(a.digest.startsWith(SERVICE_BUSY_DIGEST_PREFIX) && isServiceBusyDigest(a.digest), "an outage error carries a service-busy digest");
+    assert(a.digest !== b.digest, "each outage gets its own reference (matches its log line)");
+    assert(
+      !isServiceBusyDigest("2914583117") && !isServiceBusyDigest(undefined) && !isServiceBusyDigest((new Error("boom") as Error & { digest?: string }).digest),
+      "ordinary errors and Next.js hash digests are never treated as busy"
     );
   }
 

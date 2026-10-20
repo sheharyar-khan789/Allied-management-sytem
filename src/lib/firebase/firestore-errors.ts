@@ -79,16 +79,31 @@ export function isMissingIndexError(error: unknown): boolean {
   return typeof message === "string" ? /index/i.test(message) : true;
 }
 
+/**
+ * Digest prefix of a ServiceUnavailableError. In production Next.js replaces a server error's
+ * message with a generic one before it reaches the error page, but keeps a digest the error
+ * already carries — so this prefix is the only way src/app/error.tsx can tell a real outage
+ * apart from an ordinary failure. It reveals nothing beyond "the database is busy".
+ */
+export const SERVICE_BUSY_DIGEST_PREFIX = "SERVICE_BUSY-";
+
+export function isServiceBusyDigest(digest: unknown): boolean {
+  return typeof digest === "string" && digest.startsWith(SERVICE_BUSY_DIGEST_PREFIX);
+}
+
 /** Thrown when Firestore is out of quota or unreachable; mapped to HTTP 503 by callers. */
 export class ServiceUnavailableError extends Error {
   readonly code: number;
   readonly reason: typeof FIRESTORE_QUOTA_EXCEEDED | typeof FIRESTORE_UNAVAILABLE;
+  /** Reference shown on the error page; unique per occurrence so it can be matched to the log. */
+  readonly digest: string;
   constructor(cause: unknown) {
     const quota = isQuotaExceededError(cause);
     super(SERVICE_BUSY_MESSAGE);
     this.name = "ServiceUnavailableError";
     this.code = firestoreErrorCode(cause) ?? FIRESTORE_CODE.UNAVAILABLE;
     this.reason = quota ? FIRESTORE_QUOTA_EXCEEDED : FIRESTORE_UNAVAILABLE;
+    this.digest = `${SERVICE_BUSY_DIGEST_PREFIX}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     (this as { cause?: unknown }).cause = cause;
   }
 }

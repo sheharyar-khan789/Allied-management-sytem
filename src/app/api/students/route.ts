@@ -9,7 +9,8 @@ import {
   createAuditLogServer,
   getClassesServer,
   getSchoolServer,
-  getSchoolSettingsServer
+  getSchoolSettingsServer,
+  getStudentByIdServer,
 } from "@/lib/firebase/server-db";
 import { StudentDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
@@ -18,6 +19,8 @@ import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic
 import { validateStudentDates } from "@/lib/date-utils";
 import { BCRYPT_COST, generateInitialPassword } from "@/lib/password-reset";
 import { allocateStudentLoginEmail, loginDomainFor, resolveLoginConfig } from "@/lib/student-login-id";
+import { admissionSequenceOf, allocateAdmissionNumbers } from "@/lib/student-identifiers";
+import crypto from "crypto";
 import { z } from "zod";
 import { cnicNumber, documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
@@ -133,6 +136,16 @@ export async function GET(req: NextRequest) {
   }
 }
 
+/**
+ * The client's Idempotency-Key header: undefined when absent (older clients), false when present
+ * but malformed, otherwise the key.
+ */
+function idempotencyKeyFrom(req: NextRequest): string | undefined | false {
+  const raw = req.headers.get("idempotency-key");
+  if (raw === null || raw === "") return undefined;
+  return /^[A-Za-z0-9_-]{16,128}$/.test(raw) ? raw : false;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
@@ -177,41 +190,60 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Admission numbers stay unique across all sessions, so sequence over every session.
-    const existingStudents = await getStudentsServer(authUser.schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
-    const currentYear = new Date().getFullYear();
-    // Derive the next admission number from the highest sequence already issued rather than
-    // from the roster size. `existingStudents.length + 1` silently reissues a number that is
-    // already in use as soon as the roster count stops matching the highest sequence — which it
-    // does the moment a record is filtered out of this read, or an admission number is entered
-    // manually. Scanning the real issued numbers makes a collision with existing data
-    // impossible. (Two *simultaneous* enrollments can still race for the same sequence; the
-    // student's actual document id is independently collision-resistant, so that race affects
-    // only this display number. Eliminating it entirely needs a Firestore counter transaction.)
-    const highestSequence = existingStudents.reduce((max, st) => {
-      const match = /^STD-\d{4}-(\d+)$/.exec(st.admissionNo || "");
-      const value = match ? parseInt(match[1], 10) : 0;
-      return Number.isFinite(value) && value > max ? value : max;
-    }, 0);
-    const count = highestSequence + 1;
-    const admissionNo = `STD-${currentYear}-${count.toString().padStart(3, "0")}`;
     const fullName = `${firstName.trim()} ${lastName.trim()}`;
-    // Use a timestamp+random suffix (not a sequential count) for the internal ID so two
-    // concurrent enrollments can never collide and silently overwrite one another.
-    const uniqueSuffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+    // Idempotency: the enrollment form sends one key per submission and re-sends the same key when
+    // the admin retries (e.g. after a timeout or "temporarily busy"). The student and login ids are
+    // derived from it, so a retry of a request that already succeeded returns that student instead
+    // of enrolling a duplicate, and a retry of one that failed half-way reuses the half-created
+    // login account instead of leaving an orphan. The key is scoped to the school.
+    const idempotencyKey = idempotencyKeyFrom(req);
+    if (idempotencyKey === false) {
+      return NextResponse.json({ error: "Invalid Idempotency-Key header." }, { status: 400 });
+    }
+    const uniqueSuffix = idempotencyKey
+      ? crypto.createHash("sha256").update(`${authUser.schoolId}:${idempotencyKey}`).digest("hex").slice(0, 24)
+      : `${Date.now().toString(36)}${crypto.randomBytes(4).toString("hex")}`;
     const studentId = `std_${uniqueSuffix}`;
+    if (idempotencyKey) {
+      const already = await getStudentByIdServer(authUser.schoolId, studentId);
+      if (already) {
+        // Same key, different student: never hand back someone else's record.
+        if (already.fullName !== fullName || already.classId !== classId) {
+          return NextResponse.json(
+            { error: "This submission key was already used for a different enrollment. Reload the form and try again." },
+            { status: 409 }
+          );
+        }
+        return NextResponse.json({ success: true, replayed: true, student: already }, { status: 200 });
+      }
+    }
+
+    // Admission numbers come from the school's atomic counter (one sequence across all sessions):
+    // concurrent enrollments get distinct numbers and no full-roster read is needed per enrollment.
+    // See src/lib/student-identifiers.ts.
+    const [admissionNo] = await allocateAdmissionNumbers(authUser.schoolId, 1);
+    const sequence = admissionSequenceOf(admissionNo);
     const schoolSettings = await getSchoolSettingsServer(authUser.schoolId);
     const school = await getSchoolServer(authUser.schoolId);
     // Login ID: <prefix><campus><sequence>@<school domain> from an atomic, never-reused counter.
     const domain = loginDomainFor(schoolSettings?.email || school?.email || authUser.email);
+    let userUid = `user_std_${uniqueSuffix}`;
+    // A previous attempt with the same idempotency key may have created the login account before
+    // failing: reuse it (and its login ID) rather than creating a second account.
+    const previousAuth =
+      idempotencyKey && hasAdminCredentials ? await adminAuth.getUser(userUid).catch(() => null) : null;
     let studentEmail: string;
-    try {
-      studentEmail = (await allocateStudentLoginEmail(authUser.schoolId, domain, resolveLoginConfig(schoolSettings))).email;
-    } catch {
-      return NextResponse.json({ error: "Could not allocate a unique student login email." }, { status: 409 });
+    if (previousAuth?.email) {
+      studentEmail = previousAuth.email;
+    } else {
+      try {
+        studentEmail = (await allocateStudentLoginEmail(authUser.schoolId, domain, resolveLoginConfig(schoolSettings))).email;
+      } catch {
+        return NextResponse.json({ error: "Could not allocate a unique student login email." }, { status: 409 });
+      }
     }
 
-    let userUid = `user_std_${uniqueSuffix}`;
     let createdAuthUid: string | null = null;
     // A unique random password per student, shown once to the admin. The old shared default
     // ("Student@123", published in the repository) combined with predictable login emails
@@ -222,23 +254,35 @@ export async function POST(req: NextRequest) {
 
     if (hasAdminCredentials) {
       try {
-        const studentAuthUser = await adminAuth.createUser({
-          email: studentEmail,
-          emailVerified: true,
-          password: initialPassword,
-          displayName: fullName,
-          disabled: false,
-        });
-        userUid = studentAuthUser.uid;
-        createdAuthUid = studentAuthUser.uid;
+        if (previousAuth) {
+          await adminAuth.updateUser(userUid, { password: initialPassword, displayName: fullName, disabled: false });
+        } else {
+          const studentAuthUser = await adminAuth.createUser({
+            ...(idempotencyKey ? { uid: userUid } : {}),
+            email: studentEmail,
+            emailVerified: true,
+            password: initialPassword,
+            displayName: fullName,
+            disabled: false,
+          });
+          userUid = studentAuthUser.uid;
+          createdAuthUid = studentAuthUser.uid;
+        }
 
-        await adminAuth.setCustomUserClaims(studentAuthUser.uid, {
+        await adminAuth.setCustomUserClaims(userUid, {
           role: "STUDENT",
           schoolId: authUser.schoolId,
           studentId: studentId,
         });
       } catch (authErr: any) {
         console.error("Firebase Auth creation error for student:", authErr);
+        if (authErr?.code === "auth/uid-already-exists") {
+          // A simultaneous submission with the same key is creating this student right now.
+          return NextResponse.json(
+            { error: "This enrollment is already being saved. Check the student list before trying again." },
+            { status: 409 }
+          );
+        }
         const duplicateEmail = authErr?.code === "auth/email-already-exists";
         return NextResponse.json(
           {
@@ -271,7 +315,7 @@ export async function POST(req: NextRequest) {
       className,
       academicYear: targetClass.academicYear,
       section: targetClass.section || "A",
-      rollNo: rollNumber || count.toString(),
+      rollNo: rollNumber || sequence.toString(),
       status: "ACTIVE",
       guardianName,
       guardianPhone,
