@@ -60,6 +60,9 @@ const studentCreateSchema = z.object({
   discount: money.optional(),
 });
 
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
+
 export async function GET(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
@@ -80,7 +83,22 @@ export async function GET(req: NextRequest) {
     // unconditionally unbounded full-collection fetch when the caller doesn't specify a limit.
     const parsedLimit = limitParam ? parseInt(limitParam, 10) : 250;
 
-    let students = await getStudentsServer(authUser.schoolId, classId, search, parsedLimit, status);
+    // Optional server-side pagination (?page=1&pageSize=50): only that page is serialised and
+    // sent. Without ?page the response is unchanged (up to `limit`, default 250). The roster
+    // itself comes from the per-instance cache (see patchStudentListCaches in server-db.ts), so
+    // paging does not add Firestore reads; it is not what reduces them either.
+    const pageParam = searchParams.get("page");
+    let pagination: { page: number; pageSize: number } | null = null;
+    if (pageParam !== null) {
+      const page = Number(pageParam);
+      const pageSize = Number(searchParams.get("pageSize") || DEFAULT_PAGE_SIZE);
+      if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > MAX_PAGE_SIZE) {
+        return NextResponse.json({ error: `page must be 1 or more and pageSize 1–${MAX_PAGE_SIZE}.` }, { status: 400 });
+      }
+      pagination = { page, pageSize };
+    }
+
+    let students = await getStudentsServer(authUser.schoolId, classId, search, pagination ? undefined : parsedLimit, status);
 
     // Without a specific classId filter, a TEACHER must still only see students in their own
     // assigned classes (containing full guardian/contact PII) rather than the whole school's
@@ -89,6 +107,12 @@ export async function GET(req: NextRequest) {
     if (authUser.role === "TEACHER" && !classId) {
       const allocation = await requireTeacherAllocation(authUser);
       students = students.filter((s) => allocation.classIds.has(s.classId));
+    }
+
+    const total = students.length;
+    if (pagination) {
+      const start = (pagination.page - 1) * pagination.pageSize;
+      students = students.slice(start, start + pagination.pageSize);
     }
 
     const mapped = students.map((st) => ({
@@ -120,7 +144,13 @@ export async function GET(req: NextRequest) {
       documents: st.documents || [],
     }));
 
-    return NextResponse.json({ success: true, students: mapped });
+    return NextResponse.json({
+      success: true,
+      students: mapped,
+      ...(pagination
+        ? { pagination: { ...pagination, total, hasMore: pagination.page * pagination.pageSize < total } }
+        : {}),
+    });
   } catch (error: any) {
     if (error instanceof Response) return error;
     const busy = serviceBusyResponseFor(error, "/api/students");

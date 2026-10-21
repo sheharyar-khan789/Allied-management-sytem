@@ -98,6 +98,26 @@ export function invalidateCacheWhere(predicate: (key: string) => boolean): void 
   }
 }
 
+/**
+ * Rewrites the cached value of every fresh entry whose key matches `predicate`, keeping its
+ * expiry (write-through: the instance that made a change keeps an up-to-date copy instead of
+ * re-reading it). An entry still loading is dropped instead, since the value it is about to
+ * store may predate the change; `update` returning undefined drops the entry too.
+ */
+export function updateCacheWhere<T>(predicate: (key: string) => boolean, update: (value: T, key: string) => T | undefined): void {
+  const now = Date.now();
+  for (const [key, entry] of Array.from(store.entries())) {
+    if (!predicate(key)) continue;
+    if (entry.promise || entry.expiresAt <= now) {
+      store.delete(key);
+      continue;
+    }
+    const next = update(clone(entry.value as T), key);
+    if (next === undefined) store.delete(key);
+    else store.set(key, { expiresAt: entry.expiresAt, value: clone(next) });
+  }
+}
+
 /** Test helper: drop everything (e.g. to measure a cold serverless instance). */
 export function resetServerCaches(): void {
   store.clear();

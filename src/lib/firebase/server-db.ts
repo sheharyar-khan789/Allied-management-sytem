@@ -16,6 +16,7 @@ import {
   invalidateCachePrefix,
   invalidateUserProfileCache,
   peekCached,
+  updateCacheWhere,
 } from "../server-cache";
 import { getDefaultAcademicYear } from "../school-display";
 import {
@@ -1156,6 +1157,37 @@ function invalidateStudentCaches(schoolId: string): void {
   invalidateCachePrefix(cacheKeys.studentCountsPrefix(schoolId));
 }
 
+/** Before a single-student write: drop that student's own cached record and the counts. */
+function invalidateStudentRecordCaches(schoolId: string, studentId: string): void {
+  invalidateCache(`${cacheKeys.studentsPrefix(schoolId)}id:${studentId}`);
+  invalidateCachePrefix(cacheKeys.studentCountsPrefix(schoolId));
+}
+
+/**
+ * After a single-student write has SUCCEEDED in Firestore: bring this instance's cached roster
+ * lists (whole school, per class, per status) up to date in place instead of dropping them.
+ * Dropping them made the next student-list view re-read every student document of the school —
+ * one read per student after every single edit (~360 reads per view measured on the quota seed),
+ * a large share of the Spark plan's 50K reads/day. `saved` is the record as written (merged over the cached copy, like the Firestore
+ * merge write), or null when the student was deleted. Only keys of `schoolId` are touched.
+ */
+function patchStudentListCaches(schoolId: string, studentId: string, saved: StudentDoc | null): void {
+  const prefix = cacheKeys.studentsPrefix(schoolId);
+  updateCacheWhere<StudentDoc[]>(
+    (key) => key.startsWith(prefix) && !key.startsWith(`${prefix}id:`),
+    (list, key) => {
+      if (!Array.isArray(list)) return undefined;
+      const [cls, st] = key.slice(prefix.length).split(":");
+      const previous = list.find((s) => s.id === studentId);
+      const rest = list.filter((s) => s.id !== studentId);
+      if (!saved) return rest;
+      const merged = { ...(previous || {}), ...cleanUndefined(saved), id: studentId } as StudentDoc;
+      const belongs = (cls === "ALL" || merged.classId === cls) && (st === "ALL" || merged.status === st);
+      return belongs ? [...rest, merged] : rest;
+    }
+  );
+}
+
 export interface ClassStudentCounts {
   total: number;
   active: number;
@@ -1335,16 +1367,21 @@ export async function saveStudentServer(student: StudentDoc): Promise<string> {
     createdAt: student.createdAt || new Date().toISOString()
   };
   localStore.students.set(id, data);
-  invalidateStudentCaches(data.schoolId);
 
   if (hasAdminCredentials) {
+    invalidateStudentRecordCaches(data.schoolId, id);
     try {
       await adminDb.collection("students").doc(id).set(cleanUndefined(data), { merge: true });
     } catch (e) {
-      onFirestoreError(`saveStudentServer(${id})`, e);
-    } finally {
+      // Unknown outcome: drop every cached student list of the school, as before.
       invalidateStudentCaches(data.schoolId);
+      onFirestoreError(`saveStudentServer(${id})`, e);
+      return id;
     }
+    patchStudentListCaches(data.schoolId, id, data);
+    invalidateStudentRecordCaches(data.schoolId, id);
+  } else {
+    invalidateStudentCaches(data.schoolId);
   }
   return id;
 }
@@ -1401,16 +1438,20 @@ export async function deleteStudentServer(schoolId: string, studentId: string): 
   if (!existing) return false;
 
   localStore.students.delete(studentId);
-  invalidateStudentCaches(schoolId);
 
   if (hasAdminCredentials) {
+    invalidateStudentRecordCaches(schoolId, studentId);
     try {
       await adminDb.collection("students").doc(studentId).delete();
     } catch (e) {
-      onFirestoreError(`deleteStudentServer(${studentId})`, e);
-    } finally {
       invalidateStudentCaches(schoolId);
+      onFirestoreError(`deleteStudentServer(${studentId})`, e);
+      return true;
     }
+    patchStudentListCaches(schoolId, studentId, null);
+    invalidateStudentRecordCaches(schoolId, studentId);
+  } else {
+    invalidateStudentCaches(schoolId);
   }
   return true;
 }

@@ -20,6 +20,7 @@ import {
   invalidateUserProfileCache,
   peekCached,
   resetServerCaches,
+  updateCacheWhere,
 } from "../src/lib/server-cache";
 import { onFirestoreError } from "../src/lib/firebase/server-db";
 
@@ -159,6 +160,30 @@ async function main() {
         !!peekCached(cacheKeys.sessionProfile("school-a", "u10")),
       "invalidating a user drops exactly that user's cached profile (every school), nobody else's"
     );
+  }
+
+  {
+    // Write-through roster updates (src/lib/firebase/server-db.ts patchStudentListCaches).
+    resetServerCaches();
+    await cached("school:a:students:ALL:ALL", 60_000, async () => [{ id: "s1", name: "A" }]);
+    await cached("school:b:students:ALL:ALL", 60_000, async () => [{ id: "s9", name: "B" }]);
+    updateCacheWhere<{ id: string; name: string }[]>(
+      (k) => k.startsWith("school:a:students:"),
+      (list) => list.map((s) => (s.id === "s1" ? { ...s, name: "A2" } : s))
+    );
+    let loads = 0;
+    const a = await cached<{ id: string; name: string }[]>("school:a:students:ALL:ALL", 60_000, async () => (loads++, []));
+    const b = peekCached<{ id: string; name: string }[]>("school:b:students:ALL:ALL");
+    assert(loads === 0 && a[0].name === "A2", "updateCacheWhere rewrites a cached list in place (no reload)");
+    assert(b?.[0].name === "B", "updateCacheWhere leaves keys outside the predicate (another school) untouched");
+    updateCacheWhere((k) => k.startsWith("school:a:"), () => undefined);
+    assert(peekCached("school:a:students:ALL:ALL") === undefined, "returning undefined drops the entry");
+    let release!: (v: unknown) => void;
+    const pending = cached("school:a:students:c1:ALL", 60_000, () => new Promise((r) => (release = r)));
+    updateCacheWhere((k) => k.startsWith("school:a:"), (v) => v);
+    release([{ id: "old" }]);
+    await pending;
+    assert(peekCached("school:a:students:c1:ALL") === undefined, "a list still loading during a write is dropped, never kept with pre-write data");
   }
 
   console.log(`\nQuota unit tests: ${passed} passed, ${failed} failed`);
