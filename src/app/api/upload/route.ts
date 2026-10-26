@@ -98,7 +98,12 @@ export async function POST(req: NextRequest) {
       // the Google Cloud error itself was already logged inside uploadFileToStorage.
       securityLog("server.error", { route: "/api/upload", status: 503, reason: "storage_unavailable" });
       return json(
-        { error: "Document storage is not set up for this school yet. Please contact your administrator; the exam cycle can still be saved without this file." },
+        {
+          error:
+            error.message && error.message !== "Document storage is not set up for this school yet."
+              ? error.message
+              : "Document storage is not set up for this school yet. Please contact your administrator; the exam cycle can still be saved without this file.",
+        },
         503
       );
     }

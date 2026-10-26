@@ -1,5 +1,11 @@
 import crypto from "crypto";
 import { adminBucket, hasAdminCredentials } from "./firebase/admin";
+import {
+  deleteStoredFile,
+  MAX_STORED_FILE_BYTES,
+  parseStoredFileUrl,
+  saveStoredFile,
+} from "./stored-files";
 
 export type AllowedFolder =
   | "profile-photos"
@@ -142,6 +148,7 @@ export async function uploadFileToStorage(options: UploadOptions): Promise<Uploa
     .replace(/\.[^/.]+$/, "")
     .toLowerCase()
     .replace(/[^a-z0-9-_]/g, "-")
+    .replace(/^[^a-z0-9]+/, "")
     .slice(0, 50);
   const randomSuffix = crypto.randomBytes(8).toString("hex");
   const uniqueName = `${cleanBase || "file"}-${Date.now()}-${randomSuffix}.${ext}`;
@@ -187,11 +194,17 @@ export async function uploadFileToStorage(options: UploadOptions): Promise<Uploa
       console.error("[storage] Firebase Storage upload failed:", (err as Error)?.message || "error");
       if (process.env.NODE_ENV === "production") {
         if (isBucketNotFoundError(err)) {
-          // The single most common real-world cause: Cloud Storage was never enabled for this
-          // Firebase project in the console, so its default bucket doesn't exist. Code-level
-          // retrying can't fix this — it needs a one-time console step — so it is reported
-          // distinctly rather than as a generic "failed, try again" error.
-          throw new StorageUnavailableError();
+          // Cloud Storage was never enabled for this Firebase project (it needs a billing-enabled
+          // project), so its default bucket doesn't exist. Files are kept in Firestore instead,
+          // behind the same upload route and validation, and served from /api/files/. As soon as
+          // a bucket exists, uploads go there again with no change.
+          if (buffer.length > MAX_STORED_FILE_BYTES) {
+            throw new StorageUnavailableError(
+              `This file is too large for the built-in storage (max ${MAX_STORED_FILE_BYTES / 1024 / 1024}MB). Please upload a smaller file.`
+            );
+          }
+          const saved = await saveStoredFile({ schoolId, folder, name: uniqueName, contentType, buffer });
+          return { url: saved.url, storagePath: saved.storagePath, filename: uniqueName, contentType, size: buffer.length };
         }
         throw new Error("Firebase Storage upload failed. Please try again, and contact support if this continues.");
       }
@@ -226,13 +239,16 @@ export async function uploadFileToStorage(options: UploadOptions): Promise<Uploa
  */
 export async function deleteFileFromStorage(storagePath: string | undefined, schoolId: string): Promise<boolean> {
   if (!storagePath || !storagePath.startsWith(`schools/${schoolId}/`) || storagePath.includes("..")) return false;
-  if (!hasAdminCredentials) return false;
+  // Files kept in Firestore (see stored-files.ts) live at the same logical path.
+  const [, , folder, name] = storagePath.split("/");
+  const removedStored = folder && name ? await deleteStoredFile(schoolId, folder, name) : false;
+  if (!hasAdminCredentials) return removedStored;
   try {
     await adminBucket.file(storagePath).delete({ ignoreNotFound: true });
     return true;
   } catch (err) {
     console.error("[storage] delete failed:", (err as Error)?.message || "error");
-    return false;
+    return removedStored;
   }
 }
 
@@ -247,6 +263,8 @@ export async function deleteFileFromStorage(storagePath: string | undefined, sch
  */
 export function storagePathFromDownloadUrl(url: string | undefined | null, schoolId: string): string | null {
   if (!url) return null;
+  const stored = parseStoredFileUrl(url);
+  if (stored) return `schools/${schoolId}/${stored.folder}/${stored.name}`;
   let parsed: URL;
   try {
     parsed = new URL(url);

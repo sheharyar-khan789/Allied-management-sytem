@@ -95,6 +95,8 @@ export async function parseJsonBody<S extends ZodTypeAny>(
 export function isSafeStoredUrl(value: unknown, env: Record<string, string | undefined> = process.env): boolean {
   if (typeof value !== "string") return false;
   if (value === "") return true;
+  // Files kept in the app's own file store (src/lib/stored-files.ts): /api/files/{folder}/{name}.
+  if (/^\/api\/files\/(profile-photos|documents|fee-receipts|result-cards|school-logo|timetables)\/[a-z0-9][a-z0-9._-]{0,119}$/.test(value)) return true;
   if (/^data:(image\/(png|jpeg|webp)|application\/pdf);base64,[A-Za-z0-9+/=]+$/.test(value)) {
     return env.NODE_ENV !== "production" && value.length <= 15 * 1024 * 1024;
   }
@@ -107,7 +109,7 @@ export function isSafeStoredUrl(value: unknown, env: Record<string, string | und
   }
 }
 
-export const safeUrl = z.string().refine((v) => isSafeStoredUrl(v), { message: "must be an https:// URL" });
+export const safeUrl = z.string().refine((v) => isSafeStoredUrl(v), { message: "must be an https:// URL or an uploaded file" });
 
 export const idString = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_.:-]+$/, "invalid id");
 export const shortText = (max = 200) => z.string().trim().max(max);

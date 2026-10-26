@@ -1,7 +1,7 @@
 /**
  * ASD Weekly & Daily Lesson Plan: teacher allocation scoping, template fields, the Saturday
- * submission window/lock (including a Saturday that is genuinely "now" in some real IANA
- * timezone, found deterministically rather than mocking the clock), concurrent/duplicate-write
+ * submission window/lock (run on a pinned clock — a fixed Saturday in a real IANA timezone — so
+ * the result never depends on which weekday the suite runs), concurrent/duplicate-write
  * safety, admin review/filtering and corrections, and historical-record retention across weeks
  * and academic sessions.
  *
@@ -9,6 +9,7 @@
  * touched), like the other suites in this folder. It does NOT verify Firestore writes.
  */
 import { NextRequest } from "next/server";
+import { installFixedClock } from "./lib/fixed-clock";
 import { GET as plansGet, POST as plansPost } from "../src/app/api/lesson-plans/route";
 import { GET as planGet, DELETE as planDelete } from "../src/app/api/lesson-plans/[id]/route";
 import { POST as planCorrect } from "../src/app/api/lesson-plans/[id]/correct/route";
@@ -60,27 +61,19 @@ const json = async (res: Response) => res.json().catch(() => ({}));
 const idParams = (id: string) => ({ params: Promise.resolve({ id }) });
 
 /**
- * A real IANA timezone (a fixed-offset Etc/GMT zone, so no DST surprises) whose LOCAL calendar
- * date is Saturday at this exact instant. The "Saturday" calendar date is always live somewhere
- * on Earth at any instant (the global date line guarantees at least one of the ~27 standard UTC
- * offsets is mid-Saturday), so this is deterministic and never flaky, unlike picking a fixed
- * timezone and hoping the suite happens to run on a Saturday.
+ * The suite's fixed "now": Saturday 2026-10-24, 12:00 local time in SAT_TZ, i.e. the middle of
+ * that Saturday's 24-hour submission window (12h of margin either side).
+ *
+ * This replaces a helper that searched the Etc/GMT zones for one where it was "Saturday right
+ * now". Those zones only span UTC-12..UTC+14, so a Saturday is live somewhere only from roughly
+ * Friday 10:00 to Sunday 12:00 UTC — on any other day the suite crashed. The application's
+ * schedule rules are unchanged; only the test's clock is pinned.
  */
-function findSaturdayTimezone(now: Date): string {
-  for (let n = 0; n <= 14; n++) {
-    for (const tz of [`Etc/GMT+${n}`, `Etc/GMT-${n}`]) {
-      try {
-        const wd = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" }).format(now);
-        if (wd === "Saturday") return tz;
-      } catch {
-        // Not a real zone name (e.g. Etc/GMT+0 duplicate) — skip.
-      }
-    }
-  }
-  throw new Error("No Etc/GMT zone is on a Saturday right now — should be impossible.");
-}
+const SAT_TZ = "Asia/Dubai"; // real IANA zone, no DST, deliberately not the Asia/Karachi default
+const FIXED_NOW = "2026-10-24T08:00:00.000Z"; // 12:00 in Asia/Dubai (UTC+4)
 
 async function run() {
+  installFixedClock(FIXED_NOW);
   console.log("==================================================");
   console.log("ASD LESSON PLANS");
   console.log("==================================================");
@@ -91,9 +84,8 @@ async function run() {
   const A = "school-lp-a";
   const B = "school-lp-b";
 
-  // A real timezone whose local date is Saturday right now, and the Monday that starts the
-  // school week whose submission window is open right now in it.
-  const SAT_TZ = findSaturdayTimezone(new Date());
+  // The local date in SAT_TZ is Saturday at FIXED_NOW; the Monday after it starts the school
+  // week whose submission window is open right now.
   const satToday = new Intl.DateTimeFormat("en-CA", { timeZone: SAT_TZ }).format(new Date());
   const OPEN_WEEK = addDays(satToday, 2);
   // A week well in the past: its window closed long ago regardless of timezone.
