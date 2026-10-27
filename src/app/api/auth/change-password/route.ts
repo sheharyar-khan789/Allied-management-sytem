@@ -6,7 +6,7 @@ import {
   SESSION_COOKIE_OPTIONS,
 } from "@/lib/firebase/server-auth";
 import { getUserByIdServer, updateUserServer } from "@/lib/firebase/server-db";
-import { setAuthPasswordServer } from "@/lib/firebase/auth-password";
+import { setAuthPasswordServer, verifyAccountPasswordServer } from "@/lib/firebase/auth-password";
 import { BCRYPT_COST, checkPasswordPolicy } from "@/lib/password-reset";
 import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
 import { securityLog } from "@/lib/security-log";
@@ -62,36 +62,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "User profile not found." }, { status: 404 });
     }
 
-    let currentOk = false;
-    if (profile.passwordHash) {
-      currentOk = await bcrypt.compare(currentPassword, profile.passwordHash);
-    }
-
-    if (!currentOk) {
-      const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-      const isDummyKey = !apiKey || apiKey.includes("Dummy") || apiKey.includes("AIzaSyDummy");
-      if (apiKey && !isDummyKey) {
-        try {
-          const fbRes = await fetch(
-            `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                email: authUser.email,
-                password: currentPassword,
-                returnSecureToken: false,
-              }),
-            }
-          );
-          // Only the Firebase account that IS this profile counts (see the login route).
-          const fbData = await fbRes.json().catch(() => ({}));
-          currentOk = fbRes.ok && fbData?.localId === authUser.uid;
-        } catch {
-          currentOk = false;
-        }
-      }
-    }
+    // Same bcrypt-then-Firebase-fallback check as /api/auth/mfa, instead of a second inline copy
+    // of the Firebase REST call — which previously had no timeout on its `fetch`, so a slow or
+    // unreachable identitytoolkit.googleapis.com left this request (and the "Saving..." button)
+    // hanging indefinitely rather than failing with a clear error. See identityToolkitSignal.
+    const currentOk = await verifyAccountPasswordServer(profile, currentPassword);
 
     if (!currentOk) {
       recordAuthFailure(rateKey, CHANGE_MAX_FAILURES, CHANGE_LOCK_SECONDS);

@@ -38,6 +38,7 @@ import {
   ExamScheduleDoc,
   ExamResultDoc,
   StudentObservationDoc,
+  TeacherObservationDoc,
   LessonPlanDoc,
   LockedRecordDoc,
   AuditLogDoc,
@@ -69,6 +70,7 @@ const localStore: {
   examSchedules: Map<string, ExamScheduleDoc>;
   examResults: Map<string, ExamResultDoc>;
   studentObservations: Map<string, StudentObservationDoc>;
+  teacherObservations: Map<string, TeacherObservationDoc>;
   lessonPlans: Map<string, LessonPlanDoc>;
   lockedRecords: Map<string, LockedRecordDoc>;
   auditLogs: Map<string, AuditLogDoc>;
@@ -94,6 +96,7 @@ const localStore: {
   examSchedules: new Map(),
   examResults: new Map(),
   studentObservations: new Map(),
+  teacherObservations: new Map(),
   lessonPlans: new Map(),
   lockedRecords: new Map(),
   auditLogs: new Map(),
@@ -915,6 +918,51 @@ export async function peekCounterServer(key: string, start = 1): Promise<number>
   }
   const stored = localCounters.get(key);
   return stored !== undefined && stored >= start ? stored : start;
+}
+
+const admissionCounterKey = (schoolId: string) => `${schoolId}__admission`;
+
+/**
+ * The admission-number sequence, as an atomic forward-only counter — one document read/write per
+ * enrollment, never the whole roster. `/api/students` POST used to derive this number by reading
+ * every student ever enrolled at the school (unbounded, across every academic session) on every
+ * single enrollment, to regex-scan the highest `STD-YYYY-NNN` suffix already issued. On a school
+ * with a real roster that was hundreds of document reads per new student, re-paid in full again
+ * on the very next enrollment (the read result is cache-invalidated by the write that just
+ * happened) — exhausting the Firestore free-tier quota well before admins expected, surfaced to
+ * them as a generic "Server busy" failure.
+ *
+ * The one-time legacy backfill (reading the existing roster to find the highest number already
+ * issued) still happens — but only once, ever, per school, the first time this is called. After
+ * that, every enrollment is a single counter transaction, matching the pattern already used for
+ * student login IDs (`allocateStudentLoginEmail`/`counters` in student-login-id.ts).
+ */
+export async function allocateAdmissionSequenceServer(schoolId: string): Promise<number> {
+  const key = admissionCounterKey(schoolId);
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("counters").doc(key);
+      const snap = await withFirestoreRetry("allocateAdmissionSequenceServer:peek", () => ref.get());
+      if (!snap.exists) {
+        // Never been allocated from before: seed once from whatever was issued under the old,
+        // scan-based scheme (or start at 1 for a brand-new school with no students at all).
+        // Two concurrent "first" enrollments can both reach this branch; both scans agree on the
+        // same roster and `raiseCounterToAtLeastServer` is itself a safe forward-only max, so the
+        // race costs at most one extra scan, never a wrong or duplicate sequence.
+        const existing = await getStudentsServer(schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
+        const highest = existing.reduce((max, st) => {
+          const match = /^STD-\d{4}-(\d+)$/.exec(st.admissionNo || "");
+          const value = match ? parseInt(match[1], 10) : 0;
+          return Number.isFinite(value) && value > max ? value : max;
+        }, 0);
+        await raiseCounterToAtLeastServer(key, highest + 1);
+      }
+    } catch (e) {
+      onFirestoreError(`allocateAdmissionSequenceServer(${schoolId})`, e);
+      throw e;
+    }
+  }
+  return allocateCounterValueServer(key, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -3447,6 +3495,129 @@ export async function saveStudentObservationServer(obs: StudentObservationDoc): 
       await adminDb.collection("studentObservations").doc(id).set(cleanUndefined(data));
     } catch (e) {
       onFirestoreError(`saveStudentObservationServer(${id})`, e);
+      // Never let the page report a note as saved when the write failed.
+      throw e;
+    }
+  }
+  return id;
+}
+
+// ---------------------------------------------------------------------------
+// TEACHER OBSERVATIONS (admin evaluation notes about a teacher — never merged with
+// `studentObservations`, which is a teacher's note about a student)
+// ---------------------------------------------------------------------------
+export interface TeacherObservationFilter {
+  teacherId?: string;
+  category?: string;
+  fromDate?: string;
+  toDate?: string;
+}
+
+/**
+ * Every non-deleted note for one teacher, scoped to `schoolId`. This is the only read path a
+ * TEACHER caller is ever routed through — it takes a single `teacherId` and nothing else, so
+ * there is no filter a teacher can widen to reach another teacher's notes.
+ */
+export async function getTeacherObservationsServer(
+  schoolId: string,
+  teacherId: string
+): Promise<TeacherObservationDoc[]> {
+  let list: TeacherObservationDoc[];
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("getTeacherObservationsServer", () =>
+        adminDb
+          .collection("teacherObservations")
+          .where("schoolId", "==", schoolId)
+          .where("teacherId", "==", teacherId)
+          .get()
+      );
+      list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherObservationDoc));
+    } catch (e) {
+      onFirestoreError(`getTeacherObservationsServer(${teacherId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+      list = Array.from(localStore.teacherObservations.values()).filter(
+        (o) => o.schoolId === schoolId && o.teacherId === teacherId
+      );
+    }
+  } else {
+    list = Array.from(localStore.teacherObservations.values()).filter(
+      (o) => o.schoolId === schoolId && o.teacherId === teacherId
+    );
+  }
+  return list.filter((o) => !o.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/**
+ * Admin-only, school-wide search across every teacher's notes (the admin review screen),
+ * mirroring `getAllObservationsServer`. Never reachable by a TEACHER — the API route enforces
+ * that before this is called.
+ */
+export async function getAllTeacherObservationsServer(
+  schoolId: string,
+  filter: TeacherObservationFilter = {}
+): Promise<TeacherObservationDoc[]> {
+  let list: TeacherObservationDoc[];
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("getAllTeacherObservationsServer", () =>
+        adminDb.collection("teacherObservations").where("schoolId", "==", schoolId).get()
+      );
+      list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherObservationDoc));
+    } catch (e) {
+      onFirestoreError(`getAllTeacherObservationsServer(${schoolId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+      list = Array.from(localStore.teacherObservations.values()).filter((o) => o.schoolId === schoolId);
+    }
+  } else {
+    list = Array.from(localStore.teacherObservations.values()).filter((o) => o.schoolId === schoolId);
+  }
+  list = list.filter((o) => !o.deletedAt);
+  if (filter.teacherId) list = list.filter((o) => o.teacherId === filter.teacherId);
+  if (filter.category) list = list.filter((o) => o.category === filter.category);
+  if (filter.fromDate) list = list.filter((o) => o.observationDate >= filter.fromDate!);
+  if (filter.toDate) list = list.filter((o) => o.observationDate <= filter.toDate!);
+  return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** One teacher observation by its document id, only if it belongs to `schoolId`. */
+export async function getTeacherObservationByIdServer(
+  schoolId: string,
+  obsId: string
+): Promise<TeacherObservationDoc | null> {
+  if (!obsId) return null;
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getTeacherObservationByIdServer", () =>
+        adminDb.collection("teacherObservations").doc(obsId).get()
+      );
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as TeacherObservationDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getTeacherObservationByIdServer(${obsId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  const local = localStore.teacherObservations.get(obsId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+export async function saveTeacherObservationServer(obs: TeacherObservationDoc): Promise<string> {
+  const id = obs.id || `tobs-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const data: TeacherObservationDoc = {
+    ...obs,
+    academicYear: obs.academicYear || getDefaultAcademicYear(),
+    id,
+    createdAt: obs.createdAt || new Date().toISOString(),
+  };
+  localStore.teacherObservations.set(id, data);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("teacherObservations").doc(id).set(cleanUndefined(data));
+    } catch (e) {
+      onFirestoreError(`saveTeacherObservationServer(${id})`, e);
       // Never let the page report a note as saved when the write failed.
       throw e;
     }

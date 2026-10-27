@@ -260,6 +260,21 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------
+    // Teacher Observations Collection (admin evaluation notes ABOUT a teacher — never the
+    // same record as studentObservations above). Only an admin ever writes one; the API
+    // (/api/teacher-observations) enforces that with the Admin SDK. A TEACHER may read only
+    // the notes written about *them*: `resource.data.teacherId == getUserData().teacherId`,
+    // so a teacher can never read a note about another teacher, directly or through the API.
+    // -------------------------------------------------------------
+    match /teacherObservations/{obsId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && resource.data.teacherId == getUserData().teacherId)
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
     // Lesson Plans Collection (ASD Weekly & Daily Lesson Plan)
     // -------------------------------------------------------------
     match /lessonPlans/{planId} {

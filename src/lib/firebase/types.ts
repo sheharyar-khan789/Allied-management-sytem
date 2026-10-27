@@ -416,6 +416,39 @@ export interface StudentObservationDoc {
 }
 
 /**
+ * A formal performance/evaluation note an admin writes about a TEACHER — distinct from
+ * `StudentObservationDoc` (a teacher's note about a student's conduct/academics). Stored in its
+ * own `teacherObservations` collection so the two can never be merged or confused: a teacher may
+ * read every note written about *them*, never one written about a student, and never another
+ * teacher's note.
+ */
+export interface TeacherObservationDoc {
+  id: string;
+  schoolId: string;
+  teacherId: string;
+  teacherName?: string;
+  /** Staff id of the admin/author who wrote the note (`staff-{uid}`), never a teacher's own id. */
+  authorUid: string;
+  authorName?: string;
+  observationDate: string; // YYYY-MM-DD, the date the observation covers
+  /** Optional context: subject/class observed, if relevant. */
+  subjectId?: string;
+  classId?: string;
+  category: "TEACHING_QUALITY" | "CLASSROOM_MANAGEMENT" | "PUNCTUALITY" | "COLLABORATION" | "PROFESSIONAL_CONDUCT" | "OTHER";
+  rating: "EXCELLENT" | "SATISFACTORY" | "NEEDS_IMPROVEMENT";
+  title?: string;
+  note: string;
+  academicYear?: string;
+  createdAt: string;
+  updatedAt?: string;
+  updatedBy?: string;
+  editHistory?: { at: string; by: string; byName?: string; previousTitle?: string; previousNote: string }[];
+  /** Soft delete: kept for the audit trail, excluded from normal reads. */
+  deletedAt?: string | null;
+  deletedBy?: string;
+}
+
+/**
  * ASD Weekly & Daily Lesson Plan (see src/lib/lesson-plan-schedule.ts for the Saturday
  * submission-window/lock rules this record is governed by).
  *

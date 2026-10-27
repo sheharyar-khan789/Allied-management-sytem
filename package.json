@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx scripts/p0-verification-test.ts && tsx scripts/production-fix-phase-test.ts && tsx scripts/teacher-allocation-timetable-auth-test.ts && tsx scripts/master-fix-phase-test.ts && tsx scripts/firestore-quota-unit-test.ts && tsx scripts/timetable-import-phone-admin-test.ts && tsx scripts/exams-results-observations-test.ts && tsx scripts/student-accounts-test.ts && tsx scripts/lesson-plans-test.ts && tsx scripts/stored-files-test.ts",
+    "test": "tsx scripts/p0-verification-test.ts && tsx scripts/production-fix-phase-test.ts && tsx scripts/teacher-allocation-timetable-auth-test.ts && tsx scripts/master-fix-phase-test.ts && tsx scripts/firestore-quota-unit-test.ts && tsx scripts/timetable-import-phone-admin-test.ts && tsx scripts/exams-results-observations-test.ts && tsx scripts/teacher-observations-test.ts && tsx scripts/student-accounts-test.ts && tsx scripts/lesson-plans-test.ts && tsx scripts/stored-files-test.ts && tsx scripts/fee-import-test.ts",
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed-firebase.ts",
     "test:p0": "tsx scripts/p0-verification-test.ts",
@@ -24,6 +24,8 @@
     "test:quota-unit": "tsx scripts/firestore-quota-unit-test.ts",
     "test:timetable-import": "tsx scripts/timetable-import-phone-admin-test.ts",
     "test:exams": "tsx scripts/exams-results-observations-test.ts",
+    "test:teacher-observations": "tsx scripts/teacher-observations-test.ts",
+    "test:fee-import": "tsx scripts/fee-import-test.ts",
     "test:student-accounts": "tsx scripts/student-accounts-test.ts",
     "test:lesson-plans": "tsx scripts/lesson-plans-test.ts",
     "test:files": "tsx scripts/stored-files-test.ts"

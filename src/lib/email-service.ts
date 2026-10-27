@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { ACTIVATION_TOKEN_TTL_HOURS, RESET_TOKEN_TTL_MINUTES } from "./password-reset";
+import { identityToolkitSignal } from "./firebase/auth-password";
 
 /** RESET: user-requested password reset. ACTIVATION: first password for an admin-created account. */
 export type PasswordLinkPurpose = "RESET" | "ACTIVATION";
@@ -208,6 +209,10 @@ export async function sendViaFirebaseAuth(email: string, continueUrl: string | n
         email,
         ...(withContinueUrl && continueUrl ? { continueUrl } : {}),
       }),
+      // Bounded, like every other identitytoolkit call — see identityToolkitSignal. Without it
+      // a stalled connection here left "Send reset link" spinning with no error ever reaching
+      // the caller's catch block, since nothing had rejected the fetch Promise yet.
+      signal: identityToolkitSignal(),
     });
     if (res.ok) return null;
     const data = (await res.json().catch(() => ({}))) as { error?: { message?: string } };

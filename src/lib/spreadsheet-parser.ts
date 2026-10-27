@@ -17,6 +17,33 @@ export type SheetRows = string[][];
 export class SpreadsheetParseError extends Error {}
 
 /**
+ * Sniffs the upload's real type (never trusts the extension alone for .xlsx/.csv) and parses it
+ * into rows. Shared by every importer (students, fee challans, timetable sheets) so the file-type
+ * handling — and its error wording — stays one piece of logic instead of a copy per importer.
+ */
+export function readSpreadsheetUpload(fileName: string, buf: Buffer): SheetRows {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".pdf") || buf.subarray(0, 5).toString("latin1") === "%PDF-") {
+    throw new SpreadsheetParseError(
+      "PDF files can't be imported reliably (their tables are positioned text, not rows and columns). " +
+        "Open the list in Excel or Google Sheets and upload it as .xlsx or .csv instead."
+    );
+  }
+  if (lower.endsWith(".xlsx")) {
+    if (buf.readUInt32LE(0) !== 0x04034b50) throw new SpreadsheetParseError("The file is not a valid .xlsx workbook.");
+    return parseXlsx(buf);
+  }
+  if (lower.endsWith(".csv")) {
+    if (buf.includes(0)) throw new SpreadsheetParseError("The file is not a text CSV file.");
+    return parseCsv(buf.toString("utf8"));
+  }
+  if (lower.endsWith(".xls")) {
+    throw new SpreadsheetParseError("Old .xls workbooks aren't supported. Save the file as .xlsx or .csv and upload again.");
+  }
+  throw new SpreadsheetParseError("Unsupported file type. Upload a .csv or .xlsx file.");
+}
+
+/**
  * Strips a leading formula trigger from an imported cell so a value like `=HYPERLINK(...)` or
  * `@SUM(...)` can never be stored and later re-exported into someone's spreadsheet as a live
  * formula. A leading + or - is kept when it starts a number (phone numbers such as
