@@ -4,6 +4,7 @@ import { getUserByEmailServer, createAuditLogServer, updateUserServer } from "@/
 import { createSessionCookieServer, AuthenticatedUser, SESSION_COOKIE_OPTIONS } from "@/lib/firebase/server-auth";
 import { dashboardPathForRole } from "@/lib/role-home";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
+import { identityToolkitSignal } from "@/lib/firebase/auth-password";
 import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
 import { getClientIp, rejectCrossSite } from "@/lib/request-security";
 import { isRealDeployment } from "@/lib/session-token";
@@ -146,6 +147,10 @@ export async function POST(req: NextRequest) {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ email: identifier, password, returnSecureToken: true }),
+              // Without this, an unreachable/slow Firebase endpoint hangs the request
+              // indefinitely (undici's fetch has no default timeout) instead of falling through
+              // to the fallbacks below — see identityToolkitSignal.
+              signal: identityToolkitSignal(),
             }
           );
           const fbData = await fbRes.json().catch(() => ({}));

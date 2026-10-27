@@ -203,6 +203,13 @@ export const CONDUCT_RATING_LABELS: Record<string, string> = {
 export interface ObservationView {
   id: string;
   studentId: string;
+  /**
+   * The student's name as snapshotted when the note was written. Empty for a handful of
+   * records saved before this field was stored — callers resolve those from the current
+   * student record (see `resolveObservationStudentNames` in server-db) rather than ever
+   * showing a blank or, worse, another student's name.
+   */
+  studentName: string;
   /** Short heading; empty for records saved before titles were stored separately. */
   title: string;
   /** The written observation text exactly as saved. */
@@ -235,6 +242,7 @@ export function toObservationView(
   return {
     id: o.id,
     studentId: o.studentId,
+    studentName: o.studentName || "",
     title: o.title || "",
     note: o.note || "",
     category: o.category,

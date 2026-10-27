@@ -267,6 +267,13 @@ export default function TeacherProfilePage({
             <span>Edit Profile</span>
           </button>
           <Link
+            href={`/admin/teacher-observations?teacherId=${encodeURIComponent(id)}`}
+            className="px-4 py-2 rounded-lg bg-surface-container text-on-surface font-semibold text-xs hover:bg-surface-container-high shadow-sm flex items-center gap-1.5 transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">fact_check</span>
+            <span>Observations</span>
+          </Link>
+          <Link
             href="/admin/teachers"
             className="px-4 py-2 rounded-lg bg-surface-container text-on-surface font-semibold text-xs hover:bg-surface-container-high shadow-sm flex items-center gap-1.5 transition-all"
           >

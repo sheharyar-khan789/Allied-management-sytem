@@ -5,6 +5,7 @@ import {
   saveStudentObservationServer,
   createAuditLogServer,
   getStudentByIdServer,
+  getStudentsServer,
   getStudentObservationsServer,
   getStudentObservationByIdServer,
   getAllObservationsServer,
@@ -82,9 +83,27 @@ async function searchObservations(req: NextRequest, authUser: Awaited<ReturnType
   ]);
   const examNameById = new Map(exams.map((e) => [e.id, e.name]));
   const classById = new Map(classes.map((c) => [c.id, `${c.name}-${c.section}`]));
+
+  // Most observations carry a `studentName` snapshot from when they were written, but a
+  // handful of older records predate that field. Resolve those (and only those) against the
+  // current roster, scoped to this school, instead of a second per-row lookup — a student
+  // removed since then correctly resolves to nothing rather than falling through to the ID
+  // or, worse, another student's name.
+  const missingNameIds = Array.from(
+    new Set(observations.filter((o) => !o.studentName).map((o) => o.studentId))
+  );
+  const studentNameById = new Map<string, string>();
+  if (missingNameIds.length > 0) {
+    const roster = await getStudentsServer(authUser.schoolId);
+    for (const s of roster) {
+      if (missingNameIds.includes(s.id)) studentNameById.set(s.id, s.fullName);
+    }
+  }
+
   const search = (searchParams.get("q") || "").trim().toLowerCase();
   let list = observations.map((o) => ({
     ...toObservationView(o, examNameById),
+    studentName: o.studentName || studentNameById.get(o.studentId) || "",
     classId: o.classId || "",
     className: (o.classId && classById.get(o.classId)) || "",
   }));
@@ -93,6 +112,7 @@ async function searchObservations(req: NextRequest, authUser: Awaited<ReturnType
       (o) =>
         o.note.toLowerCase().includes(search) ||
         o.title.toLowerCase().includes(search) ||
+        o.studentName.toLowerCase().includes(search) ||
         o.studentId.toLowerCase().includes(search)
     );
   }
@@ -128,6 +148,9 @@ export async function GET(req: NextRequest) {
       observations: sortObservationsNewestFirst(
         observations.map((o) => ({
           ...toObservationView(o, examNameById),
+          // The caller already resolved exactly this one student; use it for any older note
+          // that predates the stored `studentName` snapshot instead of leaving it blank.
+          studentName: o.studentName || student.fullName,
           // Mirrors the PUT rule: admins edit any note of their school, teachers only their own.
           canEdit: authUser.role === "ADMIN" || o.teacherId === authUser.teacherId,
         }))

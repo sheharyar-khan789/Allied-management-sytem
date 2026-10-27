@@ -9,7 +9,8 @@ import {
   createAuditLogServer,
   getClassesServer,
   getSchoolServer,
-  getSchoolSettingsServer
+  getSchoolSettingsServer,
+  allocateAdmissionSequenceServer
 } from "@/lib/firebase/server-db";
 import { StudentDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
@@ -177,23 +178,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Admission numbers stay unique across all sessions, so sequence over every session.
-    const existingStudents = await getStudentsServer(authUser.schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
+    // Admission numbers stay unique across all sessions, so sequence over every session. This is
+    // an atomic, forward-only counter (one document read/write), never a full-roster scan on
+    // every enrollment — see allocateAdmissionSequenceServer for why that used to make repeated
+    // enrollments exhaust the Firestore quota and surface as "Server busy".
     const currentYear = new Date().getFullYear();
-    // Derive the next admission number from the highest sequence already issued rather than
-    // from the roster size. `existingStudents.length + 1` silently reissues a number that is
-    // already in use as soon as the roster count stops matching the highest sequence — which it
-    // does the moment a record is filtered out of this read, or an admission number is entered
-    // manually. Scanning the real issued numbers makes a collision with existing data
-    // impossible. (Two *simultaneous* enrollments can still race for the same sequence; the
-    // student's actual document id is independently collision-resistant, so that race affects
-    // only this display number. Eliminating it entirely needs a Firestore counter transaction.)
-    const highestSequence = existingStudents.reduce((max, st) => {
-      const match = /^STD-\d{4}-(\d+)$/.exec(st.admissionNo || "");
-      const value = match ? parseInt(match[1], 10) : 0;
-      return Number.isFinite(value) && value > max ? value : max;
-    }, 0);
-    const count = highestSequence + 1;
+    const count = await allocateAdmissionSequenceServer(authUser.schoolId);
     const admissionNo = `STD-${currentYear}-${count.toString().padStart(3, "0")}`;
     const fullName = `${firstName.trim()} ${lastName.trim()}`;
     // Use a timestamp+random suffix (not a sequential count) for the internal ID so two

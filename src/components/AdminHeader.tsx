@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getDefaultAcademicYear } from "@/lib/school-display";
 
 // The "Portals" dropdown that used to live in this header (commented in-source as a
 // "Role / Portal Switcher for rapid demo testing") linked an ADMIN session to /teacher and
@@ -10,8 +11,27 @@ import { useRouter } from "next/navigation";
 // its own role and redirects everyone else straight back to their own dashboard, so the menu
 // could never do anything except bounce. Removed as leftover demo scaffolding.
 
+const DEFAULT_SESSION_YEAR = getDefaultAcademicYear();
+
+/**
+ * Preset "YYYY-YYYY" session choices for the dropdown, computed from today's date instead of a
+ * frozen array (which used to stop at "2029-2030" and silently became a hard ceiling — the admin
+ * could still type a far-future session into the free-text field, but it never appeared as a
+ * one-click preset and nothing hinted it was supported). Spans a few years back for schools
+ * correcting historical records and a decade forward, and always re-centers on the current date.
+ */
+function standardSessionPresets(referenceDate: Date = new Date()): string[] {
+  const [currentStart] = getDefaultAcademicYear(referenceDate).split("-").map(Number);
+  const presets: string[] = [];
+  for (let offset = -2; offset <= 10; offset++) {
+    const startYear = currentStart + offset;
+    presets.push(`${startYear}-${startYear + 1}`);
+  }
+  return presets;
+}
+
 function parseSessionString(raw: string) {
-  let year = "2026-2027";
+  let year = DEFAULT_SESSION_YEAR;
   let campus = "Main Campus";
 
   if (!raw) return { year, campus };
@@ -39,7 +59,7 @@ interface AdminHeaderProps {
 const STORAGE_KEY = "admin_active_session";
 
 export default function AdminHeader({
-  sessionName = "Session 2026-2027 | Main Campus",
+  sessionName = `Session ${DEFAULT_SESSION_YEAR} | Main Campus`,
   title,
   onMenuClick,
 }: AdminHeaderProps) {
@@ -49,9 +69,9 @@ export default function AdminHeader({
   // Interactive Academic Session state
   const [displaySession, setDisplaySession] = useState(sessionName);
   const [isSessionOpen, setIsSessionOpen] = useState(false);
-  const [sessionInput, setSessionInput] = useState("2026-2027");
+  const [sessionInput, setSessionInput] = useState(DEFAULT_SESSION_YEAR);
   const [campusInput, setCampusInput] = useState("Main Campus");
-  const [selectedPreset, setSelectedPreset] = useState("2026-2027");
+  const [selectedPreset, setSelectedPreset] = useState(DEFAULT_SESSION_YEAR);
   const [isSaving, setIsSaving] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -128,8 +148,7 @@ export default function AdminHeader({
       const parsed = parseSessionString(displaySession);
       setSessionInput(parsed.year);
       setCampusInput(parsed.campus);
-      const standardPresets = ["2024-2025", "2025-2026", "2026-2027", "2027-2028", "2028-2029", "2029-2030"];
-      if (standardPresets.includes(parsed.year)) {
+      if (standardSessionPresets().includes(parsed.year)) {
         setSelectedPreset(parsed.year);
       } else {
         setSelectedPreset("CUSTOM");
@@ -139,7 +158,7 @@ export default function AdminHeader({
   };
 
   const handleSaveSession = async () => {
-    const year = sessionInput.trim() || "2026-2027";
+    const year = sessionInput.trim() || DEFAULT_SESSION_YEAR;
     const campus = campusInput.trim() || "Main Campus";
     const formatted = `Session ${year} | ${campus}`;
 
@@ -167,7 +186,7 @@ export default function AdminHeader({
         return;
       }
     } else {
-      alert("Academic session must be in the format YYYY-YYYY, e.g. 2026-2027.");
+      alert(`Academic session must be in the format YYYY-YYYY, e.g. ${DEFAULT_SESSION_YEAR}.`);
       setIsSaving(false);
       return;
     }
@@ -303,12 +322,9 @@ export default function AdminHeader({
                       }}
                       className="w-full h-9 px-3 rounded-lg bg-surface-container-low border border-outline-variant/40 text-on-surface text-xs font-medium focus:outline-none focus:ring-2 focus:ring-secondary/20 focus:border-secondary transition-all"
                     >
-                      <option value="2024-2025">2024-2025</option>
-                      <option value="2025-2026">2025-2026</option>
-                      <option value="2026-2027">2026-2027</option>
-                      <option value="2027-2028">2027-2028</option>
-                      <option value="2028-2029">2028-2029</option>
-                      <option value="2029-2030">2029-2030</option>
+                      {standardSessionPresets().map((year) => (
+                        <option key={year} value={year}>{year}</option>
+                      ))}
                       <option value="CUSTOM">Custom Session...</option>
                     </select>
                   </div>
@@ -325,7 +341,7 @@ export default function AdminHeader({
                         setSessionInput(e.target.value);
                         setSelectedPreset("CUSTOM");
                       }}
-                      placeholder="e.g. 2026-2027"
+                      placeholder={`e.g. ${DEFAULT_SESSION_YEAR}`}
                       className="w-full h-9 px-3 rounded-lg bg-surface-container-low border border-outline-variant/40 text-on-surface text-xs font-medium focus:outline-none focus:ring-2 focus:ring-secondary/20 focus:border-secondary transition-all"
                     />
                   </div>
@@ -352,7 +368,7 @@ export default function AdminHeader({
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary">
                       <span className="material-symbols-outlined text-[16px]">calendar_today</span>
                       <span>
-                        Session {sessionInput.trim() || "2026-2027"} | {campusInput.trim() || "Main Campus"}
+                        Session {sessionInput.trim() || DEFAULT_SESSION_YEAR} | {campusInput.trim() || "Main Campus"}
                       </span>
                     </div>
                   </div>

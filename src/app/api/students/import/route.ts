@@ -15,9 +15,8 @@ import {
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { generateInitialPassword } from "@/lib/password-reset";
 import { allocateStudentLoginEmail, isLoginEmailTaken, loginDomainFor, resolveLoginConfig } from "@/lib/student-login-id";
-import { neutralizeSpreadsheetFormula } from "@/lib/spreadsheet-parser";
+import { neutralizeSpreadsheetFormula, readSpreadsheetUpload, SheetRows, SpreadsheetParseError } from "@/lib/spreadsheet-parser";
 import { StudentDoc, UserProfile } from "@/lib/firebase/types";
-import { parseCsv, parseXlsx, SheetRows, SpreadsheetParseError } from "@/lib/spreadsheet-parser";
 import {
   IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_ROWS,
@@ -55,28 +54,6 @@ async function buildContext(schoolId: string, inputs: ImportRowInput[]) {
   return { classes, existingStudents, takenEmails: new Set(takenUsers.keys()) };
 }
 
-function readUpload(fileName: string, buf: Buffer): SheetRows {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith(".pdf") || buf.subarray(0, 5).toString("latin1") === "%PDF-") {
-    throw new SpreadsheetParseError(
-      "PDF files can't be imported reliably (their tables are positioned text, not rows and columns). " +
-        "Open the list in Excel or Google Sheets and upload it as .xlsx or .csv instead."
-    );
-  }
-  if (lower.endsWith(".xlsx")) {
-    if (buf.readUInt32LE(0) !== 0x04034b50) throw new SpreadsheetParseError("The file is not a valid .xlsx workbook.");
-    return parseXlsx(buf);
-  }
-  if (lower.endsWith(".csv")) {
-    if (buf.includes(0)) throw new SpreadsheetParseError("The file is not a text CSV file.");
-    return parseCsv(buf.toString("utf8"));
-  }
-  if (lower.endsWith(".xls")) {
-    throw new SpreadsheetParseError("Old .xls workbooks aren't supported. Save the file as .xlsx or .csv and upload again.");
-  }
-  throw new SpreadsheetParseError("Unsupported file type. Upload a .csv or .xlsx file.");
-}
-
 // ---------------------------------------------------------------------------
 // Preview: parse + validate, nothing is written. The file is read in memory and discarded.
 // ---------------------------------------------------------------------------
@@ -96,7 +73,7 @@ async function preview(authUser: AuthenticatedUser, req: NextRequest) {
 
   let rows: SheetRows;
   try {
-    rows = readUpload(file.name || "", Buffer.from(await file.arrayBuffer()));
+    rows = readSpreadsheetUpload(file.name || "", Buffer.from(await file.arrayBuffer()));
   } catch (e) {
     if (e instanceof SpreadsheetParseError) return bad(e.message, 415);
     throw e;

@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
 import StudentFeeAccount from "@/components/StudentFeeAccount";
+import FeeImportModal from "@/components/FeeImportModal";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 
 const MONTHS = [
@@ -32,6 +33,7 @@ export default function FeeManagementPage() {
   const [loadError, setLoadError] = useState("");
   // The ledger is paged on the server (50 rows per request); "Load more" appends the next page.
   const [loadingMore, setLoadingMore] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   // One request per typed query, not one per keystroke.
   const debouncedSearch = useDebouncedValue(search.trim(), 400);
 
@@ -152,14 +154,27 @@ export default function FeeManagementPage() {
           </p>
         </div>
 
-        <button
-          onClick={() => window.print()}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-xs font-semibold shadow-sm transition-all self-start sm:self-auto"
-        >
-          <span className="material-symbols-outlined text-[18px]">print</span>
-          <span>Print Fee Ledger</span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            onClick={() => setImportOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary hover:bg-secondary/90 font-label-md text-xs font-semibold shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">upload_file</span>
+            <span>Import Fees</span>
+          </button>
+          <button
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-xs font-semibold shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">print</span>
+            <span>Print Fee Ledger</span>
+          </button>
+        </div>
       </div>
+
+      {importOpen && (
+        <FeeImportModal onClose={() => setImportOpen(false)} onImported={() => fetchFees()} />
+      )}
 
       <div className="border-b border-surface-container-high/60 flex space-x-2 sm:space-x-4 overflow-x-auto no-print">
         {[
