@@ -675,6 +675,29 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
   return null;
 }
 
+/** Several user profiles by uid in one batched read — e.g. the faculty list's activation-status
+ *  column, without one query per teacher. */
+export async function getUsersByIdsServer(uids: string[]): Promise<Map<string, UserProfile>> {
+  const ids = Array.from(new Set(uids.filter(Boolean)));
+  const result = new Map<string, UserProfile>();
+  if (ids.length === 0) return result;
+  if (hasAdminCredentials) {
+    try {
+      const snaps = await adminDb.getAll(...ids.map((id) => adminDb.collection("users").doc(id)));
+      for (const snap of snaps) {
+        if (snap.exists) result.set(snap.id, { uid: snap.id, ...snap.data() } as UserProfile);
+      }
+      return result;
+    } catch (e) {
+      onFirestoreError(`getUsersByIdsServer`, e);
+    }
+  }
+  for (const u of localStore.users.values()) {
+    if (ids.includes(u.uid)) result.set(u.uid, u);
+  }
+  return result;
+}
+
 /**
  * The user profile behind a session (revocation check, /api/auth/me, layouts), cached per
  * (schoolId, uid) for CACHE_TTL_MS.SESSION_PROFILE (30s). Every user write in this file

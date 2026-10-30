@@ -31,6 +31,7 @@ export default function SettingsPage() {
   const [systemStatus, setSystemStatus] = useState<{
     firebaseAdmin: { connected: boolean };
     email: { providers: string[]; firebaseAuthFallback: boolean; configured: boolean };
+    storage: { checked: boolean; exists: boolean; bucketName: string; error?: string };
   } | null>(null);
 
   useEffect(() => {
@@ -441,7 +442,7 @@ export default function SettingsPage() {
             </h3>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
             <div className="p-3 rounded-lg bg-surface-container-lowest border border-surface-container-high">
               <span className="text-[10px] text-on-surface-variant font-medium">Firebase Admin (server)</span>
               {systemStatus ? (
@@ -452,6 +453,39 @@ export default function SettingsPage() {
                 >
                   {systemStatus.firebaseAdmin.connected ? "Connected" : "Not connected"}
                 </div>
+              ) : (
+                <div className="font-bold text-on-surface-variant mt-0.5">Checking…</div>
+              )}
+            </div>
+
+            <div className="p-3 rounded-lg bg-surface-container-lowest border border-surface-container-high">
+              <span className="text-[10px] text-on-surface-variant font-medium">Cloud Storage bucket</span>
+              {systemStatus ? (
+                <>
+                  <div
+                    className={`font-bold mt-0.5 ${
+                      systemStatus.storage.exists
+                        ? "text-on-tertiary-container"
+                        : systemStatus.storage.checked
+                          ? "text-secondary"
+                          : "text-on-surface-variant"
+                    }`}
+                  >
+                    {systemStatus.storage.exists
+                      ? "Connected"
+                      : systemStatus.storage.checked
+                        ? "Not found (using built-in storage)"
+                        : "Not checked (Firebase Admin offline)"}
+                  </div>
+                  <p className="text-[10px] text-on-surface-variant mt-1 font-mono break-all">{systemStatus.storage.bucketName}</p>
+                  {!systemStatus.storage.exists && systemStatus.storage.checked && (
+                    <p className="text-[10px] text-on-surface-variant mt-1">
+                      Uploads (school logo, exam papers, documents) still work — they are stored in
+                      Firestore instead. Enable Cloud Storage for this Firebase project, or set
+                      FIREBASE_STORAGE_BUCKET to an existing bucket, to use real Cloud Storage.
+                    </p>
+                  )}
+                </>
               ) : (
                 <div className="font-bold text-on-surface-variant mt-0.5">Checking…</div>
               )}
