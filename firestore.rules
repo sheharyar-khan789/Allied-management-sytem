@@ -219,6 +219,17 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------
+    // Voucher Adjustments Collection (Voucher Management / Phase 10)
+    // Admin-only audit trail of reversals/corrections made to a payment past its 24-hour
+    // edit window. Not exposed to students/parents directly — a payment's own voucherStatus
+    // field (read via the rule above) already reflects whether it was reversed.
+    // -------------------------------------------------------------
+    match /voucherAdjustments/{adjustmentId} {
+      allow read: if isAuthenticated() && isAdmin() && getUserSchoolId() == resource.data.schoolId;
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
     // Exams Collection
     // -------------------------------------------------------------
     match /exams/{examId} {

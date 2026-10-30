@@ -29,6 +29,7 @@ import { ClassDoc, SubjectDoc, TeacherDoc } from "../src/lib/firebase/types";
 import {
   DEFAULT_SCHOOL_TIMEZONE,
   addDays,
+  currentWeekId,
   isLessonPlanLockedForTeacher,
   isWithinSubmissionWindow,
   lessonPlanDocId,
@@ -36,6 +37,7 @@ import {
   submissionWindowFor,
   weekDates,
   weekdayOf,
+  weekIdForDate,
 } from "../src/lib/lesson-plan-schedule";
 
 let passed = 0;
@@ -376,6 +378,55 @@ async function run() {
   {
     const optionsB = await json(await optionsGet(req(await session("uid-lp-admin-b", "ADMIN", B), "/api/lesson-plans/options")));
     assert(optionsB.timezone === DEFAULT_SCHOOL_TIMEZONE, "Timezone fallback: a school with no configured timezone defaults to Asia/Karachi, not the server's own");
+  }
+
+  // ---------------------------------------------------------------- date math: leap years, year
+  // rollovers, and far-future years, all pure functions (no hardcoded cap, no DB).
+  {
+    // Anchor to one independently-verifiable real calendar fact (2000-01-01 was a Saturday) so a
+    // systematic off-by-one in WEEKDAY_INDEX would actually be caught, not just hidden by
+    // self-consistent round-tripping.
+    assert(weekdayOf("2000-01-01") === "Saturday", "Date math: weekdayOf is anchored to a known real date");
+
+    // 2028 is a leap year; 2029 is not.
+    assert(addDays("2028-02-28", 1) === "2028-02-29", "Leap year: Feb 28 2028 + 1 day is Feb 29 (2028 is a leap year)");
+    assert(addDays("2028-02-29", 1) === "2028-03-01", "Leap year: Feb 29 2028 + 1 day rolls into March");
+    assert(addDays("2029-02-28", 1) === "2029-03-01", "Non-leap year: Feb 28 2029 + 1 day skips straight to March (no Feb 29)");
+
+    // December -> January year rollover, including a week that spans the new year.
+    assert(addDays("2026-12-31", 1) === "2027-01-01", "Year rollover: Dec 31 2026 + 1 day is Jan 1 2027");
+    const rolloverWeek = weekIdForDate("2027-01-01"); // a Friday; that week's Monday is 2026-12-28
+    assert(rolloverWeek === "2026-12-28", "Year rollover: Jan 1 2027 belongs to the week starting Mon Dec 28 2026");
+    const rolloverDates = weekDates(rolloverWeek);
+    assert(
+      rolloverDates[0] === "2026-12-28" && rolloverDates[6] === "2027-01-03",
+      "Year rollover: that week's 7 dates correctly span across the year boundary"
+    );
+
+    // Far future years (2030+): nothing here is capped, computed, or off, this far out.
+    for (const far of ["2028-06-15", "2029-11-20", "2030-01-01", "2032-02-29", "2035-07-04"]) {
+      const weekId = weekIdForDate(far);
+      assert(weekdayOf(weekId) === "Monday", `Date math: weekIdForDate(${far}) always resolves to a real Monday`);
+      assert(weekDates(weekId).includes(far), `Date math: ${far} is one of its own week's 7 dates`);
+      const window = submissionWindowFor(weekId, DEFAULT_SCHOOL_TIMEZONE);
+      assert(
+        Date.parse(window.closesAt) === Date.parse(window.opensAt) + 24 * 60 * 60 * 1000,
+        `Date math: the submission window for ${far}'s week is exactly 24 hours, no cap on how far out`
+      );
+    }
+
+    // ISO week-year transitions (e.g. Jan 1 can belong to the PRIOR iso year's week 52/53) are
+    // sidestepped entirely: weeks are keyed by their own Monday's calendar date, never an ISO
+    // week number, so there is no such transition to get wrong. 2029-12-31 (Monday) starting a
+    // week that runs into January 2030 is the same kind of boundary as the 2026/2027 case above.
+    assert(weekdayOf("2029-12-31") === "Monday", "Setup check: 2029-12-31 is actually a Monday for this case");
+    const yearEndWeek = weekDates("2029-12-31");
+    assert(yearEndWeek[6] === "2030-01-06", "Year rollover into 2030: a week starting Dec 31 2029 correctly ends Jan 6 2030");
+
+    // currentWeekId round-trips through the real Date -> timezone-local-date -> Monday pipeline
+    // (not just the pure weekIdForDate(dateStr) helper above).
+    const now = new Date("2028-03-01T10:00:00.000Z"); // a Wednesday, Asia/Karachi
+    assert(currentWeekId(DEFAULT_SCHOOL_TIMEZONE, now) === "2028-02-28", "currentWeekId resolves a real Date through to the correct Monday, leap day included");
   }
 
   console.log("==================================================");

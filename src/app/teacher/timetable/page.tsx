@@ -23,9 +23,11 @@ export default function TeacherTimetablePage() {
       .finally(() => setLoading(false));
   }, []);
 
-  const days = DAYS.map((day) => ({ day, slots: timetable.filter((t) => t.dayOfWeek === day) })).filter(
-    (d) => d.slots.length > 0
-  );
+  // Every day is always shown, even with zero periods — a day silently missing its own section
+  // looked identical to that one day's data having failed to load. An explicit "No periods"
+  // row makes a genuinely free day visually distinct from a fetch problem (errors are shown
+  // separately, above, before this list is reached at all).
+  const days = DAYS.map((day) => ({ day, slots: timetable.filter((t) => t.dayOfWeek === day) }));
 
   return (
     <div className="flex flex-col w-full gap-space-lg">
@@ -60,7 +62,7 @@ export default function TeacherTimetablePage() {
         </div>
       )}
 
-      {!loading && !error && days.length === 0 && (
+      {!loading && !error && timetable.length === 0 && (
         <div className="p-8 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 space-y-2">
           <span className="material-symbols-outlined text-3xl text-on-surface-variant">calendar_clock</span>
           <p className="font-semibold text-sm text-on-surface">No timetable configured</p>
@@ -70,7 +72,7 @@ export default function TeacherTimetablePage() {
         </div>
       )}
 
-      {!loading && !error && days.map(({ day, slots }) => (
+      {!loading && !error && timetable.length > 0 && days.map(({ day, slots }) => (
         <section
           key={day}
           className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden"
@@ -95,7 +97,14 @@ export default function TeacherTimetablePage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container-low">
-                {slots.map((t) => (
+                {slots.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-4 px-4 text-center text-on-surface-variant italic">
+                      No periods scheduled for {day}.
+                    </td>
+                  </tr>
+                ) : (
+                slots.map((t) => (
                   <tr key={t.id} className="hover:bg-surface-container-low/40">
                     <td className="py-2.5 px-4 font-semibold text-on-surface">{t.periodName}</td>
                     <td className="py-2.5 px-4 font-mono text-on-surface">{t.startTime} – {t.endTime}</td>
@@ -106,7 +115,8 @@ export default function TeacherTimetablePage() {
                     <td className="py-2.5 px-4 font-mono text-on-surface-variant">{t.roomNo && t.roomNo !== "-" ? t.roomNo : "—"}</td>
                     <td className="py-2.5 px-4 text-on-surface-variant">{t.topic || "—"}</td>
                   </tr>
-                ))}
+                ))
+                )}
               </tbody>
             </table>
           </div>

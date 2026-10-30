@@ -46,6 +46,8 @@ beforeEach(async () => {
     await setDoc(doc(db, "students", "std-a2"), { id: "std-a2", schoolId: "A", classId: "cls-a", userId: "x" });
     await setDoc(doc(db, "teachers", "tch-a"), { id: "tch-a", schoolId: "A", baseSalary: 90000 });
     await setDoc(doc(db, "feeChallans", "ch-a"), { id: "ch-a", schoolId: "A", studentId: "std-a" });
+    await setDoc(doc(db, "payments", "pay-a"), { id: "pay-a", schoolId: "A", studentId: "std-a", challanId: "ch-a" });
+    await setDoc(doc(db, "voucherAdjustments", "vadj-a"), { id: "vadj-a", schoolId: "A", paymentId: "pay-a" });
     await setDoc(doc(db, "payrollRecords", "pay-a"), { id: "pay-a", schoolId: "A", teacherId: "tch-a" });
     await setDoc(doc(db, "auditLogs", "log-a"), { id: "log-a", schoolId: "A" });
     await setDoc(doc(db, "passwordResetTokens", "h"), { uid: "adminA" });
@@ -109,6 +111,24 @@ test("students/parents: only their own child's records", async () => {
   await assertSucceeds(getDoc(doc(as("parentA"), "students", "std-a")));
   await assertFails(getDoc(doc(as("parentA"), "students", "std-a2")));
   await assertSucceeds(getDoc(doc(as("parentA"), "feeChallans", "ch-a")));
+});
+
+test("vouchers (payments) and their adjustments: admin (same school) or the paying student/parent only, never a teacher, never written directly", async () => {
+  await assertSucceeds(getDoc(doc(as("adminA"), "payments", "pay-a")));
+  await assertSucceeds(getDoc(doc(as("studentA"), "payments", "pay-a")));
+  await assertSucceeds(getDoc(doc(as("parentA"), "payments", "pay-a")));
+  await assertFails(getDoc(doc(as("teacherA"), "payments", "pay-a")));
+  await assertFails(getDoc(doc(as("adminB"), "payments", "pay-a")));
+  await assertFails(setDoc(doc(as("adminA"), "payments", "pay-a"), { amount: 999999 }));
+
+  // The reversal/adjustment audit trail is admin-only — a parent sees the voucher's own
+  // voucherStatus field (via the payments rule above), never the correction records themselves.
+  await assertSucceeds(getDoc(doc(as("adminA"), "voucherAdjustments", "vadj-a")));
+  await assertFails(getDoc(doc(as("studentA"), "voucherAdjustments", "vadj-a")));
+  await assertFails(getDoc(doc(as("parentA"), "voucherAdjustments", "vadj-a")));
+  await assertFails(getDoc(doc(as("teacherA"), "voucherAdjustments", "vadj-a")));
+  await assertFails(getDoc(doc(as("adminB"), "voucherAdjustments", "vadj-a")));
+  await assertFails(setDoc(doc(as("adminA"), "voucherAdjustments", "vadj-a"), { amount: 0 }));
 });
 
 test("server-only collections are never readable by clients", async () => {
