@@ -267,6 +267,34 @@ export interface PaymentDoc {
   collectedBy: string;
   academicYear?: string;
   createdAt: string;
+  /**
+   * Voucher Management (admin/fees/vouchers): every payment IS the voucher for that collection —
+   * there is deliberately no second "vouchers" collection duplicating the same financial fact.
+   * Absent on every payment recorded before this feature existed, which is read as "ACTIVE".
+   */
+  voucherStatus?: "ACTIVE" | "REVERSED";
+  /** Set only when edited within its 24-hour window; `createdAt` itself is never rewritten. */
+  lastEditedAt?: string;
+  lastEditedBy?: string;
+}
+
+/**
+ * An auditable correction to a voucher (PaymentDoc) made after its 24-hour edit window has
+ * closed. The original payment's amount/paymentDate/createdAt are never rewritten — this is a
+ * separate, append-only record of what changed, by whom, and why. `amount` is the signed delta
+ * applied to the voucher's net total (negative for a reduction or full reversal).
+ */
+export interface VoucherAdjustmentDoc {
+  id: string;
+  schoolId: string;
+  paymentId: string;
+  challanId: string;
+  type: "REVERSAL" | "ADJUSTMENT";
+  amount: number;
+  reason: string;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: string;
 }
 
 export const FEE_MONTHS = [

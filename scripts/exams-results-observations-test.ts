@@ -294,6 +294,10 @@ async function run() {
     assert(list.observations?.length === 3 && mine?.note === text && mine.canEdit === true, "Observation GET (after refresh): the written text is returned in full");
     const legacy = list.observations.find((o: any) => o.id === "obs-erx-legacy");
     assert(legacy?.note === "Quiz: scored full marks" && legacy.title === "", "Legacy observation shows its full saved text");
+    // A pre-studentName-field record must still resolve to the RIGHT student's name (from the
+    // already-verified studentId on this exact request), never blank and never another
+    // student's name copied in by mistake.
+    assert(legacy?.studentName === s1.fullName, "Observation GET (per-student): a legacy record with no stored studentName resolves to this student's real name");
     assert(list.observations.find((o: any) => o.note === "Punctual all term.")?.canEdit === false, "Teachers cannot edit an admin's note (flag)");
     assert(list.observations.every((o: any) => o.studentId === s1.id), "Observation GET returns only this student's notes");
     assert((await obsGet(req(T_SCI, `/api/observations?studentId=${s1.id}`))).status === 403, "Observation GET: teacher of another class blocked");
@@ -326,6 +330,8 @@ async function run() {
     assert((await obsGet(req(T_MATH, "/api/observations"))).status === 400, "Observation GET (search): a teacher must still specify a studentId");
     const search = await json(await obsGet(req(ADMIN, "/api/observations")));
     assert(search.mode === "search" && search.observations.some((o: any) => o.id === OBS), "Observation GET (search): admin sees the school's observations without a studentId");
+    const legacyInSearch = search.observations.find((o: any) => o.id === "obs-erx-legacy");
+    assert(legacyInSearch?.studentName === s1.fullName, "Observation GET (search): the same legacy record resolves to the right name here too, via the roster batch lookup");
     const byClass = await json(await obsGet(req(ADMIN, `/api/observations?classId=${c1.id}`)));
     assert(byClass.observations.length > 0 && byClass.observations.every((o: any) => o.classId === c1.id), "Observation GET (search): classId filter narrows to that class");
     const byCategory = await json(await obsGet(req(ADMIN, "/api/observations?category=ATTENDANCE")));

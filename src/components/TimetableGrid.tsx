@@ -90,9 +90,11 @@ export default function TimetableGrid({
   highlightDay?: string;
 }) {
   const columns = periodColumns(entries);
+  // Every day is always a row, even with zero periods: a day silently missing its own row (or
+  // card, below) looked identical to that one day's data having failed to load.
   const rowKeys =
     rows === "day"
-      ? TIMETABLE_DAYS.filter((d) => entries.some((e) => e.dayOfWeek === d))
+      ? TIMETABLE_DAYS
       : [...new Map(entries.map((e) => [e.classId, e.className])).entries()]
           .sort((a, b) => a[1].localeCompare(b[1], undefined, { numeric: true }))
           .map(([id]) => id);
@@ -144,6 +146,9 @@ export default function TimetableGrid({
                   <span className="px-2 py-0.5 rounded-full bg-secondary text-on-secondary text-[10px] font-bold">Today</span>
                 )}
               </div>
+              {inRow(day).length === 0 ? (
+                <p className="px-4 py-3 text-xs text-on-surface-variant italic">No periods scheduled for {day}.</p>
+              ) : (
               <ul className="divide-y divide-surface-container-low">
                 {sortByTime(inRow(day)).map((e) => (
                   <li key={e.id} className="px-4 py-2.5 flex items-start justify-between gap-3 text-xs">
@@ -158,6 +163,7 @@ export default function TimetableGrid({
                   </li>
                 ))}
               </ul>
+              )}
             </section>
           ))}
         </div>

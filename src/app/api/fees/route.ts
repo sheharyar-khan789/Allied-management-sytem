@@ -43,11 +43,13 @@ import {
   getFeeChallansForStudentsServer,
   getFeeChallansByNumberServer,
   computeFeeChallanStats,
+  getSchoolSettingsServer,
   FeeChallanListFilter,
 } from "@/lib/firebase/server-db";
 import { feeMonthOf } from "@/lib/fee-ledger";
 import { FeeChallanDoc, FeeStatus, PaymentDoc } from "@/lib/firebase/types";
 import { validateDateString } from "@/lib/date-utils";
+import { DEFAULT_SCHOOL_TIMEZONE, zonedDateParts } from "@/lib/lesson-plan-schedule";
 
 /** Default / maximum rows per ledger page. */
 const FEE_PAGE_SIZE = 50;
@@ -348,6 +350,12 @@ export async function PUT(req: NextRequest) {
     // processed in the same millisecond would silently overwrite one another's Firestore
     // document. Same "RCT-<year>-<digits>" / "pay-<...>" formats are preserved.
     const receiptNo = `RCT-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
+    // The school's own calendar day (Asia/Karachi by default), not the server's UTC day — a
+    // counter payment taken after ~7 PM Karachi time (already past midnight UTC-5) was otherwise
+    // dated "yesterday", so the voucher daily register for the actual day it was collected on
+    // would show one fewer voucher than were really received.
+    const schoolSettings = await getSchoolSettingsServer(authUser.schoolId);
+    const todayLocal = zonedDateParts(schoolSettings?.timezone || DEFAULT_SCHOOL_TIMEZONE).date;
     const paymentDoc: PaymentDoc = {
       id: `pay-${Date.now()}-${crypto.randomBytes(6).toString("hex")}`,
       schoolId: authUser.schoolId,
@@ -356,7 +364,7 @@ export async function PUT(req: NextRequest) {
       studentName: targetChallan.studentName,
       receiptNo,
       amount: Number(amount),
-      paymentDate: new Date().toISOString().split("T")[0],
+      paymentDate: todayLocal,
       paymentMode: "CASH",
       notes: notes || "Counter payment",
       collectedBy: authUser.uid,

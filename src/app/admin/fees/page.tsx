@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
 import StudentFeeAccount from "@/components/StudentFeeAccount";
@@ -155,6 +156,13 @@ export default function FeeManagementPage() {
         </div>
 
         <div className="flex items-center gap-2 self-start sm:self-auto">
+          <Link
+            href="/admin/fees/vouchers"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-xs font-semibold shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">receipt</span>
+            <span>Voucher Management</span>
+          </Link>
           <button
             onClick={() => setImportOpen(true)}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary hover:bg-secondary/90 font-label-md text-xs font-semibold shadow-sm transition-all"

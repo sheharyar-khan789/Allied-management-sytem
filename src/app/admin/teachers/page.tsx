@@ -368,6 +368,23 @@ export default function TeachersManagementPage() {
                         }`}>
                           {t.status}
                         </span>
+                        <span
+                          className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full font-bold text-[10px] w-fit ${
+                            t.activationStatus === "active"
+                              ? "bg-tertiary-container/10 text-on-tertiary-container"
+                              : "bg-secondary/10 text-secondary"
+                          }`}
+                          title={
+                            t.activationStatus === "active"
+                              ? "This teacher has set their own password and can sign in."
+                              : "This teacher has not yet opened their activation link to set a password."
+                          }
+                        >
+                          <span className="material-symbols-outlined text-[12px]">
+                            {t.activationStatus === "active" ? "mark_email_read" : "hourglass_empty"}
+                          </span>
+                          {t.activationStatus === "active" ? "Activated" : "Activation Pending"}
+                        </span>
                         <span className="text-[10px] text-on-surface-variant">
                           Joined: {formatDisplayDate(t.joiningDate)}
                         </span>

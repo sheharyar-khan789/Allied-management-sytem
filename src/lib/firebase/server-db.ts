@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { AggregateField, FieldPath, FieldValue } from "firebase-admin/firestore";
 import type { DocumentSnapshot, Query } from "firebase-admin/firestore";
 import { adminDb, hasAdminCredentials } from "./admin";
@@ -50,6 +51,7 @@ import {
   PasswordResetTokenDoc,
   StudentFeeLedgerDoc,
   StudentChargeDoc,
+  VoucherAdjustmentDoc,
   FeeMonth,
   AttendanceStatus,
 } from "./types";
@@ -81,6 +83,8 @@ const localStore: {
   passwordResetTokens: Map<string, PasswordResetTokenDoc>;
   studentFeeLedgers: Map<string, StudentFeeLedgerDoc>;
   studentCharges: Map<string, StudentChargeDoc>;
+  voucherAdjustments: Map<string, VoucherAdjustmentDoc>;
+  enrollmentRequests: Map<string, { schoolId: string; studentId?: string; createdAt: string }>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -107,6 +111,8 @@ const localStore: {
   passwordResetTokens: new Map(),
   studentFeeLedgers: new Map(),
   studentCharges: new Map(),
+  voucherAdjustments: new Map(),
+  enrollmentRequests: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -671,6 +677,29 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
   return null;
 }
 
+/** Several user profiles by uid in one batched read — e.g. the faculty list's activation-status
+ *  column, without one query per teacher. */
+export async function getUsersByIdsServer(uids: string[]): Promise<Map<string, UserProfile>> {
+  const ids = Array.from(new Set(uids.filter(Boolean)));
+  const result = new Map<string, UserProfile>();
+  if (ids.length === 0) return result;
+  if (hasAdminCredentials) {
+    try {
+      const snaps = await adminDb.getAll(...ids.map((id) => adminDb.collection("users").doc(id)));
+      for (const snap of snaps) {
+        if (snap.exists) result.set(snap.id, { uid: snap.id, ...snap.data() } as UserProfile);
+      }
+      return result;
+    } catch (e) {
+      onFirestoreError(`getUsersByIdsServer`, e);
+    }
+  }
+  for (const u of localStore.users.values()) {
+    if (ids.includes(u.uid)) result.set(u.uid, u);
+  }
+  return result;
+}
+
 /**
  * The user profile behind a session (revocation check, /api/auth/me, layouts), cached per
  * (schoolId, uid) for CACHE_TTL_MS.SESSION_PROFILE (30s). Every user write in this file
@@ -939,27 +968,31 @@ const admissionCounterKey = (schoolId: string) => `${schoolId}__admission`;
  */
 export async function allocateAdmissionSequenceServer(schoolId: string): Promise<number> {
   const key = admissionCounterKey(schoolId);
-  if (hasAdminCredentials) {
+  // Never been allocated from before (Firestore-backed or the in-memory fallback alike): seed
+  // once from whatever was issued under the old, scan-based scheme (or start at 1 for a
+  // brand-new school with no students at all). Two concurrent "first" enrollments can both reach
+  // this branch; both scans agree on the same roster and `raiseCounterToAtLeastServer` is itself
+  // a safe forward-only max, so the race costs at most one extra scan, never a wrong or
+  // duplicate sequence. Checked in both branches identically so the in-memory fallback (used
+  // whenever there are no real Firebase credentials — every local dev run and every test) can't
+  // silently restart from 1 and collide with an admission number a test seeded directly into the
+  // store, something Firestore's own first-use seeding would never do in production.
+  const neverAllocated = hasAdminCredentials
+    ? !(await withFirestoreRetry("allocateAdmissionSequenceServer:peek", () => adminDb.collection("counters").doc(key).get())).exists
+    : !localCounters.has(key);
+
+  if (neverAllocated) {
     try {
-      const ref = adminDb.collection("counters").doc(key);
-      const snap = await withFirestoreRetry("allocateAdmissionSequenceServer:peek", () => ref.get());
-      if (!snap.exists) {
-        // Never been allocated from before: seed once from whatever was issued under the old,
-        // scan-based scheme (or start at 1 for a brand-new school with no students at all).
-        // Two concurrent "first" enrollments can both reach this branch; both scans agree on the
-        // same roster and `raiseCounterToAtLeastServer` is itself a safe forward-only max, so the
-        // race costs at most one extra scan, never a wrong or duplicate sequence.
-        const existing = await getStudentsServer(schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
-        const highest = existing.reduce((max, st) => {
-          const match = /^STD-\d{4}-(\d+)$/.exec(st.admissionNo || "");
-          const value = match ? parseInt(match[1], 10) : 0;
-          return Number.isFinite(value) && value > max ? value : max;
-        }, 0);
-        await raiseCounterToAtLeastServer(key, highest + 1);
-      }
+      const existing = await getStudentsServer(schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
+      const highest = existing.reduce((max, st) => {
+        const match = /^STD-\d{4}-(\d+)$/.exec(st.admissionNo || "");
+        const value = match ? parseInt(match[1], 10) : 0;
+        return Number.isFinite(value) && value > max ? value : max;
+      }, 0);
+      await raiseCounterToAtLeastServer(key, highest + 1);
     } catch (e) {
       onFirestoreError(`allocateAdmissionSequenceServer(${schoolId})`, e);
-      throw e;
+      if (hasAdminCredentials) throw e;
     }
   }
   return allocateCounterValueServer(key, 1);
@@ -1004,6 +1037,80 @@ export async function releaseRegistrationSecretServer(secretHash: string): Promi
       await adminDb.collection("registrationSecrets").doc(secretHash).delete();
     } catch (e) {
       onFirestoreError("releaseRegistrationSecretServer", e);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ENROLLMENT IDEMPOTENCY (duplicate-submission guard)
+//
+// The admin "Add Student" form disables its submit button while the request is in flight, which
+// stops a double-click — but not a response lost in transit after the write already succeeded,
+// followed by the admin manually resubmitting the same form. allocateAdmissionSequenceServer is
+// a pure forward-only counter with no idea "this is the same request as before", so without this
+// guard a resubmit would silently create a second, genuinely duplicate student record for the
+// same child. The client sends one random key per open enrollment form; this claims it exactly
+// once, the same way consumeRegistrationSecretServer claims a one-time school-registration code.
+// ---------------------------------------------------------------------------
+export interface EnrollmentClaimResult {
+  /** True: no earlier attempt with this key exists, proceed with a new enrollment. */
+  claimed: boolean;
+  /** Set when claimed is false and the earlier attempt already finished successfully. */
+  existingStudentId?: string;
+}
+
+function enrollmentRequestId(schoolId: string, clientRequestId: string): string {
+  return `${schoolId}_${clientRequestId}`;
+}
+
+export async function claimEnrollmentRequestServer(schoolId: string, clientRequestId: string): Promise<EnrollmentClaimResult> {
+  assertProductionDbReady();
+  const id = enrollmentRequestId(schoolId, clientRequestId);
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("enrollmentRequests").doc(id);
+      return await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists) {
+          return { claimed: false, existingStudentId: (snap.data() as { studentId?: string }).studentId };
+        }
+        tx.set(ref, { schoolId, createdAt: new Date().toISOString() });
+        return { claimed: true };
+      });
+    } catch (e) {
+      onFirestoreError(`claimEnrollmentRequestServer(${id})`, e);
+      throw e;
+    }
+  }
+  const existing = localStore.enrollmentRequests.get(id);
+  if (existing) return { claimed: false, existingStudentId: existing.studentId };
+  localStore.enrollmentRequests.set(id, { schoolId, createdAt: new Date().toISOString() });
+  return { claimed: true };
+}
+
+/** Records the student a claimed enrollment request produced, so a resubmit can find it. */
+export async function completeEnrollmentRequestServer(schoolId: string, clientRequestId: string, studentId: string): Promise<void> {
+  const id = enrollmentRequestId(schoolId, clientRequestId);
+  const data = { schoolId, studentId, createdAt: new Date().toISOString() };
+  localStore.enrollmentRequests.set(id, data);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("enrollmentRequests").doc(id).set(data, { merge: true });
+    } catch (e) {
+      onFirestoreError(`completeEnrollmentRequestServer(${id})`, e);
+    }
+  }
+}
+
+/** Releases a claim whose enrollment actually failed, so a genuine retry is never permanently blocked. */
+export async function releaseEnrollmentRequestServer(schoolId: string, clientRequestId: string): Promise<void> {
+  const id = enrollmentRequestId(schoolId, clientRequestId);
+  localStore.enrollmentRequests.delete(id);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("enrollmentRequests").doc(id).delete();
+    } catch (e) {
+      onFirestoreError(`releaseEnrollmentRequestServer(${id})`, e);
     }
   }
 }
@@ -2795,6 +2902,33 @@ export async function getFeeChallanByIdServer(schoolId: string, challanId: strin
   return null;
 }
 
+/** Several challans by id in one batched read — the student/class/admission-number labels the
+ *  voucher register displays alongside each payment, without one query per voucher. */
+export async function getFeeChallansByIdsServer(schoolId: string, challanIds: string[]): Promise<Map<string, FeeChallanDoc>> {
+  const ids = Array.from(new Set(challanIds.filter(Boolean)));
+  const result = new Map<string, FeeChallanDoc>();
+  if (ids.length === 0) return result;
+  if (hasAdminCredentials) {
+    try {
+      const snaps = await adminDb.getAll(...ids.map((id) => adminDb.collection("feeChallans").doc(id)));
+      for (const snap of snaps) {
+        if (snap.exists) {
+          const data = { id: snap.id, ...snap.data() } as FeeChallanDoc;
+          if (data.schoolId === schoolId) result.set(data.id, data);
+        }
+      }
+      return result;
+    } catch (e) {
+      onFirestoreError(`getFeeChallansByIdsServer(${schoolId})`, e);
+    }
+  }
+  for (const id of ids) {
+    const c = localStore.feeChallans.get(id);
+    if (c && c.schoolId === schoolId) result.set(id, c);
+  }
+  return result;
+}
+
 export async function saveFeeChallanServer(challan: FeeChallanDoc): Promise<string> {
   assertProductionDbReady();
   const id = challan.id || `ch-${Date.now()}`;
@@ -3019,6 +3153,382 @@ export async function getPaymentsByStudentServer(schoolId: string, studentId: st
 }
 
 // ---------------------------------------------------------------------------
+// VOUCHER MANAGEMENT (admin/fees/vouchers)
+//
+// There is deliberately no separate "vouchers" collection: every recorded PaymentDoc already IS
+// the voucher for that collection event (amount, date, receipt, who collected it). A second
+// collection mirroring the same financial facts would itself be the "duplicate financial
+// transaction" risk the brief warns against. This section adds: the 24-hour edit lock, an
+// append-only adjustments/reversals trail for corrections made after that lock closes, and the
+// daily register report, all computed from the actual stored payments/adjustments on every read.
+// ---------------------------------------------------------------------------
+
+export const VOUCHER_EDIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** A voucher can be edited (or deleted) directly for 24 hours after its ORIGINAL entry timestamp. */
+export function isVoucherLocked(payment: Pick<PaymentDoc, "createdAt">, now: Date = new Date()): boolean {
+  const created = new Date(payment.createdAt).getTime();
+  if (!Number.isFinite(created)) return true; // no reliable timestamp: fail closed (locked)
+  return now.getTime() - created > VOUCHER_EDIT_WINDOW_MS;
+}
+
+function statusFromPaidAmount(totalExpected: number, paidAmount: number): FeeStatus {
+  // Same formula as recordFeePaymentServer, so editing/reversing a voucher never leaves a
+  // challan's Paid/Partial/Unpaid status inconsistent with the payments that actually fund it.
+  const balance = Math.max(0, (totalExpected || 0) - paidAmount);
+  if (balance === 0) return "PAID";
+  if (paidAmount <= 0) return "PENDING";
+  return "PARTIAL";
+}
+
+export async function getPaymentByIdServer(schoolId: string, paymentId: string): Promise<PaymentDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("payments").doc(paymentId).get();
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as PaymentDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getPaymentByIdServer(${paymentId})`, e);
+      return null;
+    }
+  }
+  const p = localStore.payments.get(paymentId);
+  return p && p.schoolId === schoolId ? p : null;
+}
+
+/** Payments whose `paymentDate` falls within [from, to] (inclusive "YYYY-MM-DD" strings). */
+export async function getPaymentsByDateRangeServer(schoolId: string, from: string, to: string): Promise<PaymentDoc[]> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("payments.byDateRange", () =>
+        adminDb
+          .collection("payments")
+          .where("schoolId", "==", schoolId)
+          .where("paymentDate", ">=", from)
+          .where("paymentDate", "<=", to)
+          .orderBy("paymentDate", "desc")
+          .get()
+      );
+      const payments = snap.docs.map((d) => ({ id: d.id, ...d.data() } as PaymentDoc));
+      if (payments.length > 0 || process.env.NODE_ENV === "production") return payments;
+    } catch (e) {
+      onFirestoreError(`getPaymentsByDateRangeServer(${schoolId})`, e);
+      if (process.env.NODE_ENV === "production") throw e;
+    }
+  }
+  return Array.from(localStore.payments.values())
+    .filter((p) => p.schoolId === schoolId && p.paymentDate >= from && p.paymentDate <= to)
+    .sort((a, b) => (b.paymentDate || "").localeCompare(a.paymentDate || ""));
+}
+
+async function fetchVoucherAdjustmentsRaw(schoolId: string, paymentIds?: string[]): Promise<VoucherAdjustmentDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      if (paymentIds) {
+        const ids = Array.from(new Set(paymentIds));
+        if (ids.length === 0) return [];
+        const snaps = await Promise.all(
+          chunk(ids, 30).map((group) =>
+            whereOneOf(adminDb.collection("voucherAdjustments").where("schoolId", "==", schoolId), "paymentId", group).get()
+          )
+        );
+        return snaps.flatMap((s) => s.docs.map((d) => ({ id: d.id, ...d.data() } as VoucherAdjustmentDoc)));
+      }
+      const snap = await adminDb.collection("voucherAdjustments").where("schoolId", "==", schoolId).get();
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as VoucherAdjustmentDoc));
+    } catch (e) {
+      onFirestoreError(`getVoucherAdjustments(${schoolId})`, e);
+    }
+  }
+  let list = Array.from(localStore.voucherAdjustments.values()).filter((a) => a.schoolId === schoolId);
+  if (paymentIds) {
+    const ids = new Set(paymentIds);
+    list = list.filter((a) => ids.has(a.paymentId));
+  }
+  return list;
+}
+
+/** Every reversal/adjustment ever recorded against one voucher, oldest first. */
+export async function getVoucherAdjustmentsForPaymentServer(schoolId: string, paymentId: string): Promise<VoucherAdjustmentDoc[]> {
+  return (await fetchVoucherAdjustmentsRaw(schoolId, [paymentId])).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/** The voucher's current net total: its original amount plus every adjustment applied since. */
+export function netVoucherAmount(payment: Pick<PaymentDoc, "amount">, adjustments: VoucherAdjustmentDoc[]): number {
+  return adjustments.reduce((sum, a) => sum + a.amount, payment.amount);
+}
+
+export type VoucherEditInput = {
+  amount?: number;
+  paymentDate?: string;
+  paymentMode?: PaymentDoc["paymentMode"];
+  transactionRef?: string;
+  notes?: string;
+};
+
+export type VoucherEditResult =
+  | { ok: true; payment: PaymentDoc }
+  | { ok: false; error: "NOT_FOUND" | "LOCKED" | "REVERSED" | "INVALID_AMOUNT" };
+
+/**
+ * Direct edit of a voucher within its 24-hour window: updates the SAME payment document (never a
+ * new one) and atomically adjusts the challan it settles by the difference between the old and
+ * new amount. The lock is re-checked here against the server's own clock on every call — a
+ * forged client timestamp cannot bypass it, matching the lesson-plan submission lock.
+ */
+export async function editVoucherPaymentServer(
+  schoolId: string,
+  paymentId: string,
+  updates: VoucherEditInput,
+  actor: { uid: string }
+): Promise<VoucherEditResult> {
+  assertProductionDbReady();
+  if (updates.amount !== undefined && !(Number(updates.amount) > 0)) {
+    return { ok: false, error: "INVALID_AMOUNT" };
+  }
+  invalidateCachePrefix(cacheKeys.feeAggregatesPrefix(schoolId));
+  invalidateCachePrefix(cacheKeys.recentPayments(schoolId));
+
+  const applyUpdate = (payment: PaymentDoc, challan: FeeChallanDoc) => {
+    const newAmount = updates.amount !== undefined ? Number(updates.amount) : payment.amount;
+    const paidAmount = Math.max(0, (challan.paidAmount || 0) - payment.amount + newAmount);
+    const status = statusFromPaidAmount(challan.totalExpected, paidAmount);
+    const updatedPayment: PaymentDoc = {
+      ...payment,
+      amount: newAmount,
+      paymentDate: updates.paymentDate || payment.paymentDate,
+      paymentMode: updates.paymentMode || payment.paymentMode,
+      transactionRef: updates.transactionRef !== undefined ? updates.transactionRef : payment.transactionRef,
+      notes: updates.notes !== undefined ? updates.notes : payment.notes,
+      lastEditedAt: new Date().toISOString(),
+      lastEditedBy: actor.uid,
+    };
+    const updatedChallan: Partial<FeeChallanDoc> = {
+      paidAmount,
+      balanceAmount: Math.max(0, (challan.totalExpected || 0) - paidAmount),
+      status,
+      updatedAt: new Date().toISOString(),
+    };
+    return { updatedPayment, updatedChallan };
+  };
+
+  if (hasAdminCredentials) {
+    try {
+      return await adminDb.runTransaction(async (transaction) => {
+        const paymentRef = adminDb.collection("payments").doc(paymentId);
+        const paymentSnap = await transaction.get(paymentRef);
+        if (!paymentSnap.exists) return { ok: false, error: "NOT_FOUND" } as const;
+        const payment = { id: paymentSnap.id, ...paymentSnap.data() } as PaymentDoc;
+        if (payment.schoolId !== schoolId) return { ok: false, error: "NOT_FOUND" } as const;
+        if (payment.voucherStatus === "REVERSED") return { ok: false, error: "REVERSED" } as const;
+        if (isVoucherLocked(payment)) return { ok: false, error: "LOCKED" } as const;
+
+        const challanRef = adminDb.collection("feeChallans").doc(payment.challanId);
+        const challanSnap = await transaction.get(challanRef);
+        if (!challanSnap.exists) return { ok: false, error: "NOT_FOUND" } as const;
+        const challan = challanSnap.data() as FeeChallanDoc;
+
+        const { updatedPayment, updatedChallan } = applyUpdate(payment, challan);
+        transaction.set(paymentRef, cleanUndefined(updatedPayment));
+        transaction.set(challanRef, updatedChallan, { merge: true });
+        localStore.payments.set(updatedPayment.id, updatedPayment);
+        return { ok: true, payment: updatedPayment } as const;
+      });
+    } catch (e) {
+      onFirestoreError(`editVoucherPaymentServer(${paymentId})`, e);
+      throw e;
+    }
+  }
+
+  const payment = localStore.payments.get(paymentId);
+  if (!payment || payment.schoolId !== schoolId) return { ok: false, error: "NOT_FOUND" };
+  if (payment.voucherStatus === "REVERSED") return { ok: false, error: "REVERSED" };
+  if (isVoucherLocked(payment)) return { ok: false, error: "LOCKED" };
+  const challan = localStore.feeChallans.get(payment.challanId);
+  if (!challan) return { ok: false, error: "NOT_FOUND" };
+  const { updatedPayment, updatedChallan } = applyUpdate(payment, challan);
+  localStore.payments.set(paymentId, updatedPayment);
+  localStore.feeChallans.set(challan.id, { ...challan, ...updatedChallan } as FeeChallanDoc);
+  return { ok: true, payment: updatedPayment };
+}
+
+export type VoucherAdjustmentInput = { type: "REVERSAL" | "ADJUSTMENT"; amount?: number; reason: string };
+
+export type VoucherAdjustmentResult =
+  | { ok: true; adjustment: VoucherAdjustmentDoc; payment: PaymentDoc }
+  | { ok: false; error: "NOT_FOUND" | "ALREADY_REVERSED" | "MISSING_REASON" | "INVALID_AMOUNT" };
+
+/**
+ * Auditable correction for a voucher — the only way to change a LOCKED voucher's financial
+ * standing. The original payment's amount/paymentDate/createdAt are never rewritten; this
+ * appends a signed delta to voucherAdjustments and applies that same delta to the challan it
+ * settles. A REVERSAL's delta is derived (negates this voucher's current net contribution
+ * exactly, so the challan is never left over- or under-credited); an ADJUSTMENT's delta is the
+ * amount the admin supplies. Usable on an unlocked voucher too (nothing requires waiting out the
+ * lock to issue an audited correction instead of a plain edit).
+ */
+export async function createVoucherAdjustmentServer(
+  schoolId: string,
+  paymentId: string,
+  input: VoucherAdjustmentInput,
+  actor: { uid: string; name?: string }
+): Promise<VoucherAdjustmentResult> {
+  assertProductionDbReady();
+  const reason = (input.reason || "").trim();
+  if (!reason) return { ok: false, error: "MISSING_REASON" };
+  if (input.type === "ADJUSTMENT" && (!Number.isFinite(input.amount) || input.amount === 0)) {
+    return { ok: false, error: "INVALID_AMOUNT" };
+  }
+  invalidateCachePrefix(cacheKeys.feeAggregatesPrefix(schoolId));
+  invalidateCachePrefix(cacheKeys.recentPayments(schoolId));
+
+  const buildAdjustment = (payment: PaymentDoc, priorAdjustments: VoucherAdjustmentDoc[]) => {
+    const netSoFar = netVoucherAmount(payment, priorAdjustments);
+    const amount = input.type === "REVERSAL" ? -netSoFar : Number(input.amount);
+    const adjustment: VoucherAdjustmentDoc = {
+      id: `vadj-${Date.now()}-${crypto.randomBytes(6).toString("hex")}`,
+      schoolId,
+      paymentId,
+      challanId: payment.challanId,
+      type: input.type,
+      amount,
+      reason,
+      createdBy: actor.uid,
+      createdByName: actor.name,
+      createdAt: new Date().toISOString(),
+    };
+    return adjustment;
+  };
+
+  if (hasAdminCredentials) {
+    try {
+      return await adminDb.runTransaction(async (transaction) => {
+        const paymentRef = adminDb.collection("payments").doc(paymentId);
+        const paymentSnap = await transaction.get(paymentRef);
+        if (!paymentSnap.exists) return { ok: false, error: "NOT_FOUND" } as const;
+        const payment = { id: paymentSnap.id, ...paymentSnap.data() } as PaymentDoc;
+        if (payment.schoolId !== schoolId) return { ok: false, error: "NOT_FOUND" } as const;
+        if (input.type === "REVERSAL" && payment.voucherStatus === "REVERSED") {
+          return { ok: false, error: "ALREADY_REVERSED" } as const;
+        }
+
+        const adjSnap = await transaction.get(
+          adminDb.collection("voucherAdjustments").where("schoolId", "==", schoolId).where("paymentId", "==", paymentId)
+        );
+        const priorAdjustments = adjSnap.docs.map((d) => ({ id: d.id, ...d.data() } as VoucherAdjustmentDoc));
+
+        const challanRef = adminDb.collection("feeChallans").doc(payment.challanId);
+        const challanSnap = await transaction.get(challanRef);
+        if (!challanSnap.exists) return { ok: false, error: "NOT_FOUND" } as const;
+        const challan = challanSnap.data() as FeeChallanDoc;
+
+        const adjustment = buildAdjustment(payment, priorAdjustments);
+        const paidAmount = Math.max(0, (challan.paidAmount || 0) + adjustment.amount);
+        const status = statusFromPaidAmount(challan.totalExpected, paidAmount);
+        const updatedPayment: PaymentDoc = {
+          ...payment,
+          ...(input.type === "REVERSAL" ? { voucherStatus: "REVERSED" as const } : {}),
+        };
+
+        transaction.set(adminDb.collection("voucherAdjustments").doc(adjustment.id), adjustment);
+        transaction.set(paymentRef, cleanUndefined(updatedPayment), { merge: true });
+        transaction.set(
+          challanRef,
+          { paidAmount, balanceAmount: Math.max(0, (challan.totalExpected || 0) - paidAmount), status, updatedAt: new Date().toISOString() },
+          { merge: true }
+        );
+        localStore.voucherAdjustments.set(adjustment.id, adjustment);
+        localStore.payments.set(updatedPayment.id, updatedPayment);
+        return { ok: true, adjustment, payment: updatedPayment } as const;
+      });
+    } catch (e) {
+      onFirestoreError(`createVoucherAdjustmentServer(${paymentId})`, e);
+      throw e;
+    }
+  }
+
+  const payment = localStore.payments.get(paymentId);
+  if (!payment || payment.schoolId !== schoolId) return { ok: false, error: "NOT_FOUND" };
+  if (input.type === "REVERSAL" && payment.voucherStatus === "REVERSED") return { ok: false, error: "ALREADY_REVERSED" };
+  const challan = localStore.feeChallans.get(payment.challanId);
+  if (!challan) return { ok: false, error: "NOT_FOUND" };
+  const priorAdjustments = Array.from(localStore.voucherAdjustments.values()).filter((a) => a.schoolId === schoolId && a.paymentId === paymentId);
+  const adjustment = buildAdjustment(payment, priorAdjustments);
+  const paidAmount = Math.max(0, (challan.paidAmount || 0) + adjustment.amount);
+  const status = statusFromPaidAmount(challan.totalExpected, paidAmount);
+  const updatedPayment: PaymentDoc = { ...payment, ...(input.type === "REVERSAL" ? { voucherStatus: "REVERSED" as const } : {}) };
+  localStore.voucherAdjustments.set(adjustment.id, adjustment);
+  localStore.payments.set(paymentId, updatedPayment);
+  localStore.feeChallans.set(challan.id, {
+    ...challan,
+    paidAmount,
+    balanceAmount: Math.max(0, (challan.totalExpected || 0) - paidAmount),
+    status,
+    updatedAt: new Date().toISOString(),
+  });
+  return { ok: true, adjustment, payment: updatedPayment };
+}
+
+export interface VoucherDailySummary {
+  date: string;
+  grossCount: number;
+  grossAmount: number;
+  validCount: number;
+  reversedCount: number;
+  lockedCount: number;
+  adjustmentCount: number;
+  adjustmentAmount: number;
+  netAmount: number;
+}
+
+/**
+ * The daily voucher register for [from, to] (inclusive "YYYY-MM-DD", Asia/Karachi calendar
+ * dates — the admin picks the date, so there is no instant-to-timezone conversion to get wrong).
+ * Grouped by the voucher's OWN received date, not by when a later correction was recorded, so a
+ * reversal processed today still nets out of the day the money actually came in — and today's
+ * report total never drifts depending on when someone happens to look at it.
+ */
+export async function getVoucherDailySummaryServer(
+  schoolId: string,
+  from: string,
+  to: string
+): Promise<{ days: VoucherDailySummary[]; payments: PaymentDoc[]; adjustments: VoucherAdjustmentDoc[] }> {
+  const payments = await getPaymentsByDateRangeServer(schoolId, from, to);
+  const adjustments = await fetchVoucherAdjustmentsRaw(schoolId, payments.map((p) => p.id));
+  const adjByPayment = new Map<string, VoucherAdjustmentDoc[]>();
+  for (const a of adjustments) adjByPayment.set(a.paymentId, [...(adjByPayment.get(a.paymentId) || []), a]);
+
+  const byDate = new Map<string, VoucherDailySummary>();
+  const dayFor = (date: string) => {
+    let d = byDate.get(date);
+    if (!d) {
+      d = { date, grossCount: 0, grossAmount: 0, validCount: 0, reversedCount: 0, lockedCount: 0, adjustmentCount: 0, adjustmentAmount: 0, netAmount: 0 };
+      byDate.set(date, d);
+    }
+    return d;
+  };
+
+  for (const payment of payments) {
+    const day = dayFor(payment.paymentDate);
+    const reversed = payment.voucherStatus === "REVERSED";
+    day.grossCount += 1;
+    day.grossAmount += payment.amount;
+    if (reversed) day.reversedCount += 1;
+    else day.validCount += 1;
+    if (isVoucherLocked(payment)) day.lockedCount += 1;
+
+    const theseAdjustments = adjByPayment.get(payment.id) || [];
+    day.adjustmentCount += theseAdjustments.length;
+    day.adjustmentAmount += theseAdjustments.reduce((s, a) => s + a.amount, 0);
+  }
+  for (const day of byDate.values()) day.netAmount = day.grossAmount + day.adjustmentAmount;
+
+  return { days: Array.from(byDate.values()).sort((a, b) => b.date.localeCompare(a.date)), payments, adjustments };
+}
+
+// ---------------------------------------------------------------------------
 // EXAMS & RAPID GRADEBOOK
 // ---------------------------------------------------------------------------
 async function fetchExamsRaw(schoolId: string): Promise<ExamDoc[]> {
@@ -3098,6 +3608,34 @@ export async function getExamSchedulesServer(schoolId: string, examId: string): 
 
   return Array.from(localStore.examSchedules.values()).filter(
     (s) => s.schoolId === schoolId && s.examId === examId
+  );
+}
+
+/**
+ * Schedules for several exams in one read instead of one query per exam (chunked at 30, the
+ * Firestore `in` limit) — the student dossier and report card used to issue one
+ * getExamSchedulesServer call per distinct exam the student has results in.
+ */
+export async function getExamSchedulesForExamsServer(schoolId: string, examIds: string[]): Promise<ExamScheduleDoc[]> {
+  const ids = Array.from(new Set(examIds.filter(Boolean)));
+  if (ids.length === 0) return [];
+  if (ids.length === 1) return getExamSchedulesServer(schoolId, ids[0]);
+
+  if (hasAdminCredentials) {
+    try {
+      const snaps = await Promise.all(
+        chunk(ids, 30).map((group) =>
+          whereOneOf(adminDb.collection("examSchedules").where("schoolId", "==", schoolId), "examId", group).get()
+        )
+      );
+      return snaps.flatMap((snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() } as ExamScheduleDoc)));
+    } catch (e) {
+      onFirestoreError(`getExamSchedulesForExamsServer(${schoolId})`, e);
+    }
+  }
+
+  return Array.from(localStore.examSchedules.values()).filter(
+    (s) => s.schoolId === schoolId && ids.includes(s.examId)
   );
 }
 

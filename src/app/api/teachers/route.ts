@@ -7,7 +7,8 @@ import {
   createUserServer,
   createAuditLogServer,
   getClassesServer,
-  getSubjectsServer
+  getSubjectsServer,
+  getUsersByIdsServer
 } from "@/lib/firebase/server-db";
 import { TeacherDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
@@ -50,10 +51,18 @@ export async function GET(req: NextRequest) {
       );
     }
 
+    // Whether each teacher has ever completed account setup: no password hash is ever written
+    // for a newly created account (see POST below) — only /api/auth/reset-password sets one,
+    // whichever of the activation link or a later "forgot password" they use. This is the one
+    // place an admin can tell "activation pending" apart from "already active" without guessing
+    // from whether the one-time post-creation toast happened to still be on screen.
+    const users = await getUsersByIdsServer(filtered.map((t) => t.userId).filter((id): id is string => Boolean(id)));
+
     const teacherRecords = filtered.map((t) => {
       const managed = classes.filter((c) => c.classTeacherId === t.id).map((c) => `${c.name}-${c.section}`);
       const taught = subjects.filter((s) => s.teacherId === t.id).map((s) => `${s.name} (${s.code})`);
       const assigned = classes.filter((c) => (t.assignedClassIds || []).includes(c.id)).map((c) => `${c.name}-${c.section}`);
+      const hasSetPassword = Boolean(t.userId && users.get(t.userId)?.passwordHash);
 
       return {
         id: t.id,
@@ -78,6 +87,7 @@ export async function GET(req: NextRequest) {
         assignedClasses: assigned,
         taughtSubjectsCount: taught.length,
         taughtSubjects: taught,
+        activationStatus: hasSetPassword ? "active" : "pending",
       };
     });
 

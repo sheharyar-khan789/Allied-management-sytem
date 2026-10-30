@@ -14,7 +14,7 @@ import {
   PUT as timetablePut,
   DELETE as timetableDelete,
 } from "../src/app/api/timetable/route";
-import { POST as teachersPost } from "../src/app/api/teachers/route";
+import { GET as teachersGet, POST as teachersPost } from "../src/app/api/teachers/route";
 import { POST as activationPost } from "../src/app/api/teachers/[id]/activation/route";
 import { POST as loginPost } from "../src/app/api/auth/login/route";
 import { POST as forgotPost } from "../src/app/api/auth/forgot-password/route";
@@ -297,6 +297,11 @@ async function run() {
 
   const loginBefore = await loginPost(req(null, "http://x/api/auth/login", "POST", { identifier: newEmail, password: "Whatever#123" }));
   assert(loginBefore.status === 401, "Teacher cannot sign in before setting a password");
+  const rosterBefore = await json(await teachersGet(req(ADMIN_A, "http://x/api/teachers")));
+  assert(
+    rosterBefore.teachers?.find((t: any) => t.id === createJson.teacher.id)?.activationStatus === "pending",
+    "Faculty list shows this teacher's activation as pending before they set a password"
+  );
   const activated = await resetPost(req(null, "http://x/api/auth/reset-password", "POST", { token: activationToken, newPassword: "MyOwnPass#2026" }));
   const activatedJson = await json(activated);
   assert(activated.status === 200 && /active/i.test(activatedJson.message), "Teacher sets their own password through the activation link");
@@ -304,6 +309,11 @@ async function run() {
   assert(activatedProfile?.passwordHash?.startsWith("$2") && !JSON.stringify(activatedProfile).includes("MyOwnPass#2026"), "Only a bcrypt hash of the chosen password is stored");
   const loginAfter = await loginPost(req(null, "http://x/api/auth/login", "POST", { identifier: newEmail, password: "MyOwnPass#2026" }));
   assert(loginAfter.status === 200 && (await json(loginAfter)).redirectUrl === "/teacher", "Activated teacher signs in and lands on the teacher portal");
+  const rosterAfter = await json(await teachersGet(req(ADMIN_A, "http://x/api/teachers")));
+  assert(
+    rosterAfter.teachers?.find((t: any) => t.id === createJson.teacher.id)?.activationStatus === "active",
+    "Faculty list shows this teacher's activation as active once they've set their own password"
+  );
   const reuse = await resetPost(req(null, "http://x/api/auth/reset-password", "POST", { token: activationToken, newPassword: "Again#Pass99" }));
   assert(reuse.status === 400 && (await json(reuse)).code === "USED", "Activation link cannot be used twice");
 

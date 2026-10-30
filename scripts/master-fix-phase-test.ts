@@ -28,6 +28,7 @@ import { createSessionCookieServer } from "../src/lib/firebase/server-auth";
 import {
   createUserServer,
   getStudentByIdServer,
+  getStudentsServer,
   getTimetableServer,
   saveClassServer,
   saveStudentServer,
@@ -314,6 +315,30 @@ async function run() {
   assert(crossAdmin.status === 200 ? (await json(crossAdmin)).roster.length === 0 : true, "Cross-school admin gets no School A students");
   assert((await att(ADMIN_A, c8.id)).status === 200 && (await att(ADMIN_A, c8.id, math8.id)).status === 200, "Admin keeps full attendance access (daily + subject registers)");
   assert((await mark(ADMIN_A, c8.id, bilalId, "PRESENT")).status === 200, "Admin can still mark attendance");
+
+  // Duplicate-submission guard: the same clientRequestId resubmitted (a lost response followed
+  // by a manual retry, or a double-click that slipped past the disabled button) must return the
+  // ORIGINAL enrollment, never create a second student for the same child. Run here, after
+  // every exact-roster-count assertion on Class 8 above, so these two extra students never
+  // perturb them.
+  {
+    const dupKey = "client-req-dup-test-0001";
+    const first = await enrol({ ...baseStudent, firstName: "Zara", lastName: "Noor", clientRequestId: dupKey });
+    const firstJson = await json(first);
+    assert(first.status === 201 && firstJson.student?.id, "Enrollment with a clientRequestId succeeds normally the first time");
+    const retry = await enrol({ ...baseStudent, firstName: "Zara", lastName: "Noor", clientRequestId: dupKey });
+    const retryJson = await json(retry);
+    assert(retry.status === 200 && retryJson.duplicate === true, "Resubmitting the same clientRequestId is reported as a duplicate, not a new enrollment (200, not 201)");
+    assert(retryJson.student?.id === firstJson.student?.id, "The resubmit returns the SAME student record, not a second one");
+    const allZara = (await getStudentsServer(A, undefined, "Zara Noor", 50)).filter((s) => s.fullName === "Zara Noor");
+    assert(allZara.length === 1, "Exactly one Zara Noor exists in Firestore after the resubmit, not two");
+    assert(!("temporaryPassword" in retryJson), "The resubmit never re-exposes (or regenerates) the original one-time password");
+
+    // A different clientRequestId (a genuinely new enrollment, e.g. a different page load) is
+    // never blocked by an earlier, unrelated key.
+    const unrelated = await enrol({ ...baseStudent, firstName: "Yusuf", lastName: "Noor", clientRequestId: "client-req-dup-test-0002" });
+    assert(unrelated.status === 201, "A different clientRequestId enrolls normally, unaffected by an earlier one");
+  }
 
   const classesB = await json(await classesGet(req(T_B, "http://x/api/classes")));
   assert(classesB.classes.every((c: any) => c.isIncharge === false), "Teacher B's class list flags no incharge class (attendance menu hidden)");

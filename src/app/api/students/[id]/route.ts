@@ -13,7 +13,7 @@ import {
   getClassesServer,
   getSubjectsServer,
   getExamsServer,
-  getExamSchedulesServer,
+  getExamSchedulesForExamsServer,
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
 import {
@@ -90,28 +90,52 @@ export async function GET(
     // Fees are school finances: a TEACHER's dossier carries no challans or balances at all.
     const showFees = authUser.role !== "TEACHER";
 
-    const [attendanceRecords, challans, examResults, observations, classes, subjects, allSubjects, exams, settings] = await Promise.all([
-      getStudentAttendanceServer(authUser.schoolId, id),
-      showFees ? getStudentFeeChallansServer(authUser.schoolId, id) : Promise.resolve([]),
-      getExamResultsServer(authUser.schoolId, undefined, undefined, id),
-      getStudentObservationsServer(authUser.schoolId, id),
-      getClassesServer(authUser.schoolId),
-      getSubjectsServer(authUser.schoolId, student.classId),
-      getSubjectsServer(authUser.schoolId),
-      getExamsServer(authUser.schoolId),
-      getSchoolSettingsServer(authUser.schoolId),
+    // Each section degrades to an empty/default value on its own failure (e.g. one collection
+    // momentarily out of Firestore quota) instead of taking the whole dossier down with it: an
+    // admin viewing a student should still see attendance and grades even if, say, observations
+    // could not be read right now. Previously a single Promise.all meant any one of these nine
+    // reads being out of quota turned the entire page into "Service is Temporarily Busy".
+    async function settle<T>(label: string, promise: Promise<T>, fallback: T): Promise<T> {
+      try {
+        return await promise;
+      } catch (error) {
+        if (error instanceof Response) throw error;
+        console.error(`Student detail: ${label} read failed, showing without it`, error);
+        return fallback;
+      }
+    }
+
+    const [attendanceRecords, challans, examResults, observations, classes, allSubjects, exams, settings] = await Promise.all([
+      settle("attendance", getStudentAttendanceServer(authUser.schoolId, id), []),
+      settle("fees", showFees ? getStudentFeeChallansServer(authUser.schoolId, id) : Promise.resolve([]), []),
+      settle("exam results", getExamResultsServer(authUser.schoolId, undefined, undefined, id), []),
+      settle("observations", getStudentObservationsServer(authUser.schoolId, id), []),
+      settle("classes", getClassesServer(authUser.schoolId), []),
+      // One read of the whole-school subject list, reused below for both the student's class
+      // subjects and result subject names, instead of two separate Firestore queries for the
+      // same collection (the class-scoped one also used to race the whole-school one for the
+      // shared cache, so it rarely hit the cache and issued its own query anyway).
+      settle("subjects", getSubjectsServer(authUser.schoolId), []),
+      settle("exams", getExamsServer(authUser.schoolId), []),
+      settle("settings", getSchoolSettingsServer(authUser.schoolId), null),
     ]);
 
     const attendances = showAttendance ? attendanceRecords : [];
     const targetClass = classes.find((c) => c.id === student.classId);
+    const subjects = allSubjects.filter((s) => s.classId === student.classId);
     const examNameById = new Map(exams.map((e) => [e.id, e.name]));
     const examById = new Map(exams.map((e) => [e.id, e]));
     const subjectsById = new Map(allSubjects.map((s) => [s.id, s]));
     const gradingScale = resolveGradingScale(settings);
     // The real exam date of each result comes from its schedule (the result's createdAt used to be
-    // shown as the exam date). Only the exams this student has results in are read.
+    // shown as the exam date). Only the exams this student has results in are read, in one
+    // batched query instead of one Firestore round trip per distinct exam.
     const resultExamIds = Array.from(new Set(examResults.map((r) => r.examId)));
-    const schedules = (await Promise.all(resultExamIds.map((eid) => getExamSchedulesServer(authUser.schoolId, eid)))).flat();
+    const schedules = await settle(
+      "exam schedules",
+      getExamSchedulesForExamsServer(authUser.schoolId, resultExamIds),
+      []
+    );
     const scheduleById = new Map(schedules.map((s) => [s.id, s]));
     const scheduleOf = (r: (typeof examResults)[number]) =>
       (r.scheduleId && scheduleById.get(r.scheduleId)) ||

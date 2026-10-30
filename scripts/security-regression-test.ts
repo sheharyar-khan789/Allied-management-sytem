@@ -103,6 +103,51 @@ async function runSecurityTests() {
     );
   }
 
+  // 3a. Portal/role mismatch: admin's own correct credentials, submitted from the Teacher tab
+  {
+    const req = new NextRequest("http://localhost:3000/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: "admin@alliedschool.edu", password: "AdminSecure2025#", role: "teacher" }),
+    });
+    const res = await loginHandler(req);
+    const data = await res.json();
+    assert(
+      res.status === 401 && data.error === "Invalid Credentials or Role Mismatch." && !res.headers.get("set-cookie"),
+      "3a. Portal mismatch: correct admin credentials on the Teacher tab are rejected, no session issued"
+    );
+  }
+
+  // 3b. Portal/role match: the same credentials on the correct (Admin) tab still succeed
+  {
+    const req = new NextRequest("http://localhost:3000/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: "admin@alliedschool.edu", password: "AdminSecure2025#", role: "admin" }),
+    });
+    const res = await loginHandler(req);
+    const data = await res.json();
+    assert(
+      res.status === 200 && data.success === true,
+      "3b. Portal match: the same credentials on the correct tab still succeed"
+    );
+  }
+
+  // 3c. Unrecognized/absent role is never enforced (older clients, scripts, API callers)
+  {
+    const req = new NextRequest("http://localhost:3000/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: "admin@alliedschool.edu", password: "AdminSecure2025#" }),
+    });
+    const res = await loginHandler(req);
+    const data = await res.json();
+    assert(
+      res.status === 200 && data.success === true,
+      "3c. No role field in the request body: login succeeds as before (backward compatible)"
+    );
+  }
+
   // 4. Logout: clears allied_session
   {
     const req = new NextRequest("http://localhost:3000/api/auth/logout", {
@@ -766,11 +811,18 @@ async function runSecurityTests() {
   {
     const list = await nextConfig.headers!();
     const root = new Map<string, string>((list.find((h: any) => h.source === "/:path*")?.headers || []).map((h: any) => [h.key, h.value]));
-    const api = new Map<string, string>((list.find((h: any) => h.source === "/api/:path*")?.headers || []).map((h: any) => [h.key, h.value]));
+    // /api/files/* carries its own private Cache-Control (set by the file route itself, so a
+    // student roster isn't re-read from the database on every page view) — every other /api/*
+    // response is still unconditionally no-store.
+    const api = new Map<string, string>(
+      (list.find((h: any) => h.source === "/api/:path((?!files/).*)")?.headers || []).map((h: any) => [h.key, h.value])
+    );
+    const apiFiles = list.find((h: any) => h.source === "/api/files/:path*");
     assert((nextConfig as any).poweredByHeader === false, "32a. Headers: X-Powered-By disabled");
     const baseCsp = root.get("Content-Security-Policy") || "";
     assert(baseCsp.includes("frame-ancestors 'none'") && baseCsp.includes("object-src 'none'") && baseCsp.includes("base-uri 'self'") && baseCsp.includes("form-action 'self'"), "32b. Headers: baseline CSP (frame-ancestors, object-src, base-uri, form-action) on every route");
-    assert((api.get("Cache-Control") || "").includes("no-store"), "32c. Headers: API responses are no-store");
+    assert((api.get("Cache-Control") || "").includes("no-store"), "32c. Headers: API responses (other than /api/files) are no-store");
+    assert(Boolean(apiFiles), "32c2. Headers: /api/files has its own header block (private caching is set by the route itself)");
     const mwRes = await middleware(new NextRequest("http://localhost:3000/login"));
     const csp = mwRes.headers.get("content-security-policy") || "";
     assert(/script-src 'self' 'nonce-[^']+' 'strict-dynamic'/.test(csp) && csp.includes("object-src 'none'") && csp.includes("base-uri 'self'"), "32d. Headers: middleware sets nonce-based CSP on pages");

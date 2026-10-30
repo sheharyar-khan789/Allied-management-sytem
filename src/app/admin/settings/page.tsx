@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import AdminTwoFactorCard from "@/components/AdminTwoFactorCard";
+import ChangePasswordPanel from "@/components/ChangePasswordPanel";
 import FileUpload from "@/components/FileUpload";
 import { EXAM_CATEGORIES, EXAM_CATEGORY_LABELS, EXAM_CATEGORY_PERMISSION_DEFAULTS } from "@/lib/exam-results";
 
@@ -27,6 +28,11 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [systemStatus, setSystemStatus] = useState<{
+    firebaseAdmin: { connected: boolean };
+    email: { providers: string[]; firebaseAuthFallback: boolean; configured: boolean };
+    storage: { checked: boolean; exists: boolean; bucketName: string; error?: string };
+  } | null>(null);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -52,6 +58,15 @@ export default function SettingsPage() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
+
+    // Real, live configuration state — never a hardcoded "Connected" badge. A failure here just
+    // leaves the panel blank; it never pretends the system is healthy.
+    fetch("/api/admin/system-status")
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success) setSystemStatus(json);
+      })
+      .catch(console.error);
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -429,18 +444,83 @@ export default function SettingsPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
             <div className="p-3 rounded-lg bg-surface-container-lowest border border-surface-container-high">
-              <span className="text-[10px] text-on-surface-variant font-medium">Cloud Sync</span>
-              <div className="font-bold text-on-tertiary-container mt-0.5">Connected</div>
+              <span className="text-[10px] text-on-surface-variant font-medium">Firebase Admin (server)</span>
+              {systemStatus ? (
+                <div
+                  className={`font-bold mt-0.5 ${
+                    systemStatus.firebaseAdmin.connected ? "text-on-tertiary-container" : "text-error"
+                  }`}
+                >
+                  {systemStatus.firebaseAdmin.connected ? "Connected" : "Not connected"}
+                </div>
+              ) : (
+                <div className="font-bold text-on-surface-variant mt-0.5">Checking…</div>
+              )}
             </div>
 
             <div className="p-3 rounded-lg bg-surface-container-lowest border border-surface-container-high">
-              <span className="text-[10px] text-on-surface-variant font-medium">Account Security</span>
-              <div className="font-bold text-on-tertiary-container mt-0.5">Enabled</div>
+              <span className="text-[10px] text-on-surface-variant font-medium">Cloud Storage bucket</span>
+              {systemStatus ? (
+                <>
+                  <div
+                    className={`font-bold mt-0.5 ${
+                      systemStatus.storage.exists
+                        ? "text-on-tertiary-container"
+                        : systemStatus.storage.checked
+                          ? "text-secondary"
+                          : "text-on-surface-variant"
+                    }`}
+                  >
+                    {systemStatus.storage.exists
+                      ? "Connected"
+                      : systemStatus.storage.checked
+                        ? "Not found (using built-in storage)"
+                        : "Not checked (Firebase Admin offline)"}
+                  </div>
+                  <p className="text-[10px] text-on-surface-variant mt-1 font-mono break-all">{systemStatus.storage.bucketName}</p>
+                  {!systemStatus.storage.exists && systemStatus.storage.checked && (
+                    <p className="text-[10px] text-on-surface-variant mt-1">
+                      Uploads (school logo, exam papers, documents) still work — they are stored in
+                      Firestore instead. Enable Cloud Storage for this Firebase project, or set
+                      FIREBASE_STORAGE_BUCKET to an existing bucket, to use real Cloud Storage.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="font-bold text-on-surface-variant mt-0.5">Checking…</div>
+              )}
             </div>
 
             <div className="p-3 rounded-lg bg-surface-container-lowest border border-surface-container-high">
-              <span className="text-[10px] text-on-surface-variant font-medium">Audit History</span>
-              <div className="font-bold text-secondary mt-0.5">Active Event Logging</div>
+              <span className="text-[10px] text-on-surface-variant font-medium">Activation / reset email delivery</span>
+              {systemStatus ? (
+                <>
+                  <div
+                    className={`font-bold mt-0.5 ${
+                      systemStatus.email.configured
+                        ? "text-on-tertiary-container"
+                        : systemStatus.email.firebaseAuthFallback
+                          ? "text-secondary"
+                          : "text-error"
+                    }`}
+                  >
+                    {systemStatus.email.configured
+                      ? `Configured (${systemStatus.email.providers.join(", ")})`
+                      : systemStatus.email.firebaseAuthFallback
+                        ? "Firebase Auth fallback only"
+                        : "Not configured"}
+                  </div>
+                  {!systemStatus.email.configured && (
+                    <p className="text-[10px] text-on-surface-variant mt-1">
+                      {systemStatus.email.firebaseAuthFallback
+                        ? "New teacher/student accounts can still receive a password-setup email via Firebase, but guardian-email links and branded templates need RESEND_API_KEY + EMAIL_FROM, or SMTP_HOST/SMTP_USER/SMTP_PASS, set on the server."
+                        : "No activation or password-reset email can be sent. Set RESEND_API_KEY + EMAIL_FROM, or SMTP_HOST/SMTP_USER/SMTP_PASS, on the server."}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="font-bold text-on-surface-variant mt-0.5">Checking…</div>
+              )}
             </div>
           </div>
         </div>
@@ -465,6 +545,7 @@ export default function SettingsPage() {
       </form>
 
       <AdminTwoFactorCard />
+      <ChangePasswordPanel idPrefix="admin" />
     </div>
   );
 }

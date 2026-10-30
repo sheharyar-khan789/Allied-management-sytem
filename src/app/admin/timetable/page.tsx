@@ -76,7 +76,13 @@ export default function TimetableManagementPage() {
       ),
     [slots, filterClassId, filterTeacherId, filterDay]
   );
-  const days = DAYS.map((day) => ({ day, items: visible.filter((t) => t.dayOfWeek === day) })).filter((d) => d.items.length > 0);
+  // Every applicable day is always shown, even with zero periods — a day silently missing its
+  // own section looked identical to a query failure for that one day (the reported "timetable
+  // shows no record for some days" bug); an explicit "No periods scheduled" row makes a
+  // genuinely empty day visually distinct from data that failed to load (loadError is shown
+  // separately, before this list is reached at all). Narrowed to the selected day only when a
+  // specific day filter is active, so that filter doesn't just turn into six empty sections.
+  const days = (filterDay ? [filterDay] : DAYS).map((day) => ({ day, items: visible.filter((t) => t.dayOfWeek === day) }));
 
   const formClass = classes.find((c) => c.id === form.classId);
   const formSubjects: any[] = formClass?.subjects || [];
@@ -295,7 +301,7 @@ export default function TimetableManagementPage() {
             </div>
           );
         })()
-      ) : !loadError && days.length === 0 ? (
+      ) : !loadError && visible.length === 0 ? (
         <div className="p-12 text-center space-y-2 bg-surface-container-lowest rounded-xl border border-surface-container-high/40">
           <span className="material-symbols-outlined text-4xl text-outline-variant">calendar_month</span>
           <p className="text-sm font-semibold text-on-surface">
@@ -326,7 +332,14 @@ export default function TimetableManagementPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-surface-container-low">
-                  {items.map((t) => (
+                  {items.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-4 px-4 text-center text-on-surface-variant italic">
+                        No periods scheduled for {day}.
+                      </td>
+                    </tr>
+                  ) : (
+                  items.map((t) => (
                     <tr key={t.id} className="hover:bg-surface-container-low/40 transition-colors">
                       <td className="py-2.5 px-4 font-semibold text-on-surface">{t.periodName}</td>
                       <td className="py-2.5 px-4 font-mono text-on-surface">{t.startTime} – {t.endTime}</td>
@@ -362,7 +375,8 @@ export default function TimetableManagementPage() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  ))
+                  )}
                 </tbody>
               </table>
             </div>
