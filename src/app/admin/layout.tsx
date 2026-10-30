@@ -1,14 +1,28 @@
 ﻿import React from "react";
 import AdminShell from "@/components/AdminShell";
+import ServiceBusyNotice from "@/components/ServiceBusyNotice";
 import { requirePageRole } from "@/lib/page-auth";
 import { loadAdminShellData } from "@/lib/layout-data";
+import { ServiceUnavailableError } from "@/lib/firebase/firestore-errors";
 export const dynamic = 'force-dynamic';
 export default async function AdminLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = await requirePageRole("ADMIN");
+  // requirePageRole's own session-revocation check reads Firestore; when that read is confirmed
+  // unavailable (quota exhausted / unreachable) it throws ServiceUnavailableError rather than
+  // silently letting a possibly-revoked session through. That used to propagate straight past
+  // this layout into the generic app/error.tsx boundary, which blames "Service is temporarily
+  // busy" on literally any uncaught error — including ones that have nothing to do with
+  // Firestore. Catching only this confirmed case here keeps that message honest.
+  let session;
+  try {
+    session = await requirePageRole("ADMIN");
+  } catch (e) {
+    if (e instanceof ServiceUnavailableError) return <ServiceBusyNotice />;
+    throw e;
+  }
   // No hardcoded tenant fallback. This previously defaulted to the literal schoolId
   // "allied-school-main", so any request that reached this layout without a resolvable session
   // would have read (and displayed) a different tenant's real student and teacher counts.
