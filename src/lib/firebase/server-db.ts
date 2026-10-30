@@ -968,27 +968,31 @@ const admissionCounterKey = (schoolId: string) => `${schoolId}__admission`;
  */
 export async function allocateAdmissionSequenceServer(schoolId: string): Promise<number> {
   const key = admissionCounterKey(schoolId);
-  if (hasAdminCredentials) {
+  // Never been allocated from before (Firestore-backed or the in-memory fallback alike): seed
+  // once from whatever was issued under the old, scan-based scheme (or start at 1 for a
+  // brand-new school with no students at all). Two concurrent "first" enrollments can both reach
+  // this branch; both scans agree on the same roster and `raiseCounterToAtLeastServer` is itself
+  // a safe forward-only max, so the race costs at most one extra scan, never a wrong or
+  // duplicate sequence. Checked in both branches identically so the in-memory fallback (used
+  // whenever there are no real Firebase credentials — every local dev run and every test) can't
+  // silently restart from 1 and collide with an admission number a test seeded directly into the
+  // store, something Firestore's own first-use seeding would never do in production.
+  const neverAllocated = hasAdminCredentials
+    ? !(await withFirestoreRetry("allocateAdmissionSequenceServer:peek", () => adminDb.collection("counters").doc(key).get())).exists
+    : !localCounters.has(key);
+
+  if (neverAllocated) {
     try {
-      const ref = adminDb.collection("counters").doc(key);
-      const snap = await withFirestoreRetry("allocateAdmissionSequenceServer:peek", () => ref.get());
-      if (!snap.exists) {
-        // Never been allocated from before: seed once from whatever was issued under the old,
-        // scan-based scheme (or start at 1 for a brand-new school with no students at all).
-        // Two concurrent "first" enrollments can both reach this branch; both scans agree on the
-        // same roster and `raiseCounterToAtLeastServer` is itself a safe forward-only max, so the
-        // race costs at most one extra scan, never a wrong or duplicate sequence.
-        const existing = await getStudentsServer(schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
-        const highest = existing.reduce((max, st) => {
-          const match = /^STD-\d{4}-(\d+)$/.exec(st.admissionNo || "");
-          const value = match ? parseInt(match[1], 10) : 0;
-          return Number.isFinite(value) && value > max ? value : max;
-        }, 0);
-        await raiseCounterToAtLeastServer(key, highest + 1);
-      }
+      const existing = await getStudentsServer(schoolId, undefined, undefined, undefined, undefined, { allSessions: true });
+      const highest = existing.reduce((max, st) => {
+        const match = /^STD-\d{4}-(\d+)$/.exec(st.admissionNo || "");
+        const value = match ? parseInt(match[1], 10) : 0;
+        return Number.isFinite(value) && value > max ? value : max;
+      }, 0);
+      await raiseCounterToAtLeastServer(key, highest + 1);
     } catch (e) {
       onFirestoreError(`allocateAdmissionSequenceServer(${schoolId})`, e);
-      throw e;
+      if (hasAdminCredentials) throw e;
     }
   }
   return allocateCounterValueServer(key, 1);
