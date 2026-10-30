@@ -451,7 +451,7 @@ export default function StudentDossierPage({
               Academic GPA
             </span>
             <div className="text-xl font-bold text-secondary mt-0.5">
-              {stats.academics.gpa.toFixed(2)} / 4.00
+              {typeof stats.academics.gpa === "number" ? stats.academics.gpa.toFixed(2) : "—"} / 4.00
             </div>
             <span className="text-[10px] text-on-surface-variant">
               Score: {stats.academics.percentage}% ({stats.academics.obtainedMarks}/{stats.academics.totalMarks})

@@ -206,6 +206,11 @@ async function run() {
     const r1 = stored.find((r) => r.studentId === s1.id);
     const r3 = stored.find((r) => r.studentId === s3.id);
     assert(stored.length === 2 && !stored.some((r) => r.studentId === s2.id), "Stored: no result fabricated for the student left blank");
+    // s2 has zero exam results at this point. The admin dossier's academics.gpa is null (not a
+    // number, not NaN) here — the frontend must render that as "—", not call .toFixed() on it
+    // directly, which previously crashed the whole page for any student with no exams yet.
+    const s2Dossier = await json(await studentGet(req(ADMIN, `/api/students/${s2.id}`), idParams(s2.id)));
+    assert(s2Dossier.stats?.academics?.gpa === null, "Dossier: academics.gpa is null (not NaN, not a number) for a student with zero exam results");
     assert(r1?.id === `${A}_${EXAM}_${s1.id}_${math.id}` && r1.subjectName === "Mathematics" && r1.totalMarks === 50 && r1.percentage === 90 && r1.grade === "A+" && r1.status === "PASS", "Stored: correct id, subject, max, percentage, grade, status");
     assert(r1?.academicYear === YEAR && r1.scheduleId === MATH_SCH && r1.classId === c1.id, "Stored: session, schedule and class recorded");
     assert(r3?.status === "FAIL", "Stored: 19.5/50 with passing 20 is a FAIL");
