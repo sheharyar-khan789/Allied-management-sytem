@@ -47,6 +47,14 @@ const json = (body: Record<string, unknown>, status = 200, headers: Record<strin
 
 const INVALID_CREDENTIALS = "Invalid email or password.";
 
+/** The four portal tabs on /login, mapped to the account role each one is reserved for. */
+const PORTAL_ROLE: Record<string, AuthenticatedUser["role"]> = {
+  admin: "ADMIN",
+  teacher: "TEACHER",
+  student: "STUDENT",
+  parent: "PARENT",
+};
+
 /**
  * Firestore out of quota (RESOURCE_EXHAUSTED) or unreachable: 503 with a "temporarily busy"
  * message. Deliberately NOT a login failure — the IP/account counters are not touched, so nobody
@@ -86,6 +94,10 @@ export async function POST(req: NextRequest) {
   const password = (body.password || "").toString().slice(0, 256);
   const idToken = (body.idToken || "").toString().slice(0, 4096);
   const totpCode = (body.totpCode || "").toString().trim().slice(0, 10);
+  // Which of the four portal tabs (Admin/Teacher/Student/Parent) the sign-in form was submitted
+  // from. Absent/unrecognized values are never enforced (older callers, scripts, tests) — only a
+  // recognized tab is checked against the account's real role below.
+  const requestedPortalRole = PORTAL_ROLE[(body.role || "").toString().trim().toLowerCase()];
 
   if (!identifier || (!password && !idToken)) {
     return json({ error: "Email address and password are required." }, 400);
@@ -250,6 +262,14 @@ export async function POST(req: NextRequest) {
 
     if (!user.schoolId) {
       return json({ error: "User account is not linked to a school." }, 403);
+    }
+
+    // The account authenticated correctly but belongs to a different portal (e.g. an admin's
+    // credentials entered on the Teacher tab). Rejected with the same generic message and the
+    // same failure counters as a wrong password, so probing which portal an email belongs to
+    // gains an attacker nothing beyond a normal failed login.
+    if (requestedPortalRole && requestedPortalRole !== user.role) {
+      return fail("role_mismatch", "Invalid Credentials or Role Mismatch.");
     }
 
     // Optional TOTP second factor for administrators (ADMIN_MFA_ENABLED=true and enrolled).
