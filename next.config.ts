@@ -66,12 +66,19 @@ const nextConfig: NextConfig = {
       {
         // API responses carry personal data (children's records, fees, payroll): never cached by
         // browsers or shared caches.
-        source: "/api/:path*",
+        // Everything except /api/files: uploaded photos/documents are immutable and are cached
+        // privately by the file route itself (so a student list does not re-read every photo
+        // from the database on each visit).
+        source: "/api/:path((?!files/).*)",
         headers: [
           ...securityHeaders,
           { key: "Cache-Control", value: "no-store, max-age=0" },
           { key: "X-Robots-Tag", value: "noindex, nofollow" },
         ],
+      },
+      {
+        source: "/api/files/:path*",
+        headers: [...securityHeaders, { key: "X-Robots-Tag", value: "noindex, nofollow" }],
       },
       ...["admin", "teacher", "student", "parent", "print"].map((segment) => ({
         source: `/${segment}/:path*`,
