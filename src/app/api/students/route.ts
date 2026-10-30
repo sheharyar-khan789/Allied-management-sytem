@@ -6,11 +6,15 @@ import {
   saveStudentServer,
   createUserServer,
   getUserByEmailServer,
+  getStudentByIdServer,
   createAuditLogServer,
   getClassesServer,
   getSchoolServer,
   getSchoolSettingsServer,
-  allocateAdmissionSequenceServer
+  allocateAdmissionSequenceServer,
+  claimEnrollmentRequestServer,
+  completeEnrollmentRequestServer,
+  releaseEnrollmentRequestServer,
 } from "@/lib/firebase/server-db";
 import { StudentDoc } from "@/lib/firebase/types";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
@@ -59,6 +63,10 @@ const studentCreateSchema = z.object({
   monthlyFee: money.optional(),
   annualFee: money.optional(),
   discount: money.optional(),
+  // One random key per open "Add Student" form (see claimEnrollmentRequestServer): lets a
+  // resubmit after a lost response return the original enrollment instead of creating a
+  // second, duplicate student record for the same child.
+  clientRequestId: z.string().trim().min(10).max(100).optional(),
 });
 
 export async function GET(req: NextRequest) {
@@ -167,11 +175,43 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: dates.error }, { status: 400 });
     }
 
+    // Duplicate-submission guard (see claimEnrollmentRequestServer): a resubmit of the exact
+    // same form — e.g. the first response was lost after the student was actually created —
+    // returns the original enrollment instead of creating a second record for the same child.
+    // Claimed only once real validation has passed, so an ordinary form-correction retry (fix a
+    // typo, submit again with a NEW clientRequestId from the still-open form) is unaffected.
+    const clientRequestId = body.clientRequestId;
+    if (clientRequestId) {
+      const claim = await claimEnrollmentRequestServer(authUser.schoolId, clientRequestId);
+      if (!claim.claimed) {
+        if (claim.existingStudentId) {
+          const existing = await getStudentByIdServer(authUser.schoolId, claim.existingStudentId);
+          if (existing) {
+            return NextResponse.json(
+              {
+                success: true,
+                student: existing,
+                duplicate: true,
+                message:
+                  "This student was already enrolled by an earlier submission of this same request — no new record was created. Use the roster's password reset if you need new credentials.",
+              },
+              { status: 200 }
+            );
+          }
+        }
+        return NextResponse.json(
+          { error: "This enrollment is already being processed. Please wait a moment and refresh before trying again." },
+          { status: 409 }
+        );
+      }
+    }
+
     // Enrolment is always into a class of the active academic session, so a new session's
     // roster can never reference (or be mixed into) a previous session's classes.
     const classes = await getClassesServer(authUser.schoolId);
     const targetClass = classes.find((c) => c.id === classId);
     if (!targetClass) {
+      if (clientRequestId) await releaseEnrollmentRequestServer(authUser.schoolId, clientRequestId);
       return NextResponse.json(
         { error: "Selected class was not found in the active academic session." },
         { status: 400 }
@@ -198,6 +238,7 @@ export async function POST(req: NextRequest) {
     try {
       studentEmail = (await allocateStudentLoginEmail(authUser.schoolId, domain, resolveLoginConfig(schoolSettings))).email;
     } catch {
+      if (clientRequestId) await releaseEnrollmentRequestServer(authUser.schoolId, clientRequestId);
       return NextResponse.json({ error: "Could not allocate a unique student login email." }, { status: 409 });
     }
 
@@ -229,6 +270,7 @@ export async function POST(req: NextRequest) {
         });
       } catch (authErr: any) {
         console.error("Firebase Auth creation error for student:", authErr);
+        if (clientRequestId) await releaseEnrollmentRequestServer(authUser.schoolId, clientRequestId);
         const duplicateEmail = authErr?.code === "auth/email-already-exists";
         return NextResponse.json(
           {
@@ -306,6 +348,7 @@ export async function POST(req: NextRequest) {
           console.error("Rollback student user failed:", delErr);
         }
       }
+      if (clientRequestId) await releaseEnrollmentRequestServer(authUser.schoolId, clientRequestId);
       throw dbErr;
     }
 
@@ -330,6 +373,8 @@ export async function POST(req: NextRequest) {
       studentId,
       `Enrolled student ${fullName} (${admissionNo}) into ${className}.`
     );
+
+    if (clientRequestId) await completeEnrollmentRequestServer(authUser.schoolId, clientRequestId, studentId);
 
     return NextResponse.json(
       {

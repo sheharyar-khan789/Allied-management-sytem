@@ -84,6 +84,7 @@ const localStore: {
   studentFeeLedgers: Map<string, StudentFeeLedgerDoc>;
   studentCharges: Map<string, StudentChargeDoc>;
   voucherAdjustments: Map<string, VoucherAdjustmentDoc>;
+  enrollmentRequests: Map<string, { schoolId: string; studentId?: string; createdAt: string }>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -111,6 +112,7 @@ const localStore: {
   studentFeeLedgers: new Map(),
   studentCharges: new Map(),
   voucherAdjustments: new Map(),
+  enrollmentRequests: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -1031,6 +1033,80 @@ export async function releaseRegistrationSecretServer(secretHash: string): Promi
       await adminDb.collection("registrationSecrets").doc(secretHash).delete();
     } catch (e) {
       onFirestoreError("releaseRegistrationSecretServer", e);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ENROLLMENT IDEMPOTENCY (duplicate-submission guard)
+//
+// The admin "Add Student" form disables its submit button while the request is in flight, which
+// stops a double-click — but not a response lost in transit after the write already succeeded,
+// followed by the admin manually resubmitting the same form. allocateAdmissionSequenceServer is
+// a pure forward-only counter with no idea "this is the same request as before", so without this
+// guard a resubmit would silently create a second, genuinely duplicate student record for the
+// same child. The client sends one random key per open enrollment form; this claims it exactly
+// once, the same way consumeRegistrationSecretServer claims a one-time school-registration code.
+// ---------------------------------------------------------------------------
+export interface EnrollmentClaimResult {
+  /** True: no earlier attempt with this key exists, proceed with a new enrollment. */
+  claimed: boolean;
+  /** Set when claimed is false and the earlier attempt already finished successfully. */
+  existingStudentId?: string;
+}
+
+function enrollmentRequestId(schoolId: string, clientRequestId: string): string {
+  return `${schoolId}_${clientRequestId}`;
+}
+
+export async function claimEnrollmentRequestServer(schoolId: string, clientRequestId: string): Promise<EnrollmentClaimResult> {
+  assertProductionDbReady();
+  const id = enrollmentRequestId(schoolId, clientRequestId);
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("enrollmentRequests").doc(id);
+      return await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists) {
+          return { claimed: false, existingStudentId: (snap.data() as { studentId?: string }).studentId };
+        }
+        tx.set(ref, { schoolId, createdAt: new Date().toISOString() });
+        return { claimed: true };
+      });
+    } catch (e) {
+      onFirestoreError(`claimEnrollmentRequestServer(${id})`, e);
+      throw e;
+    }
+  }
+  const existing = localStore.enrollmentRequests.get(id);
+  if (existing) return { claimed: false, existingStudentId: existing.studentId };
+  localStore.enrollmentRequests.set(id, { schoolId, createdAt: new Date().toISOString() });
+  return { claimed: true };
+}
+
+/** Records the student a claimed enrollment request produced, so a resubmit can find it. */
+export async function completeEnrollmentRequestServer(schoolId: string, clientRequestId: string, studentId: string): Promise<void> {
+  const id = enrollmentRequestId(schoolId, clientRequestId);
+  const data = { schoolId, studentId, createdAt: new Date().toISOString() };
+  localStore.enrollmentRequests.set(id, data);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("enrollmentRequests").doc(id).set(data, { merge: true });
+    } catch (e) {
+      onFirestoreError(`completeEnrollmentRequestServer(${id})`, e);
+    }
+  }
+}
+
+/** Releases a claim whose enrollment actually failed, so a genuine retry is never permanently blocked. */
+export async function releaseEnrollmentRequestServer(schoolId: string, clientRequestId: string): Promise<void> {
+  const id = enrollmentRequestId(schoolId, clientRequestId);
+  localStore.enrollmentRequests.delete(id);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("enrollmentRequests").doc(id).delete();
+    } catch (e) {
+      onFirestoreError(`releaseEnrollmentRequestServer(${id})`, e);
     }
   }
 }
