@@ -1,9 +1,19 @@
 import React, { Suspense } from "react";
 import { requirePageRole } from "@/lib/page-auth";
 import ParentNav from "@/components/ParentNav";
+import ServiceBusyNotice from "@/components/ServiceBusyNotice";
+import { ServiceUnavailableError } from "@/lib/firebase/firestore-errors";
 
 export default async function ParentLayout({ children }: { children: React.ReactNode }) {
-  const session = await requirePageRole("PARENT");
+  // See admin/layout.tsx for why this catches only a confirmed Firestore outage: that message
+  // must not be shown for an unrelated, unexpected error.
+  let session;
+  try {
+    session = await requirePageRole("PARENT");
+  } catch (e) {
+    if (e instanceof ServiceUnavailableError) return <ServiceBusyNotice />;
+    throw e;
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">

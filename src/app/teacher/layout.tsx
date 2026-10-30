@@ -1,16 +1,25 @@
 ﻿import React from "react";
 import TeacherNav from "@/components/TeacherNav";
+import ServiceBusyNotice from "@/components/ServiceBusyNotice";
 import { requirePageRole } from "@/lib/page-auth";
 import { loadTeacherShellData } from "@/lib/layout-data";
+import { ServiceUnavailableError } from "@/lib/firebase/firestore-errors";
 
 export default async function TeacherLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const session = await requirePageRole("TEACHER");
-
-  const { teacherName, designation, canTakeAttendance } = await loadTeacherShellData(session);
+  // See admin/layout.tsx for why this catches only a confirmed Firestore outage: that message
+  // must not be shown for an unrelated, unexpected error.
+  let teacherName: string, designation: string, canTakeAttendance: boolean;
+  try {
+    const session = await requirePageRole("TEACHER");
+    ({ teacherName, designation, canTakeAttendance } = await loadTeacherShellData(session));
+  } catch (e) {
+    if (e instanceof ServiceUnavailableError) return <ServiceBusyNotice />;
+    throw e;
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
