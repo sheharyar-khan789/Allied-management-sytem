@@ -39,6 +39,7 @@ export default function TeacherNav({
     { label: "Students & Notes", href: "/teacher/students", icon: "assignment_ind" },
     { label: "My Observations", href: "/teacher/observations", icon: "fact_check" },
     { label: "Announcements", href: "/teacher/announcements", icon: "campaign" },
+    { label: "My Account", href: "/teacher/profile", icon: "manage_accounts" },
   ];
 
   return (

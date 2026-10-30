@@ -3101,6 +3101,34 @@ export async function getExamSchedulesServer(schoolId: string, examId: string): 
   );
 }
 
+/**
+ * Schedules for several exams in one read instead of one query per exam (chunked at 30, the
+ * Firestore `in` limit) — the student dossier and report card used to issue one
+ * getExamSchedulesServer call per distinct exam the student has results in.
+ */
+export async function getExamSchedulesForExamsServer(schoolId: string, examIds: string[]): Promise<ExamScheduleDoc[]> {
+  const ids = Array.from(new Set(examIds.filter(Boolean)));
+  if (ids.length === 0) return [];
+  if (ids.length === 1) return getExamSchedulesServer(schoolId, ids[0]);
+
+  if (hasAdminCredentials) {
+    try {
+      const snaps = await Promise.all(
+        chunk(ids, 30).map((group) =>
+          whereOneOf(adminDb.collection("examSchedules").where("schoolId", "==", schoolId), "examId", group).get()
+        )
+      );
+      return snaps.flatMap((snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() } as ExamScheduleDoc)));
+    } catch (e) {
+      onFirestoreError(`getExamSchedulesForExamsServer(${schoolId})`, e);
+    }
+  }
+
+  return Array.from(localStore.examSchedules.values()).filter(
+    (s) => s.schoolId === schoolId && ids.includes(s.examId)
+  );
+}
+
 export async function saveExamScheduleServer(sched: ExamScheduleDoc): Promise<string> {
   const id = sched.id || `esch-${Date.now()}`;
   const data: ExamScheduleDoc = {
