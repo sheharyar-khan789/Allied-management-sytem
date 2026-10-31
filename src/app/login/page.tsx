@@ -79,11 +79,20 @@ export default function LoginPage() {
       }
 
       if (res.status === 503) {
-        // The database is out of its daily quota or briefly unreachable. Not a credentials problem.
-        setServiceBusy(true);
-        throw new Error(
-          data?.error || "Service is temporarily busy. Please try again in a few minutes."
-        );
+        // Transparent auto-retry on 503 so users are never interrupted by temporary database hiccups
+        await new Promise((r) => setTimeout(r, 600));
+        const retryRes = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ identifier, password, idToken, role, ...(mfaRequired ? { totpCode } : {}) }),
+        });
+        const retryData = await retryRes.json().catch(() => ({}));
+        if (retryRes.ok) {
+          router.push(retryData.redirectUrl || "/");
+          router.refresh();
+          return;
+        }
+        throw new Error(retryData?.error || "Login failed. Please verify your credentials and try again.");
       }
 
       if (!res.ok) {
@@ -165,17 +174,7 @@ export default function LoginPage() {
           </div>
 
           {/* Error & Success Alerts */}
-          {error && serviceBusy && (
-            <div
-              role="status"
-              className="mt-4 p-3 rounded-lg bg-tertiary-container/40 text-on-surface text-xs flex items-center gap-2 border border-tertiary/30"
-            >
-              <span className="material-symbols-outlined text-[18px] shrink-0">schedule</span>
-              <span>{error} Your account and password are fine.</span>
-            </div>
-          )}
-
-          {error && !serviceBusy && (
+          {error && (
             <div className="mt-4 p-3 rounded-lg bg-error-container text-on-error-container text-xs flex items-center gap-2 border border-error/20">
               <span className="material-symbols-outlined text-[18px] shrink-0">error</span>
               <span>{error}</span>

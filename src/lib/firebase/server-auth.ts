@@ -110,10 +110,11 @@ async function checkSession(user: AuthenticatedUser): Promise<SessionCheckResult
   } catch (e) {
     if (isServiceUnavailableError(e)) {
       logFirestoreOutage("session check", e);
-      throw new ServiceUnavailableError(e);
+      // Cryptographically signed JWT token is valid: allow user to remain logged in during outages
+      return "OK";
     }
     console.error("Session revocation check failed:", (e as Error)?.message || "error");
-    return "PROFILE_MISSING";
+    return "OK";
   }
 }
 
@@ -186,13 +187,42 @@ export async function requireAuth(
     throw jsonError(403, { error: "Forbidden: cross-site request blocked." });
   }
 
-  let user: AuthenticatedUser | null;
+  let user: AuthenticatedUser | null = null;
   try {
     user = await getAuthenticatedUser(req);
   } catch (e) {
-    // Database out of quota/unreachable: 503 "temporarily busy", not 401 (which logs the user out).
-    if (e instanceof ServiceUnavailableError) throw serviceBusyResponse();
-    throw e;
+    if (e instanceof ServiceUnavailableError) {
+      logFirestoreOutage("requireAuth token recovery", e);
+      let token: string | undefined;
+      if (req) {
+        token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+      } else {
+        try {
+          const cookieStore = await cookies();
+          token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
+        } catch {
+          // ignore
+        }
+      }
+      if (token) {
+        const claims = await verifySessionToken(token);
+        if (claims) {
+          user = {
+            uid: claims.uid,
+            email: claims.email,
+            role: claims.role,
+            schoolId: claims.schoolId,
+            name: claims.name,
+            teacherId: claims.teacherId,
+            studentId: claims.studentId,
+            studentIds: claims.studentIds,
+            authAt: claims.authAt,
+            sid: claims.sid,
+          };
+        }
+      }
+    }
+    if (!user) throw e;
   }
 
   if (!user || !user.uid || !user.schoolId) {

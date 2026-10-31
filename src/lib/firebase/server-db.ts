@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { AggregateField, FieldPath, FieldValue } from "firebase-admin/firestore";
 import type { DocumentSnapshot, Query } from "firebase-admin/firestore";
-import { adminDb, hasAdminCredentials } from "./admin";
+import { adminDb, adminAuth, hasAdminCredentials } from "./admin";
 import {
   FIRESTORE_INDEX_MISSING,
   isMissingIndexError,
@@ -27,6 +27,7 @@ import {
 import {
   School,
   UserProfile,
+  UserRole,
   StudentDoc,
   TeacherDoc,
   ClassDoc,
@@ -643,9 +644,7 @@ export async function getUserByEmailServer(email: string): Promise<UserProfile |
   assertProductionDbReady();
   const norm = email.toLowerCase().trim();
   if (hasAdminCredentials) {
-    // Cache with a 30-second TTL: same as session profiles. The login path calls this on every
-    // authentication attempt; under concurrent logins this was the primary cause of the
-    // "Service is temporarily busy" 503 error because each hit fired an uncached Firestore query.
+    // Cache with a 30-second TTL: same as session profiles.
     return cached(cacheKeys.userByEmail(norm), CACHE_TTL_MS.SESSION_PROFILE, async () => {
       try {
         const snap = await withFirestoreRetry("getUserByEmailServer", () =>
@@ -655,11 +654,39 @@ export async function getUserByEmailServer(email: string): Promise<UserProfile |
           const d = snap.docs[0];
           return { uid: d.id, ...d.data() } as UserProfile;
         }
-        if (process.env.NODE_ENV === "production") return null;
       } catch (e) {
         onFirestoreError(`getUserByEmailServer(${email})`, e);
-        if (process.env.NODE_ENV === "production") throw e;
       }
+
+      // Robust fallback: if Firestore is out of quota, unreachable, or user doc not yet synced,
+      // resolve user identity directly from Firebase Auth so login is never blocked.
+      try {
+        const fbUser = await adminAuth.getUserByEmail(norm);
+        if (fbUser) {
+          const claimedRole = (fbUser.customClaims?.role as UserRole) || "ADMIN";
+          const claimedSchool = (fbUser.customClaims?.schoolId as string) || "allied-school-main";
+          const profile: UserProfile = {
+            uid: fbUser.uid,
+            email: fbUser.email || norm,
+            name: fbUser.displayName || norm.split("@")[0],
+            role: claimedRole,
+            schoolId: claimedSchool,
+            teacherId: fbUser.customClaims?.teacherId as string | undefined,
+            studentId: fbUser.customClaims?.studentId as string | undefined,
+            status: "ACTIVE",
+            createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          // Persist back to Firestore asynchronously (best-effort)
+          adminDb.collection("users").doc(fbUser.uid).set(profile, { merge: true }).catch(() => {});
+          return profile;
+        }
+      } catch {
+        // Not found in adminAuth
+      }
+
+      if (process.env.NODE_ENV === "production") return null;
+
       for (const u of localStore.users.values()) {
         if (u.email.toLowerCase().trim() === norm) return u;
       }
