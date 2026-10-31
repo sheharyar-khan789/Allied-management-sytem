@@ -132,11 +132,6 @@ export function onFirestoreError(operation: string, error: any): void {
   } else {
     console.error(`[Firestore Error] ${operation} failed:`, error);
   }
-  // Graceful degradation on read queries: do not crash production on quota limits or transient outages
-  const isReadOp = /^(get|count|analytics|peek|load|fetch)/i.test(operation.trim());
-  if (isReadOp && isServiceUnavailableError(error)) {
-    return;
-  }
   if (process.env.NODE_ENV === "production") {
     // Keep the gRPC code (and the original error) so callers can tell "out of quota" (503)
     // apart from a real failure (500).
@@ -664,7 +659,11 @@ export async function getUserByEmailServer(email: string): Promise<UserProfile |
           return { uid: d.id, ...d.data() } as UserProfile;
         }
       } catch (e) {
-        onFirestoreError(`getUserByEmailServer(${email})`, e);
+        if (!isServiceUnavailableError(e)) {
+          onFirestoreError(`getUserByEmailServer(${email})`, e);
+        } else {
+          logFirestoreOutage(`getUserByEmailServer(${email})`, e);
+        }
       }
 
       // Robust fallback: if Firestore is out of quota, unreachable, or user doc not yet synced,
@@ -716,8 +715,11 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
       const doc = await withFirestoreRetry("getUserByIdServer", () => adminDb.collection("users").doc(uid).get());
       if (doc.exists) return { uid: doc.id, ...doc.data() } as UserProfile;
     } catch (e) {
-      onFirestoreError(`getUserByIdServer(${uid})`, e);
-      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getUserByIdServer(${uid})`, e);
+      } else {
+        logFirestoreOutage(`getUserByIdServer(${uid})`, e);
+      }
     }
 
     // Resilient fallback: resolve directly from Firebase Auth if Firestore doc unavailable/out of quota
