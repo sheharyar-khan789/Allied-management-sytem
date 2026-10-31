@@ -467,7 +467,11 @@ export async function getAuditLogsServer(schoolId: string, maxLimit = 50): Promi
         }
         return logs.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
       } catch (e) {
+        if (!isServiceUnavailableError(e)) {
         onFirestoreError(`getAuditLogsServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getAuditLogsServer(${schoolId})`, e);
+      }
         return [];
       }
     });
@@ -489,7 +493,11 @@ export async function getSchoolServer(schoolId: string): Promise<School | null> 
       });
       if (school) return school;
     } catch (e) {
-      onFirestoreError(`getSchoolServer(${schoolId})`, e);
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getSchoolServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getSchoolServer(${schoolId})`, e);
+      }
     }
   }
   return localStore.schools.get(schoolId) || null;
@@ -522,7 +530,11 @@ export async function getSchoolSettingsServer(schoolId: string): Promise<SchoolS
       });
       if (settings) return settings;
     } catch (e) {
-      onFirestoreError(`getSchoolSettingsServer(${schoolId})`, e);
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getSchoolSettingsServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getSchoolSettingsServer(${schoolId})`, e);
+      }
     }
   }
   return localStore.settings.get(schoolId) || null;
@@ -1667,8 +1679,11 @@ export async function getTeachersServer(schoolId: string, maxLimit?: number): Pr
         return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
       }
     } catch (e) {
-      onFirestoreError(`getTeachersServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getTeachersServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getTeachersServer(${schoolId})`, e);
+      }
     }
   }
 
@@ -1759,8 +1774,11 @@ async function fetchClassesRaw(schoolId: string): Promise<ClassDoc[]> {
         return classes.sort((a, b) => a.name.localeCompare(b.name));
       }
     } catch (e) {
-      onFirestoreError(`getClassesServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getClassesServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getClassesServer(${schoolId})`, e);
+      }
     }
   }
 
@@ -1870,8 +1888,11 @@ async function fetchSubjectsRaw(schoolId: string, classId?: string): Promise<Sub
         return subjects.sort((a, b) => a.name.localeCompare(b.name));
       }
     } catch (e) {
-      onFirestoreError(`getSubjectsServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getSubjectsServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getSubjectsServer(${schoolId})`, e);
+      }
     }
   }
 
@@ -2655,7 +2676,11 @@ async function fetchFeeChallansRaw(
         return challans;
       }
     } catch (e) {
-      onFirestoreError(`getFeeChallansServer(${schoolId})`, e);
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getFeeChallansServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getFeeChallansServer(${schoolId})`, e);
+      }
     }
   }
 
@@ -3151,8 +3176,11 @@ async function fetchPaymentsRaw(schoolId: string, studentId?: string, maxLimit?:
         return payments.sort((a, b) => (b.paymentDate || "").localeCompare(a.paymentDate || ""));
       }
     } catch (e) {
-      onFirestoreError(`getPaymentsServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getPaymentsServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getPaymentsServer(${schoolId})`, e);
+      }
     }
   }
   let list = Array.from(localStore.payments.values()).filter((p) => p.schoolId === schoolId);
@@ -3616,8 +3644,11 @@ async function fetchExamsRaw(schoolId: string): Promise<ExamDoc[]> {
         return exams.sort((a, b) => b.startDate.localeCompare(a.startDate));
       }
     } catch (e) {
-      onFirestoreError(`getExamsServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getExamsServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getExamsServer(${schoolId})`, e);
+      }
     }
   }
 
