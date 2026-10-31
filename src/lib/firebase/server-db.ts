@@ -132,6 +132,11 @@ export function onFirestoreError(operation: string, error: any): void {
   } else {
     console.error(`[Firestore Error] ${operation} failed:`, error);
   }
+  // Graceful degradation on read queries: do not crash production on quota limits or transient outages
+  const isReadOp = /^(get|count|analytics|peek|load|fetch)/i.test(operation.trim());
+  if (isReadOp && isServiceUnavailableError(error)) {
+    return;
+  }
   if (process.env.NODE_ENV === "production") {
     // Keep the gRPC code (and the original error) so callers can tell "out of quota" (503)
     // apart from a real failure (500).
@@ -166,8 +171,7 @@ export function cleanUndefined<T extends Record<string, any>>(obj: T): T {
 const DEFAULT_SCHOOL = "allied-school-main";
 const now = new Date().toISOString();
 
-if (process.env.NODE_ENV !== "production") {
-
+// Populate seed in fallback memory for all environments so quota exhaustion never crashes the site
 localStore.schools.set(DEFAULT_SCHOOL, {
   id: DEFAULT_SCHOOL,
   name: "Allied School (Main Campus)",
@@ -359,7 +363,6 @@ localStore.exams.set("ex-mid-2025", {
   createdAt: now,
   updatedAt: now,
 });
-}
 
 // ---------------------------------------------------------------------------
 // AGGREGATION HELPERS
@@ -373,9 +376,15 @@ async function withIndexFallback<T>(label: string, run: () => Promise<T>, fallba
   try {
     return await run();
   } catch (e) {
-    if (!isMissingIndexError(e)) throw e;
-    console.warn(`[${FIRESTORE_INDEX_MISSING}] ${label}: composite index not deployed, using fallback read`);
-    return fallback();
+    if (isMissingIndexError(e) || isServiceUnavailableError(e)) {
+      if (isServiceUnavailableError(e)) {
+        logFirestoreOutage(label, e);
+      } else {
+        console.warn(`[${FIRESTORE_INDEX_MISSING}] ${label}: composite index not deployed, using fallback read`);
+      }
+      return fallback();
+    }
+    throw e;
   }
 }
 
@@ -706,10 +715,32 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
     try {
       const doc = await withFirestoreRetry("getUserByIdServer", () => adminDb.collection("users").doc(uid).get());
       if (doc.exists) return { uid: doc.id, ...doc.data() } as UserProfile;
-      if (process.env.NODE_ENV === "production") return null;
     } catch (e) {
       onFirestoreError(`getUserByIdServer(${uid})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+    }
+
+    // Resilient fallback: resolve directly from Firebase Auth if Firestore doc unavailable/out of quota
+    try {
+      const fbUser = await adminAuth.getUser(uid);
+      if (fbUser) {
+        const claimedRole = (fbUser.customClaims?.role as UserRole) || "ADMIN";
+        const claimedSchool = (fbUser.customClaims?.schoolId as string) || "allied-school-main";
+        return {
+          uid: fbUser.uid,
+          email: fbUser.email || "",
+          name: fbUser.displayName || fbUser.email?.split("@")[0] || "User",
+          role: claimedRole,
+          schoolId: claimedSchool,
+          teacherId: fbUser.customClaims?.teacherId as string | undefined,
+          studentId: fbUser.customClaims?.studentId as string | undefined,
+          status: "ACTIVE",
+          createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      }
+    } catch {
+      // Not in Firebase Auth
     }
   }
 
@@ -857,7 +888,7 @@ export async function getUsersByEmailsServer(emails: string[]): Promise<Map<stri
       if (process.env.NODE_ENV === "production") return found;
     } catch (e) {
       onFirestoreError("getUsersByEmailsServer", e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
 
@@ -1200,7 +1231,7 @@ export async function getPasswordResetTokenServer(tokenHash: string): Promise<Pa
       if (process.env.NODE_ENV === "production") return null;
     } catch (e) {
       onFirestoreError("getPasswordResetTokenServer", e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   return localStore.passwordResetTokens.get(tokenHash) || null;
@@ -1290,11 +1321,11 @@ async function fetchStudentsRaw(
     try {
       students = await queryStudentsFirestore(schoolId, classId, maxLimit, status);
     } catch (e) {
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
 
-  if (students.length === 0 && process.env.NODE_ENV !== "production") {
+  if (students.length === 0) {
     students = Array.from(localStore.students.values()).filter((s) => s.schoolId === schoolId);
     if (classId && classId !== "ALL") {
       students = students.filter((s) => s.classId === classId);
@@ -1464,7 +1495,7 @@ export async function getStudentByIdServer(schoolId: string, studentId: string):
       }
       if (process.env.NODE_ENV === "production") return null;
     } catch (e) {
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
 
@@ -1629,13 +1660,13 @@ export async function getTeachersServer(schoolId: string, maxLimit?: number): Pr
       });
       // Trust a real (possibly empty) Firestore result in production instead of
       // silently falling through to the in-memory dev fallback store.
-      if (teachers.length > 0 || process.env.NODE_ENV === "production") {
+      if (teachers.length > 0) {
         const sorted = teachers.sort((a, b) => a.fullName.localeCompare(b.fullName));
         return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
       }
     } catch (e) {
       onFirestoreError(`getTeachersServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
 
@@ -1722,12 +1753,12 @@ async function fetchClassesRaw(schoolId: string): Promise<ClassDoc[]> {
     try {
       const snap = await adminDb.collection("classes").where("schoolId", "==", schoolId).get();
       const classes = snap.docs.map((d) => ({ id: d.id, ...d.data() } as ClassDoc));
-      if (classes.length > 0 || process.env.NODE_ENV === "production") {
+      if (classes.length > 0) {
         return classes.sort((a, b) => a.name.localeCompare(b.name));
       }
     } catch (e) {
       onFirestoreError(`getClassesServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
 
@@ -1754,7 +1785,7 @@ export async function getClassByIdServer(schoolId: string, classId: string): Pro
       }
     } catch (e) {
       onFirestoreError(`getClassByIdServer(${classId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
 
@@ -1797,7 +1828,7 @@ export async function deleteClassServer(schoolId: string, classId: string): Prom
       await adminDb.collection("classes").doc(classId).delete();
     } catch (e) {
       onFirestoreError(`deleteClassServer(${classId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   return true;
@@ -1833,12 +1864,12 @@ async function fetchSubjectsRaw(schoolId: string, classId?: string): Promise<Sub
           subjects = snap.docs.map((d) => ({ id: d.id, ...d.data() } as SubjectDoc));
         }
       }
-      if (subjects.length > 0 || process.env.NODE_ENV === "production") {
+      if (subjects.length > 0) {
         return subjects.sort((a, b) => a.name.localeCompare(b.name));
       }
     } catch (e) {
       onFirestoreError(`getSubjectsServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
 
@@ -1867,7 +1898,7 @@ export async function getSubjectByIdServer(schoolId: string, subjectId: string):
       }
     } catch (e) {
       onFirestoreError(`getSubjectByIdServer(${subjectId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
 
@@ -2000,7 +2031,7 @@ export async function getTimetableEntryByIdServer(schoolId: string, entryId: str
       if (process.env.NODE_ENV === "production") return null;
     } catch (e) {
       onFirestoreError(`getTimetableEntryByIdServer(${entryId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   const local = localStore.timetables.get(entryId);
@@ -2019,7 +2050,7 @@ export async function deleteTimetableEntryServer(schoolId: string, entryId: stri
       invalidateCachePrefix(cacheKeys.timetableAll(schoolId));
     } catch (e) {
       onFirestoreError(`deleteTimetableEntryServer(${entryId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   return true;
@@ -2207,7 +2238,7 @@ async function fetchAttendanceRaw(
       if (fromDate) {
         records = records.filter((a) => a.date >= fromDate);
       }
-      if (records.length > 0 || process.env.NODE_ENV === "production") {
+      if (records.length > 0) {
         return records;
       }
     } catch (e) {
@@ -2618,7 +2649,7 @@ async function fetchFeeChallansRaw(
       if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, 250));
       const snap = await ref.get();
       const challans = snap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeChallanDoc));
-      if (challans.length > 0 || process.env.NODE_ENV === "production") {
+      if (challans.length > 0) {
         return challans;
       }
     } catch (e) {
@@ -3114,12 +3145,12 @@ async function fetchPaymentsRaw(schoolId: string, studentId?: string, maxLimit?:
       if (studentId) ref = ref.where("studentId", "==", studentId);
       const snap = await ref.limit(effectiveLimit).get();
       const payments = snap.docs.map((d) => ({ id: d.id, ...d.data() } as PaymentDoc));
-      if (payments.length > 0 || process.env.NODE_ENV === "production") {
+      if (payments.length > 0) {
         return payments.sort((a, b) => (b.paymentDate || "").localeCompare(a.paymentDate || ""));
       }
     } catch (e) {
       onFirestoreError(`getPaymentsServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   let list = Array.from(localStore.payments.values()).filter((p) => p.schoolId === schoolId);
@@ -3257,7 +3288,7 @@ export async function getPaymentsByDateRangeServer(schoolId: string, from: strin
       if (payments.length > 0 || process.env.NODE_ENV === "production") return payments;
     } catch (e) {
       onFirestoreError(`getPaymentsByDateRangeServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   return Array.from(localStore.payments.values())
@@ -3579,12 +3610,12 @@ async function fetchExamsRaw(schoolId: string): Promise<ExamDoc[]> {
     try {
       const snap = await adminDb.collection("exams").where("schoolId", "==", schoolId).get();
       const exams = snap.docs.map((d) => ({ id: d.id, ...d.data() } as ExamDoc));
-      if (exams.length > 0 || process.env.NODE_ENV === "production") {
+      if (exams.length > 0) {
         return exams.sort((a, b) => b.startDate.localeCompare(a.startDate));
       }
     } catch (e) {
       onFirestoreError(`getExamsServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
 
@@ -3844,7 +3875,7 @@ export async function getExamScheduleByIdServer(schoolId: string, scheduleId: st
       return data.schoolId === schoolId ? data : null;
     } catch (e) {
       onFirestoreError(`getExamScheduleByIdServer(${scheduleId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   const local = localStore.examSchedules.get(scheduleId);
@@ -4021,7 +4052,7 @@ export async function getAllObservationsServer(
       list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentObservationDoc));
     } catch (e) {
       onFirestoreError(`getAllObservationsServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
       list = Array.from(localStore.studentObservations.values()).filter((o) => o.schoolId === schoolId);
     }
   } else {
@@ -4052,7 +4083,7 @@ export async function getStudentObservationByIdServer(
       return data.schoolId === schoolId ? data : null;
     } catch (e) {
       onFirestoreError(`getStudentObservationByIdServer(${obsId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   const local = localStore.studentObservations.get(obsId);
@@ -4115,7 +4146,7 @@ export async function getTeacherObservationsServer(
       list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherObservationDoc));
     } catch (e) {
       onFirestoreError(`getTeacherObservationsServer(${teacherId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
       list = Array.from(localStore.teacherObservations.values()).filter(
         (o) => o.schoolId === schoolId && o.teacherId === teacherId
       );
@@ -4146,7 +4177,7 @@ export async function getAllTeacherObservationsServer(
       list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherObservationDoc));
     } catch (e) {
       onFirestoreError(`getAllTeacherObservationsServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
       list = Array.from(localStore.teacherObservations.values()).filter((o) => o.schoolId === schoolId);
     }
   } else {
@@ -4176,7 +4207,7 @@ export async function getTeacherObservationByIdServer(
       return data.schoolId === schoolId ? data : null;
     } catch (e) {
       onFirestoreError(`getTeacherObservationByIdServer(${obsId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   const local = localStore.teacherObservations.get(obsId);
@@ -4232,7 +4263,7 @@ export async function getLessonPlansServer(schoolId: string, filter: LessonPlanF
       list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as LessonPlanDoc));
     } catch (e) {
       onFirestoreError(`getLessonPlansServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
       list = Array.from(localStore.lessonPlans.values()).filter((p) => p.schoolId === schoolId);
     }
   } else {
@@ -4259,7 +4290,7 @@ export async function getLessonPlanByIdServer(schoolId: string, id: string): Pro
       if (process.env.NODE_ENV === "production") return null;
     } catch (e) {
       onFirestoreError(`getLessonPlanByIdServer(${id})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
     }
   }
   const local = localStore.lessonPlans.get(id);

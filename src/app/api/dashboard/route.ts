@@ -15,7 +15,6 @@ import {
   emptyAttendanceCounts,
 } from "@/lib/firebase/server-db";
 import { getDefaultAcademicYear } from "@/lib/school-display";
-import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -26,6 +25,11 @@ export const revalidate = 0;
  * attendance rate comes from the attendanceDailyTotals summaries (one read per day). This route
  * used to read every student, challan, payment and attendance record of the school on each load
  * (~15,000 reads for a 300-student school).
+ *
+ * When Firestore quota is exhausted (free-tier Spark plan, 50k reads/day) each settled promise
+ * returns its "rejected" variant. We degrade gracefully — returning zeros or empty arrays —
+ * rather than returning 503 and causing a red banner on the admin dashboard. The frontend can
+ * distinguish a quota situation from a genuine server error via the `quotaExhausted` flag.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -55,12 +59,20 @@ export async function GET(req: NextRequest) {
       getAttendanceTotalsByClassServer(schoolId, attendanceWindowStart, today),
     ]);
 
-    // Out of quota: tell the client, rather than rendering a dashboard of zeros.
+    // Log any individual failures but do NOT abort — the dashboard renders with zeros/empty
+    // instead of showing a 503 or a red error banner. This is intentional: a free-tier quota
+    // exhaustion is a capacity warning, not an application error.
+    let quotaExhausted = false;
     for (const r of [classesRes, studentCountsRes, teachersRes, feeTotalsRes, paymentsRes, auditLogsRes, settingsRes, attendanceRes]) {
       if (r.status === "rejected") {
-        const busy = serviceBusyResponseFor(r.reason, "/api/dashboard");
-        if (busy) return busy;
-        console.error("Dashboard partial failure:", r.reason);
+        const err = r.reason as any;
+        const code = err?.code ?? err?.details?.code ?? "";
+        if (String(code) === "8" || String(err?.message ?? "").includes("RESOURCE_EXHAUSTED")) {
+          quotaExhausted = true;
+          console.warn("[Dashboard] Firestore quota exhausted — serving partial/fallback data");
+        } else {
+          console.error("Dashboard partial failure:", r.reason);
+        }
       }
     }
 
@@ -132,6 +144,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      quotaExhausted,
       stats: {
         totalStudents: activeStudents || totalStudentsAll,
         totalTeachers: activeTeachers.length || teachers.length,
@@ -161,8 +174,6 @@ export async function GET(req: NextRequest) {
     });
   } catch (error: any) {
     if (error instanceof Response) return error;
-    const busy = serviceBusyResponseFor(error, "/api/dashboard");
-    if (busy) return busy;
     console.error("Dashboard error:", error);
     return NextResponse.json(
       { error: "Failed to retrieve dashboard analytics." },

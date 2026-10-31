@@ -38,6 +38,7 @@
     "node_modules",
     ".next",
     "stitch_school_management_saas_system",
-    "Allied-management-sytem"
+    "Allied-management-sytem",
+    "scripts"
   ]
 }

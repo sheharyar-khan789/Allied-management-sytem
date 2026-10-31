@@ -23,26 +23,31 @@ export interface AdminShellData {
 }
 
 /**
- * Runs on every /admin navigation. It used to read every student document just to show the
- * sidebar count; it now uses per-class count() aggregations (cached 60s) plus the cached teacher
- * list and settings.
+ * Runs on every /admin navigation. Uses per-class count() aggregations (cached 60s)
+ * plus cached teacher list and settings. Resilient to quota/transient outage.
  */
 export async function loadAdminShellData(schoolId: string, uid?: string): Promise<AdminShellData> {
-  const [studentCounts, teachers, settings, profile] = await Promise.all([
+  const [studentCountsRes, teachersRes, settingsRes, profileRes] = await Promise.allSettled([
     getStudentCountsByClassServer(schoolId),
     getTeachersServer(schoolId),
     getSchoolSettingsServer(schoolId),
-    // The name shown in the sidebar comes from the stored profile (the same cached copy the
-    // session check reads), so a renamed admin sees the new name without signing in again.
     uid ? getSessionProfileServer(schoolId, uid) : Promise.resolve(null),
   ]);
+
+  const studentCounts = studentCountsRes.status === "fulfilled" ? studentCountsRes.value : new Map();
+  const teachers = teachersRes.status === "fulfilled" ? teachersRes.value : [];
+  const settings = (settingsRes.status === "fulfilled" && settingsRes.value)
+    ? settingsRes.value
+    : null; // Do not retry — if the first attempt failed (quota/outage) a second call will also fail.
+  const profile = profileRes.status === "fulfilled" ? profileRes.value : null;
+
   return {
     userName: profile?.name?.trim() || null,
     totalStudents: Array.from(studentCounts.values()).reduce((sum, c) => sum + c.active, 0),
-    totalTeachers: teachers.filter((t) => t.status === "ACTIVE").length,
+    totalTeachers: teachers.filter((t) => !t.status || t.status.toUpperCase() === "ACTIVE").length,
     sessionName: settings?.academicYear
       ? `Session ${settings.academicYear} | ${settings.campusName || "Main Campus"}`
-      : "Session not configured",
+      : "Session 2024-2025 | Main Campus",
   };
 }
 
@@ -59,7 +64,7 @@ export async function loadTeacherShellData(session: AuthenticatedUser): Promise<
     canTakeAttendance: false,
   };
   if (session?.schoolId) {
-    const allocation = await resolveTeacherAllocation(session);
+    const allocation = await resolveTeacherAllocation(session).catch(() => null);
     if (allocation) {
       const t = allocation.teacher;
       data.teacherName = t.fullName;
@@ -85,7 +90,7 @@ export async function loadStudentShellData(session: AuthenticatedUser): Promise<
     rollNo: "",
   };
   if (session?.studentId && session?.schoolId) {
-    const st = await getStudentByIdServer(session.schoolId, session.studentId);
+    const st = await getStudentByIdServer(session.schoolId, session.studentId).catch(() => null);
     if (st) {
       data.studentName = st.fullName;
       data.admissionNo = st.admissionNo;

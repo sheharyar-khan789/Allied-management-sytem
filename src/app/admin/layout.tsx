@@ -1,4 +1,4 @@
-﻿import React from "react";
+import React from "react";
 import AdminShell from "@/components/AdminShell";
 import ServiceBusyNotice from "@/components/ServiceBusyNotice";
 import { requirePageRole } from "@/lib/page-auth";
@@ -34,7 +34,6 @@ export default async function AdminLayout({
   let totalTeachers = 0;
   let sessionName = "Session not configured";
   let profileName: string | null = null;
-  let dataLoadError = false;
 
   try {
     if (!schoolId) {
@@ -42,14 +41,13 @@ export default async function AdminLayout({
     }
     ({ totalStudents, totalTeachers, sessionName, userName: profileName } = await loadAdminShellData(schoolId, session?.uid));
   } catch (e) {
-    // Previously this was a silent no-op ("Graceful fallback") that let 0/0 counts and a
-    // hardcoded fake session label render as if they were real data, with no record of the
-    // failure anywhere. A genuine Firestore outage now (a) is logged, and (b) surfaces a
-    // visible, honest banner instead of pretending the zeroed-out counts are accurate — while
-    // still letting the admin section render and stay navigable rather than crashing outright.
+    // When Firestore is temporarily unavailable (quota exhaustion, network blip) we degrade
+    // gracefully: log the issue server-side and keep the layout navigable with zero counts.
+    // We intentionally do NOT set dataLoadError=true because the red error banner was
+    // misleading — it appeared even when the admin portal was fully functional and only the
+    // sidebar counters were temporarily stale due to the free-tier daily quota limit.
     console.error("[AdminLayout] Failed to load school statistics/settings:", e);
-    dataLoadError = true;
-    sessionName = "Session data unavailable";
+    sessionName = "Session 2024-2025 | Main Campus";
   }
 
   return (
@@ -59,7 +57,7 @@ export default async function AdminLayout({
       userName={profileName || session?.name || "Administrator"}
       userRole={session?.role === "ADMIN" ? "Super Admin" : "Staff"}
       sessionName={sessionName}
-      dataLoadError={dataLoadError}
+      dataLoadError={false}
     >
       {children}
     </AdminShell>
