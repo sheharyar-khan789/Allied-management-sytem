@@ -1,21 +1,21 @@
 import type { LessonPlanDoc } from "@/lib/firebase/types";
 
 /**
- * ASD Weekly Lesson Plan scheduling: the school week, and the Saturday 24-hour submission
- * window/lock, all computed in the school's configured IANA timezone (never the server's own).
+ * ASD Weekly Lesson Plan scheduling: the school week, and the 48-hour submission
+ * window/lock (Saturday 00:00 through Sunday 23:59:59, locking Monday 00:00:00), all computed
+ * in the school's configured IANA timezone (defaults to Asia/Karachi, never the server's own).
  *
- * Assumption (documented per the task spec, since the supplied template has no explicit
- * submission-day wording — it is a plain Class/Subject/Teacher calendar grid): a weekly plan
- * covers the school week of Monday through Sunday, and is prepared and submitted during the
- * Saturday immediately BEFORE that week starts (the standard "plan next week" pattern — Saturday
- * is also the template's last working-day column before Sunday). So for the week starting Monday
- * 2026-10-19, the submission window is Saturday 2026-10-17 00:00 through Sunday 2026-10-18 00:00,
- * school-timezone. After that instant the record locks for the teacher.
+ * A weekly plan covers the school week of Monday through Sunday, and is prepared and submitted
+ * during the 48-hour window starting Saturday immediately BEFORE that week starts. For the week
+ * starting Monday 2026-10-19, the submission window is Saturday 2026-10-17 00:00:00 through
+ * Monday 2026-10-19 00:00:00 (exactly 48 hours), school-timezone. After that instant the record
+ * locks for the teacher (editing or deleting is blocked). Administrators retain full override
+ * authority to review, edit, or correct the plan at any time.
  */
 
 export const DEFAULT_SCHOOL_TIMEZONE = "Asia/Karachi";
 
-export const LESSON_PLAN_SUBMISSION_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const LESSON_PLAN_SUBMISSION_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 const DAY_NAMES = [
   "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
@@ -115,13 +115,13 @@ export function weekDates(weekId: string): string[] {
 export interface SubmissionWindow {
   /** Saturday 00:00:00 local, the week immediately before `weekId`'s Monday. */
   opensAt: string;
-  /** 24h after opensAt — the lock instant. */
+  /** 48h after opensAt (Monday 00:00:00 local) — the lock instant for teachers. */
   closesAt: string;
 }
 
 /**
- * The Saturday submission window for the week starting `weekId` (a Monday): the Saturday two
- * days before it, for 24 hours, in `timeZone`. See the module doc for why "the Saturday before".
+ * The 48-hour submission window for the week starting `weekId` (a Monday): starts Saturday
+ * 00:00:00 (two days before Monday) through Monday 00:00:00 (exactly 48 hours), in `timeZone`.
  */
 export function submissionWindowFor(weekId: string, timeZone: string): SubmissionWindow {
   const saturday = addDays(weekId, -2);

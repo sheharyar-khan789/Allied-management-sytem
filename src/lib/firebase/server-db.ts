@@ -436,30 +436,36 @@ export async function createAuditLogServer(
 
 export async function getAuditLogsServer(schoolId: string, maxLimit = 50): Promise<AuditLogDoc[]> {
   if (hasAdminCredentials) {
-    try {
-      let logs: AuditLogDoc[];
+    // Audit logs on the admin dashboard: cached 20s. They change after admin actions, but the
+    // cache is cheap to tolerate for a short window and prevents the dashboard from firing a
+    // Firestore query on every page refresh under concurrent admin sessions.
+    return cached(cacheKeys.auditLogs(schoolId, maxLimit), 20_000, async () => {
       try {
-        // Newest first, bounded. Needs the auditLogs (schoolId ASC, timestamp DESC) index from
-        // firestore.indexes.json; until it is deployed the unordered bounded read below is used.
-        const snap = await adminDb.collection("auditLogs")
-          .where("schoolId", "==", schoolId)
-          .orderBy("timestamp", "desc")
-          .limit(maxLimit)
-          .get();
-        logs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLogDoc));
+        let logs: AuditLogDoc[];
+        try {
+          // Newest first, bounded. Needs the auditLogs (schoolId ASC, timestamp DESC) index from
+          // firestore.indexes.json; until it is deployed the unordered bounded read below is used.
+          const snap = await adminDb.collection("auditLogs")
+            .where("schoolId", "==", schoolId)
+            .orderBy("timestamp", "desc")
+            .limit(maxLimit)
+            .get();
+          logs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLogDoc));
+        } catch (e) {
+          if (!isMissingIndexError(e)) throw e;
+          console.warn(`[${FIRESTORE_INDEX_MISSING}] auditLogs(schoolId, timestamp desc): using unordered read`);
+          const snap = await adminDb.collection("auditLogs")
+            .where("schoolId", "==", schoolId)
+            .limit(maxLimit)
+            .get();
+          logs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLogDoc));
+        }
+        return logs.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
       } catch (e) {
-        if (!isMissingIndexError(e)) throw e;
-        console.warn(`[${FIRESTORE_INDEX_MISSING}] auditLogs(schoolId, timestamp desc): using unordered read`);
-        const snap = await adminDb.collection("auditLogs")
-          .where("schoolId", "==", schoolId)
-          .limit(maxLimit)
-          .get();
-        logs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLogDoc));
+        onFirestoreError(`getAuditLogsServer(${schoolId})`, e);
+        return [];
       }
-      return logs.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-    } catch (e) {
-      onFirestoreError(`getAuditLogsServer(${schoolId})`, e);
-    }
+    });
   }
 
   const logs = Array.from(localStore.auditLogs.values()).filter((l) => l.schoolId === schoolId);
@@ -637,19 +643,28 @@ export async function getUserByEmailServer(email: string): Promise<UserProfile |
   assertProductionDbReady();
   const norm = email.toLowerCase().trim();
   if (hasAdminCredentials) {
-    try {
-      const snap = await withFirestoreRetry("getUserByEmailServer", () =>
-        adminDb.collection("users").where("email", "==", norm).limit(1).get()
-      );
-      if (!snap.empty) {
-        const d = snap.docs[0];
-        return { uid: d.id, ...d.data() } as UserProfile;
+    // Cache with a 30-second TTL: same as session profiles. The login path calls this on every
+    // authentication attempt; under concurrent logins this was the primary cause of the
+    // "Service is temporarily busy" 503 error because each hit fired an uncached Firestore query.
+    return cached(cacheKeys.userByEmail(norm), CACHE_TTL_MS.SESSION_PROFILE, async () => {
+      try {
+        const snap = await withFirestoreRetry("getUserByEmailServer", () =>
+          adminDb.collection("users").where("email", "==", norm).limit(1).get()
+        );
+        if (!snap.empty) {
+          const d = snap.docs[0];
+          return { uid: d.id, ...d.data() } as UserProfile;
+        }
+        if (process.env.NODE_ENV === "production") return null;
+      } catch (e) {
+        onFirestoreError(`getUserByEmailServer(${email})`, e);
+        if (process.env.NODE_ENV === "production") throw e;
       }
-      if (process.env.NODE_ENV === "production") return null;
-    } catch (e) {
-      onFirestoreError(`getUserByEmailServer(${email})`, e);
-      if (process.env.NODE_ENV === "production") throw e;
-    }
+      for (const u of localStore.users.values()) {
+        if (u.email.toLowerCase().trim() === norm) return u;
+      }
+      return null;
+    });
   }
 
   for (const u of localStore.users.values()) {

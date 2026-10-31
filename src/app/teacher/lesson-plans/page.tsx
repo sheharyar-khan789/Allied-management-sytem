@@ -215,7 +215,7 @@ export default function TeacherLessonPlansPage() {
       <div>
         <h1 className="font-headline-lg text-2xl font-bold text-on-surface">ASD Lesson Plans</h1>
         <p className="font-body-md text-xs text-on-surface-variant mt-0.5">
-          Weekly lesson plan for your assigned class and subject. Submit every Saturday — the plan locks 24 hours after the window opens.
+          Weekly lesson plan for your assigned class and subject. Submit within the 48-hour weekend window — the plan locks 48 hours after the window opens (Saturday 00:00 to Monday 00:00).
         </p>
       </div>
 

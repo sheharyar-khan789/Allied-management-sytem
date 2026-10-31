@@ -409,9 +409,10 @@ async function run() {
       assert(weekdayOf(weekId) === "Monday", `Date math: weekIdForDate(${far}) always resolves to a real Monday`);
       assert(weekDates(weekId).includes(far), `Date math: ${far} is one of its own week's 7 dates`);
       const window = submissionWindowFor(weekId, DEFAULT_SCHOOL_TIMEZONE);
+      // Phase 1 fix: window is now 48 hours (Saturday 00:00 → Monday 00:00 Asia/Karachi).
       assert(
-        Date.parse(window.closesAt) === Date.parse(window.opensAt) + 24 * 60 * 60 * 1000,
-        `Date math: the submission window for ${far}'s week is exactly 24 hours, no cap on how far out`
+        Date.parse(window.closesAt) === Date.parse(window.opensAt) + 48 * 60 * 60 * 1000,
+        `Date math: the submission window for ${far}'s week is exactly 48 hours, no cap on how far out`
       );
     }
 

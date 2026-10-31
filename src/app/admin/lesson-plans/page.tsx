@@ -54,6 +54,12 @@ export default function AdminLessonPlansPage() {
 
   const [detail, setDetail] = useState<PlanDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editDays, setEditDays] = useState<DayEntry[]>([]);
+  const [correctionReason, setCorrectionReason] = useState("");
+  const [savingCorrection, setSavingCorrection] = useState(false);
+  const [correctionError, setCorrectionError] = useState("");
+  const [correctionSuccess, setCorrectionSuccess] = useState("");
 
   useEffect(() => {
     fetch("/api/lesson-plans/options")
@@ -105,12 +111,62 @@ export default function AdminLessonPlansPage() {
     if (!planId) return;
     setDetailLoading(true);
     setDetail(null);
+    setIsEditing(false);
+    setCorrectionReason("");
+    setCorrectionError("");
+    setCorrectionSuccess("");
     fetch(`/api/lesson-plans/${planId}`)
       .then((res) => res.json())
       .then((json) => {
-        if (json.success) setDetail(json.plan);
+        if (json.success) {
+          setDetail(json.plan);
+          setEditDays(json.plan.days.map((d: DayEntry) => ({ ...d })));
+        }
       })
       .finally(() => setDetailLoading(false));
+  };
+
+  const handleSaveCorrection = async () => {
+    if (!detail) return;
+    if (!correctionReason.trim()) {
+      setCorrectionError("A reason is required for an administrative correction.");
+      return;
+    }
+    setSavingCorrection(true);
+    setCorrectionError("");
+    setCorrectionSuccess("");
+    try {
+      const res = await fetch(`/api/lesson-plans/${detail.id}/correct`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          days: editDays.map((d) => ({
+            date: d.date,
+            content: d.content || "",
+            isNonTeachingDay: Boolean(d.isNonTeachingDay),
+          })),
+          reason: correctionReason.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setCorrectionError(data.error || "Failed to save administrative correction.");
+        return;
+      }
+      setDetail(data.plan);
+      setEditDays(data.plan.days.map((d: DayEntry) => ({ ...d })));
+      setIsEditing(false);
+      setCorrectionSuccess("Correction saved and recorded in audit log successfully.");
+      setRows((prev) =>
+        prev.map((r) =>
+          r.planId === detail.id ? { ...r, status: data.plan.status } : r
+        )
+      );
+    } catch {
+      setCorrectionError("Network error: failed to save correction.");
+    } finally {
+      setSavingCorrection(false);
+    }
   };
 
   if (optionsLoading) return <div className="p-6 text-sm text-on-surface-variant">Loading…</div>;
@@ -230,6 +286,20 @@ export default function AdminLessonPlansPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditing(!isEditing);
+                        setCorrectionError("");
+                        setCorrectionSuccess("");
+                        if (!isEditing && detail) {
+                          setEditDays(detail.days.map((d) => ({ ...d })));
+                        }
+                      }}
+                      className="text-[11px] font-semibold px-2.5 py-1 rounded-md bg-primary text-on-primary hover:bg-primary/90 transition-colors"
+                    >
+                      {isEditing ? "Cancel Edit" : "Edit / Correct Plan"}
+                    </button>
                     <a
                       href={`/print/lesson-plan/${detail.id}`}
                       target="_blank"
@@ -238,22 +308,112 @@ export default function AdminLessonPlansPage() {
                     >
                       Print / Export
                     </a>
-                    <button type="button" onClick={() => setDetail(null)} className="text-on-surface-variant" aria-label="Close">✕</button>
+                    <button type="button" onClick={() => setDetail(null)} className="text-on-surface-variant ml-1" aria-label="Close">✕</button>
                   </div>
                 </div>
+                {correctionSuccess && (
+                  <div className="p-2.5 mb-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
+                    {correctionSuccess}
+                  </div>
+                )}
+                {correctionError && (
+                  <div className="p-2.5 mb-3 rounded-lg bg-error-container text-error text-xs font-semibold">
+                    {correctionError}
+                  </div>
+                )}
                 {detail.hasAdminCorrections && (
                   <p className="text-[11px] font-semibold text-secondary mb-2">This plan has admin corrections on record (original content preserved in the audit log).</p>
                 )}
-                <div className="space-y-2">
-                  {detail.days.map((d) => (
-                    <div key={d.date} className="border border-surface-container-high/40 rounded-lg p-2.5">
-                      <p className="font-label-sm text-[11px] font-bold text-on-surface mb-1">{d.dayOfWeek} — {d.date}</p>
-                      <p className="text-xs text-on-surface-variant whitespace-pre-wrap">
-                        {d.isNonTeachingDay ? "No class / holiday" : d.content || "—"}
-                      </p>
+
+                {isEditing ? (
+                  <div className="space-y-4">
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-xs text-amber-800 dark:text-amber-200">
+                      <strong>Admin Correction Mode:</strong> You can edit this lesson plan at any time. Changes are tracked and recorded in the audit log.
                     </div>
-                  ))}
-                </div>
+                    <div className="space-y-3">
+                      {editDays.map((d, idx) => (
+                        <div key={d.date} className="border border-surface-container-high/60 rounded-lg p-3 bg-surface-container-low/40">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="font-label-sm text-xs font-bold text-on-surface">
+                              {d.dayOfWeek} — {d.date}
+                            </span>
+                            <label className="flex items-center gap-1.5 text-xs text-on-surface-variant cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(d.isNonTeachingDay)}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  setEditDays((prev) =>
+                                    prev.map((day, i) =>
+                                      i === idx
+                                        ? { ...day, isNonTeachingDay: checked, content: checked ? "" : day.content }
+                                        : day
+                                    )
+                                  );
+                                }}
+                                className="rounded border-outline-variant/60"
+                              />
+                              <span>Non-teaching day / Holiday</span>
+                            </label>
+                          </div>
+                          <textarea
+                            rows={3}
+                            disabled={Boolean(d.isNonTeachingDay)}
+                            value={d.content}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setEditDays((prev) =>
+                                prev.map((day, i) => (i === idx ? { ...day, content: val } : day))
+                              );
+                            }}
+                            placeholder={d.isNonTeachingDay ? "No class / holiday scheduled" : "Enter lesson plan objectives, activities, homework..."}
+                            className="w-full text-xs p-2.5 rounded-lg border border-outline-variant/40 bg-surface-container-lowest text-on-surface disabled:opacity-50"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-on-surface mb-1">
+                        Reason for Admin Correction <span className="text-error">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={correctionReason}
+                        onChange={(e) => setCorrectionReason(e.target.value)}
+                        placeholder="e.g. Schedule adjustment, syllabus realignment, administrative revision..."
+                        className="w-full text-xs p-2.5 rounded-lg border border-outline-variant/40 bg-surface-container-lowest text-on-surface"
+                      />
+                    </div>
+                    <div className="flex items-center justify-end gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsEditing(false)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold text-on-surface-variant hover:bg-surface-container-high transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingCorrection}
+                        onClick={handleSaveCorrection}
+                        className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-primary text-on-primary hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                      >
+                        {savingCorrection ? "Saving Correction…" : "Save Correction"}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {detail.days.map((d) => (
+                      <div key={d.date} className="border border-surface-container-high/40 rounded-lg p-2.5">
+                        <p className="font-label-sm text-[11px] font-bold text-on-surface mb-1">{d.dayOfWeek} — {d.date}</p>
+                        <p className="text-xs text-on-surface-variant whitespace-pre-wrap">
+                          {d.isNonTeachingDay ? "No class / holiday" : d.content || "—"}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             )}
           </div>

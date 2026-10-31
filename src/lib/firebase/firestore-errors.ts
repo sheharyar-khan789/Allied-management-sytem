@@ -21,7 +21,7 @@ export const FIRESTORE_CODE = {
 
 export const SERVICE_BUSY_MESSAGE = "Service is temporarily busy. Please try again in a few minutes.";
 
-/** Log tags, so the cause is obvious in Vercel → Logs at a glance. */
+/** Log tags, so the cause is obvious in Vercel â†’ Logs at a glance. */
 export const FIRESTORE_QUOTA_EXCEEDED = "FIRESTORE_QUOTA_EXCEEDED";
 export const FIRESTORE_UNAVAILABLE = "FIRESTORE_UNAVAILABLE";
 export const FIRESTORE_INDEX_MISSING = "FIRESTORE_INDEX_MISSING";
@@ -63,7 +63,22 @@ export function isQuotaExceededError(error: unknown): boolean {
 /** Worth one more try after a short pause. */
 export function isTransientFirestoreError(error: unknown): boolean {
   const code = firestoreErrorCode(error);
-  return code === FIRESTORE_CODE.UNAVAILABLE || code === FIRESTORE_CODE.DEADLINE_EXCEEDED;
+  if (code === FIRESTORE_CODE.UNAVAILABLE || code === FIRESTORE_CODE.DEADLINE_EXCEEDED) return true;
+  // Network-layer transients surfaced by Node.js / undici / gRPC-js transport (no gRPC code).
+  // These appear under multiple simultaneous logins when the Vercel -> Firestore TCP connection is
+  // reset or timed out before the gRPC layer can attach a status code. They are worth one retry.
+  const msg = String((error as { message?: unknown })?.message || "").toLowerCase();
+  const causeMsg = String(
+    ((error as { cause?: { message?: unknown } })?.cause as { message?: unknown })?.message || ""
+  ).toLowerCase();
+  const networkTransient =
+    /econnreset|etimedout|econnrefused|socket hang up|fetch failed|network error|epipe|connection reset|connection timed out/.test(
+      msg
+    ) ||
+    /econnreset|etimedout|econnrefused|socket hang up|fetch failed|network error|epipe|connection reset|connection timed out/.test(
+      causeMsg
+    );
+  return networkTransient;
 }
 
 /** The database can't serve requests right now: answer 503, not 500/401. */

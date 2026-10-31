@@ -90,8 +90,14 @@ export async function GET(req: NextRequest) {
 
     const resolvedStudentId = student.id;
 
-    // 3. Fetch related academic and financial datasets strictly for this student
-    const [attendanceTotals, attendances, challans, examResultsRaw, exams, observations, classes, subjects, school, settings] = await Promise.all([
+    // 3. Fetch related academic and financial datasets strictly for this student.
+    // Use allSettled so that a transient failure in one section (observations, fee challans, etc.)
+    // does not abort the entire student profile load. Core identity data (student record) was
+    // already verified above; the sections below degrade independently.
+    const [
+      attendanceTotalsRes, attendancesRes, challansRes, examResultsRawRes,
+      examsRes, observationsRes, classesRes, subjectsRes, schoolRes, settingsRes
+    ] = await Promise.allSettled([
       wants.attendanceStats ? getStudentAttendanceTotalsServer(authUser.schoolId, resolvedStudentId) : Promise.resolve(null),
       wants.attendanceRecords ? getStudentRecentAttendanceServer(authUser.schoolId, resolvedStudentId) : Promise.resolve([] as AttendanceDoc[]),
       wants.fees ? getStudentFeeChallansServer(authUser.schoolId, resolvedStudentId) : Promise.resolve([] as FeeChallanDoc[]),
@@ -104,6 +110,27 @@ export async function GET(req: NextRequest) {
       getSchoolServer(authUser.schoolId),
       getSchoolSettingsServer(authUser.schoolId)
     ]);
+    // Log and degrade gracefully: a transient Firestore error in one section should not blank the page.
+    for (const [label, res] of [
+      ["attendanceTotals", attendanceTotalsRes], ["attendances", attendancesRes],
+      ["challans", challansRes], ["examResults", examResultsRawRes], ["exams", examsRes],
+      ["observations", observationsRes], ["classes", classesRes], ["subjects", subjectsRes],
+      ["school", schoolRes], ["settings", settingsRes],
+    ] as [string, PromiseSettledResult<unknown>][]) {
+      if (res.status === "rejected") {
+        console.warn(`[student/me] Section "${label}" failed (degrading gracefully):`, res.reason?.message || res.reason);
+      }
+    }
+    const attendanceTotals = attendanceTotalsRes.status === "fulfilled" ? attendanceTotalsRes.value : null;
+    const attendances = attendancesRes.status === "fulfilled" ? attendancesRes.value : [] as AttendanceDoc[];
+    const challans = challansRes.status === "fulfilled" ? challansRes.value : [] as FeeChallanDoc[];
+    const examResultsRaw = examResultsRawRes.status === "fulfilled" ? examResultsRawRes.value : [] as ExamResultDoc[];
+    const exams = examsRes.status === "fulfilled" ? examsRes.value : [];
+    const observations = observationsRes.status === "fulfilled" ? observationsRes.value : [] as StudentObservationDoc[];
+    const classes = classesRes.status === "fulfilled" ? classesRes.value : [];
+    const subjects = subjectsRes.status === "fulfilled" ? subjectsRes.value : [] as SubjectDoc[];
+    const school = schoolRes.status === "fulfilled" ? schoolRes.value : null;
+    const settings = settingsRes.status === "fulfilled" ? settingsRes.value : null;
     const publishedExamIds = new Set(exams.filter((e) => e.status === "PUBLISHED").map((e) => e.id));
     const examResults = examResultsRaw.filter((r) => publishedExamIds.has(r.examId));
     const examNameById = new Map(exams.map((e) => [e.id, e.name]));

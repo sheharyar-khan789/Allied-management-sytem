@@ -167,7 +167,7 @@ export async function POST(req: NextRequest) {
 
     if (body.action === "SUBMIT" && !isWithinSubmissionWindow(body.weekId, tz, now)) {
       return jsonError(
-        `This week's plan can only be submitted during its Saturday submission window (${window.opensAt} to ${window.closesAt}).`,
+        `This week's plan can only be submitted during its 48-hour submission window (${window.opensAt} to ${window.closesAt}).`,
         403
       );
     }
@@ -199,10 +199,11 @@ export async function POST(req: NextRequest) {
           days,
           submitted: body.action === "SUBMIT" ? true : Boolean(existing?.submitted),
           submittedAt: body.action === "SUBMIT" ? now.toISOString() : (existing?.submittedAt ?? null),
-          // Stamped once, on first creation, and kept from then on (see LessonPlanDoc) — a later
-          // change to the school's timezone setting must not retroactively move this record's
-          // deadline.
-          submissionDeadline: existing?.submissionDeadline || window.closesAt,
+          // Stamped to the 48-hour window deadline (Saturday 00:00 to Monday 00:00).
+          // If an existing plan had an older 24-hour deadline, ensure it gets the full 48-hour window.
+          submissionDeadline: (existing?.submissionDeadline && Date.parse(existing.submissionDeadline) >= Date.parse(window.closesAt))
+            ? existing.submissionDeadline
+            : window.closesAt,
           createdBy: existing?.createdBy || authUser.uid,
           createdByName: existing?.createdByName || authUser.name,
           createdAt: existing?.createdAt || now.toISOString(),

@@ -126,3 +126,36 @@ export async function verifyAccountPasswordServer(
     return false;
   }
 }
+
+/**
+ * Verifies a Firebase Authentication password-reset oobCode WITHOUT consuming it.
+ * Uses the Identity Toolkit accounts:resetPassword endpoint in "verify" mode
+ * (no newPassword supplied = just verification, returns the email if valid).
+ * Returns { ok: true, email } on success or { ok: false, status } on failure.
+ */
+export async function verifyFirebasePasswordResetCodeServer(
+  oobCode: string,
+  env: Record<string, string | undefined> = process.env
+): Promise<{ ok: true; email: string } | { ok: false; status: "INVALID" | "EXPIRED" }> {
+  const apiKey = (env.NEXT_PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || "").trim();
+  if (!apiKey || !/^[A-Za-z0-9_-]{10,}$/.test(oobCode)) return { ok: false, status: "INVALID" };
+
+  // Calling accounts:resetPassword with just the oobCode (no newPassword) is an undocumented
+  // but stable Firebase REST API behaviour that validates and returns the email without consuming.
+  const res = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // Omit newPassword intentionally — Firebase returns email without updating password.
+      body: JSON.stringify({ oobCode }),
+      signal: identityToolkitSignal(),
+    }
+  );
+  const data = (await res.json().catch(() => ({}))) as { email?: string; error?: { message?: string } };
+  if (res.ok && data.email) return { ok: true, email: data.email.toLowerCase().trim() };
+
+  const message = String(data?.error?.message || "");
+  if (message.startsWith("EXPIRED_OOB_CODE")) return { ok: false, status: "EXPIRED" };
+  return { ok: false, status: "INVALID" };
+}

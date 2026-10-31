@@ -29,7 +29,8 @@
     "test:fee-import": "tsx scripts/fee-import-test.ts",
     "test:student-accounts": "tsx scripts/student-accounts-test.ts",
     "test:lesson-plans": "tsx scripts/lesson-plans-test.ts",
-    "test:files": "tsx scripts/stored-files-test.ts"
+    "test:files": "tsx scripts/stored-files-test.ts",
+    "test:concurrency": "tsx scripts/concurrency-load-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",

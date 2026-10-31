@@ -34,6 +34,60 @@ function tokenError(status: Exclude<ConsumeResetTokenResult, "OK">) {
   return NextResponse.json({ error: TOKEN_ERRORS[status], code: status }, { status: 400 });
 }
 
+/**
+ * GET /api/auth/reset-password?token=… OR ?oobCode=…
+ *
+ * Pre-validates the link before the password form is shown. Returning a clear
+ * `{ valid: false, code, error }` response is what allows the client to show an
+ * appropriate "link expired / already used / invalid" state immediately, rather than
+ * staying on an endless loading screen. Does NOT consume or change the token.
+ */
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const token = (searchParams.get("token") || "").trim();
+  const oobCode = (searchParams.get("oobCode") || "").trim();
+
+  if (!token && !oobCode) {
+    return NextResponse.json({ valid: false, code: "MISSING", error: "No token or oobCode provided." }, { status: 400 });
+  }
+
+  try {
+    // Firebase oobCode path: probe by attempting a verifyPasswordResetCode. This does NOT consume it.
+    if (!token && oobCode) {
+      const { verifyFirebasePasswordResetCodeServer } = await import("@/lib/firebase/auth-password");
+      const result = await verifyFirebasePasswordResetCodeServer(oobCode);
+      if (!result.ok) {
+        return NextResponse.json({ valid: false, code: result.status, error: TOKEN_ERRORS[result.status as Exclude<ConsumeResetTokenResult, "OK">] || "This link is invalid or has expired." }, { status: 400 });
+      }
+      return NextResponse.json({ valid: true, email: result.email, purpose: "RESET" });
+    }
+
+    // App token path
+    if (!looksLikeResetToken(token)) {
+      return NextResponse.json({ valid: false, code: "INVALID", error: TOKEN_ERRORS.INVALID }, { status: 400 });
+    }
+    const tokenHash = hashResetToken(token);
+    const record = await getPasswordResetTokenServer(tokenHash);
+    const status = checkPasswordResetToken(record);
+    if (status !== "OK") {
+      return NextResponse.json({ valid: false, code: status, error: TOKEN_ERRORS[status] }, { status: 400 });
+    }
+    const user = await getUserByIdServer(record!.uid);
+    if (!user || user.email.toLowerCase() !== record!.email.toLowerCase()) {
+      return NextResponse.json({ valid: false, code: "INVALID", error: TOKEN_ERRORS.INVALID }, { status: 400 });
+    }
+    if (user.status === "SUSPENDED" || user.status === "INACTIVE") {
+      return NextResponse.json({ valid: false, code: "INVALID", error: "This account is inactive. Please contact your administrator." }, { status: 400 });
+    }
+    return NextResponse.json({ valid: true, email: user.email, purpose: record!.purpose || "RESET" });
+  } catch (error: any) {
+    const busy = serviceBusyResponseFor(error, "GET /api/auth/reset-password");
+    if (busy) return busy;
+    console.error("Reset password validation error:", error?.code || error?.message || error);
+    return NextResponse.json({ valid: false, code: "SERVER_ERROR", error: "Validation failed. Please try again." }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   const csrfBlocked = rejectCrossSite(req);
   if (csrfBlocked) return csrfBlocked;
