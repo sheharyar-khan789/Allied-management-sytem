@@ -126,6 +126,10 @@ export const cacheKeys = {
   userByEmail: (email: string) => `user:email:${email.toLowerCase().trim()}`,
   /** Recent audit log entries shown on the admin dashboard. */
   auditLogs: (schoolId: string, limit: number) => `school:${schoolId}:auditlogs:${limit}`,
+  /** Lesson plans per school with filter suffix. */
+  lessonPlansPrefix: (schoolId: string) => `school:${schoolId}:lessonplans:`,
+  lessonPlans: (schoolId: string, filterKey: string) => `school:${schoolId}:lessonplans:${filterKey}`,
+  lessonPlanDoc: (schoolId: string, id: string) => `school:${schoolId}:lessonplan:${id}`,
 };
 
 /** Drops every cached copy of one user's profile (all schools), e.g. after logout or a role change. */

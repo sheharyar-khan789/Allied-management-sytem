@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 
 interface ClassSubjectOption {
   classId: string;
@@ -73,7 +73,9 @@ export default function TeacherLessonPlansPage() {
   const [myPlans, setMyPlans] = useState<PlanView[]>([]);
   const [myPlansLoading, setMyPlansLoading] = useState(true);
 
-  useEffect(() => {
+  const loadOptions = useCallback(() => {
+    setOptionsLoading(true);
+    setOptionsError("");
     fetch("/api/lesson-plans/options")
       .then((res) => res.json())
       .then((json) => {
@@ -93,6 +95,10 @@ export default function TeacherLessonPlansPage() {
       .catch(() => setOptionsError("Failed to load your assigned classes and subjects."))
       .finally(() => setOptionsLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadOptions();
+  }, [loadOptions]);
 
   const loadMyPlans = () => {
     setMyPlansLoading(true);
@@ -200,7 +206,21 @@ export default function TeacherLessonPlansPage() {
     return <div className="p-6 text-sm text-on-surface-variant">Loading your lesson plan assignments…</div>;
   }
   if (optionsError) {
-    return <div className="p-6 text-sm text-error">{optionsError}</div>;
+    return (
+      <div className="p-6 flex flex-col items-start gap-4">
+        <div className="p-4 rounded-xl bg-error-container text-error text-sm font-semibold max-w-lg">
+          <p className="font-bold mb-1">Failed to load lesson plan assignments</p>
+          <p className="text-xs opacity-90">{optionsError}</p>
+        </div>
+        <button
+          type="button"
+          onClick={loadOptions}
+          className="px-4 py-2 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:opacity-90 transition-opacity"
+        >
+          Retry
+        </button>
+      </div>
+    );
   }
   if (classesSubjects.length === 0) {
     return (

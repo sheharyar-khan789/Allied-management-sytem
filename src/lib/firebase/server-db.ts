@@ -4283,47 +4283,62 @@ export interface LessonPlanFilter {
 }
 
 export async function getLessonPlansServer(schoolId: string, filter: LessonPlanFilter = {}): Promise<LessonPlanDoc[]> {
-  let list: LessonPlanDoc[];
+  assertProductionDbReady();
+  const filterKey = `${filter.weekId || ""}:${filter.classId || ""}:${filter.subjectId || ""}:${filter.teacherId || ""}:${filter.academicYear || ""}:${Boolean(filter.includeDeleted)}`;
   if (hasAdminCredentials) {
     try {
-      let ref: Query = adminDb.collection("lessonPlans").where("schoolId", "==", schoolId);
-      if (filter.teacherId) ref = ref.where("teacherId", "==", filter.teacherId);
-      if (filter.classId) ref = ref.where("classId", "==", filter.classId);
-      if (filter.subjectId) ref = ref.where("subjectId", "==", filter.subjectId);
-      if (filter.weekId) ref = ref.where("weekId", "==", filter.weekId);
-      if (filter.academicYear) ref = ref.where("academicYear", "==", filter.academicYear);
-      const snap = await withFirestoreRetry("getLessonPlansServer", () => ref.get());
-      list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as LessonPlanDoc));
+      return await cached(cacheKeys.lessonPlans(schoolId, filterKey), CACHE_TTL_MS.AGGREGATES, async () => {
+        let ref: Query = adminDb.collection("lessonPlans").where("schoolId", "==", schoolId);
+        if (filter.teacherId) ref = ref.where("teacherId", "==", filter.teacherId);
+        if (filter.classId) ref = ref.where("classId", "==", filter.classId);
+        if (filter.subjectId) ref = ref.where("subjectId", "==", filter.subjectId);
+        if (filter.weekId) ref = ref.where("weekId", "==", filter.weekId);
+        if (filter.academicYear) ref = ref.where("academicYear", "==", filter.academicYear);
+        const snap = await withFirestoreRetry("getLessonPlansServer", () => ref.get());
+        let list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as LessonPlanDoc));
+        if (!filter.includeDeleted) list = list.filter((p) => !p.deletedAt);
+        return list.sort((a, b) => b.weekId.localeCompare(a.weekId) || (a.subjectName || "").localeCompare(b.subjectName || ""));
+      });
     } catch (e) {
-      onFirestoreError(`getLessonPlansServer(${schoolId})`, e);
-      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
-      list = Array.from(localStore.lessonPlans.values()).filter((p) => p.schoolId === schoolId);
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getLessonPlansServer(${schoolId})`, e);
+      } else {
+        logFirestoreOutage(`getLessonPlansServer(${schoolId})`, e);
+      }
+      throw e;
     }
   } else {
-    list = Array.from(localStore.lessonPlans.values()).filter((p) => p.schoolId === schoolId);
+    let list = Array.from(localStore.lessonPlans.values()).filter((p) => p.schoolId === schoolId);
     if (filter.teacherId) list = list.filter((p) => p.teacherId === filter.teacherId);
     if (filter.classId) list = list.filter((p) => p.classId === filter.classId);
     if (filter.subjectId) list = list.filter((p) => p.subjectId === filter.subjectId);
     if (filter.weekId) list = list.filter((p) => p.weekId === filter.weekId);
     if (filter.academicYear) list = list.filter((p) => p.academicYear === filter.academicYear);
+    if (!filter.includeDeleted) list = list.filter((p) => !p.deletedAt);
+    return list.sort((a, b) => b.weekId.localeCompare(a.weekId) || (a.subjectName || "").localeCompare(b.subjectName || ""));
   }
-  if (!filter.includeDeleted) list = list.filter((p) => !p.deletedAt);
-  return list.sort((a, b) => b.weekId.localeCompare(a.weekId) || (a.subjectName || "").localeCompare(b.subjectName || ""));
 }
 
 export async function getLessonPlanByIdServer(schoolId: string, id: string): Promise<LessonPlanDoc | null> {
   if (!id) return null;
+  assertProductionDbReady();
   if (hasAdminCredentials) {
     try {
-      const doc = await withFirestoreRetry("getLessonPlanByIdServer", () => adminDb.collection("lessonPlans").doc(id).get());
-      if (doc.exists) {
-        const data = { id: doc.id, ...doc.data() } as LessonPlanDoc;
-        return data.schoolId === schoolId ? data : null;
-      }
-      if (process.env.NODE_ENV === "production") return null;
+      return await cached(cacheKeys.lessonPlanDoc(schoolId, id), CACHE_TTL_MS.AGGREGATES, async () => {
+        const doc = await withFirestoreRetry("getLessonPlanByIdServer", () => adminDb.collection("lessonPlans").doc(id).get());
+        if (doc.exists) {
+          const data = { id: doc.id, ...doc.data() } as LessonPlanDoc;
+          return data.schoolId === schoolId ? data : null;
+        }
+        return null;
+      });
     } catch (e) {
-      onFirestoreError(`getLessonPlanByIdServer(${id})`, e);
-      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+      if (!isServiceUnavailableError(e)) {
+        onFirestoreError(`getLessonPlanByIdServer(${id})`, e);
+      } else {
+        logFirestoreOutage(`getLessonPlanByIdServer(${id})`, e);
+      }
+      throw e;
     }
   }
   const local = localStore.lessonPlans.get(id);
@@ -4361,6 +4376,8 @@ export async function saveLessonPlanServer(
     guard(localStore.lessonPlans.get(data.id) || null);
   }
   localStore.lessonPlans.set(data.id, data);
+  invalidateCachePrefix(cacheKeys.lessonPlansPrefix(data.schoolId));
+  invalidateCache(cacheKeys.lessonPlanDoc(data.schoolId, data.id));
   return data.id;
 }
 
@@ -4369,6 +4386,8 @@ export async function softDeleteLessonPlanServer(schoolId: string, id: string, d
   const existing = await getLessonPlanByIdServer(schoolId, id);
   if (!existing) return false;
   await saveLessonPlanServer({ ...existing, deletedAt: new Date().toISOString(), deletedBy, updatedBy: deletedBy });
+  invalidateCachePrefix(cacheKeys.lessonPlansPrefix(schoolId));
+  invalidateCache(cacheKeys.lessonPlanDoc(schoolId, id));
   return true;
 }
 

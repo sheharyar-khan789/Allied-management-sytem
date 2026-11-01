@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 
 interface Option { id: string; name: string; classId?: string; teacherId?: string | null }
 interface SummaryRow {
@@ -61,7 +61,9 @@ export default function AdminLessonPlansPage() {
   const [correctionError, setCorrectionError] = useState("");
   const [correctionSuccess, setCorrectionSuccess] = useState("");
 
-  useEffect(() => {
+  const loadOptions = useCallback(() => {
+    setOptionsLoading(true);
+    setOptionsError("");
     fetch("/api/lesson-plans/options")
       .then((res) => res.json())
       .then((json) => {
@@ -80,13 +82,20 @@ export default function AdminLessonPlansPage() {
       .finally(() => setOptionsLoading(false));
   }, []);
 
+  useEffect(() => {
+    loadOptions();
+  }, [loadOptions]);
+
   const filteredSubjects = useMemo(
     () => (classId ? subjects.filter((s) => s.classId === classId) : subjects),
     [subjects, classId]
   );
 
-  useEffect(() => {
+  const activeRequestSeq = useRef(0);
+
+  const loadRows = useCallback(() => {
     if (!weekId) return;
+    const reqSeq = ++activeRequestSeq.current;
     setLoadingRows(true);
     setRowsError("");
     const params = new URLSearchParams({ weekId });
@@ -96,6 +105,7 @@ export default function AdminLessonPlansPage() {
     fetch(`/api/lesson-plans/summary?${params.toString()}`)
       .then((res) => res.json())
       .then((json) => {
+        if (reqSeq !== activeRequestSeq.current) return;
         if (!json.success) {
           setRowsError(json.error || "Failed to load submissions for this week.");
           return;
@@ -103,9 +113,20 @@ export default function AdminLessonPlansPage() {
         setRows(json.rows || []);
         setCounts(json.counts || {});
       })
-      .catch(() => setRowsError("Failed to load submissions for this week."))
-      .finally(() => setLoadingRows(false));
+      .catch(() => {
+        if (reqSeq !== activeRequestSeq.current) return;
+        setRowsError("Failed to load submissions for this week.");
+      })
+      .finally(() => {
+        if (reqSeq === activeRequestSeq.current) {
+          setLoadingRows(false);
+        }
+      });
   }, [weekId, classId, subjectId, teacherId]);
+
+  useEffect(() => {
+    loadRows();
+  }, [loadRows]);
 
   const openDetail = (planId: string | null) => {
     if (!planId) return;
@@ -170,7 +191,23 @@ export default function AdminLessonPlansPage() {
   };
 
   if (optionsLoading) return <div className="p-6 text-sm text-on-surface-variant">Loading…</div>;
-  if (optionsError) return <div className="p-6 text-sm text-error">{optionsError}</div>;
+  if (optionsError) {
+    return (
+      <div className="p-6 flex flex-col items-start gap-4">
+        <div className="p-4 rounded-xl bg-error-container text-error text-sm font-semibold max-w-lg">
+          <p className="font-bold mb-1">Failed to load lesson plan options</p>
+          <p className="text-xs opacity-90">{optionsError}</p>
+        </div>
+        <button
+          type="button"
+          onClick={loadOptions}
+          className="px-4 py-2 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:opacity-90 transition-opacity"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-space-lg">
@@ -223,11 +260,33 @@ export default function AdminLessonPlansPage() {
         </div>
       </div>
 
-      {rowsError && <div className="p-3 rounded-lg bg-error-container text-error text-xs font-semibold">{rowsError}</div>}
+      {rowsError && (
+        <div className="p-4 rounded-xl bg-error-container text-error text-xs font-semibold flex items-center justify-between">
+          <span>{rowsError}</span>
+          <button
+            type="button"
+            onClick={loadRows}
+            className="px-3 py-1.5 rounded-lg bg-surface-container-lowest text-on-surface font-semibold hover:bg-surface-container-low transition-colors"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40">
         {loadingRows ? (
           <p className="text-xs text-on-surface-variant">Loading…</p>
+        ) : rowsError ? (
+          <div className="py-8 text-center text-xs text-on-surface-variant space-y-3">
+            <p className="text-error font-medium">Unable to load submission status due to a server error.</p>
+            <button
+              type="button"
+              onClick={loadRows}
+              className="px-4 py-2 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:opacity-90"
+            >
+              Retry
+            </button>
+          </div>
         ) : rows.length === 0 ? (
           <p className="text-xs text-on-surface-variant">No subjects with an allocated teacher match these filters.</p>
         ) : (
