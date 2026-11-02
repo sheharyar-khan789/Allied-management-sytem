@@ -152,6 +152,12 @@ export function onFirestoreError(operation: string, error: any): void {
 /** Firestore allows 500 writes per batch; stay under it. */
 export const FIRESTORE_BATCH_LIMIT = 450;
 
+/**
+ * Most students one list request may return. The old cap of 250 silently cut a school's list
+ * (a school with 389 students showed 250); a school is far smaller than this.
+ */
+export const STUDENT_LIST_MAX = 5000;
+
 export function cleanUndefined<T extends Record<string, any>>(obj: T): T {
   const result: Record<string, any> = {};
   for (const [key, value] of Object.entries(obj)) {
@@ -1340,7 +1346,7 @@ async function fetchStudentsRaw(
     );
   }
   const sorted = students.sort((a, b) => a.fullName.localeCompare(b.fullName));
-  return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
+  return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, STUDENT_LIST_MAX)) : sorted;
 }
 
 /**
@@ -1360,7 +1366,7 @@ async function queryStudentsFirestore(
     let ref: Query = adminDb.collection("students").where("schoolId", "==", schoolId);
     if (cls !== "ALL") ref = ref.where("classId", "==", cls);
     if (st !== "ALL") ref = ref.where("status", "==", st);
-    if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, 250));
+    if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, STUDENT_LIST_MAX));
     const snap = await withFirestoreRetry("students", () => ref.get());
     return snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentDoc));
   };
@@ -1472,7 +1478,7 @@ export async function getStudentsServer(
   // The limit is applied after the session filter; limiting first would drop active-session
   // students whenever older sessions fill the page.
   const scoped = filterToSession(ctx, year, await fetchStudentsRaw(schoolId, classId, search, undefined, status));
-  return maxLimit && maxLimit > 0 ? scoped.slice(0, Math.min(maxLimit, 250)) : scoped;
+  return maxLimit && maxLimit > 0 ? scoped.slice(0, Math.min(maxLimit, STUDENT_LIST_MAX)) : scoped;
 }
 
 export async function getStudentByIdServer(schoolId: string, studentId: string): Promise<StudentDoc | null> {
