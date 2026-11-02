@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { NextRequest } from "next/server";
 import { UserProfile, UserRole } from "./types";
-import { getSessionProfileServer } from "./server-db";
+import { getSessionProfileServer, getUserByIdServer } from "./server-db";
 import {
   isServiceUnavailableError,
   logFirestoreOutage,
@@ -115,10 +115,17 @@ export function evaluateSessionAgainstProfile(
 async function checkSession(user: AuthenticatedUser): Promise<{ result: SessionCheckResult; mustChangePassword: boolean }> {
   try {
     const profile = await getSessionProfileServer(user.schoolId, user.uid);
-    return {
-      result: evaluateSessionAgainstProfile(user, profile, hasAdminCredentials),
-      mustChangePassword: profile?.mustChangePassword === true,
-    };
+    const result = evaluateSessionAgainstProfile(user, profile, hasAdminCredentials);
+    let mustChangePassword = profile?.mustChangePassword === true;
+    // The profile may come from a per-instance cache (up to 30s old). A cached "must change" is
+    // confirmed against the database before it is enforced, so a teacher who has just replaced the
+    // temporary password is never sent back to the change screen by an instance that has not yet
+    // noticed. Only accounts that still owe a change pay this one extra read.
+    if (result === "OK" && mustChangePassword) {
+      const fresh = await getUserByIdServer(user.uid);
+      mustChangePassword = fresh ? fresh.mustChangePassword === true : true;
+    }
+    return { result, mustChangePassword };
   } catch (e) {
     if (isServiceUnavailableError(e)) {
       logFirestoreOutage("session check", e);
