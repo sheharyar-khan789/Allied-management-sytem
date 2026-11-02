@@ -5,15 +5,12 @@ import {
   getSubjectsServer,
   getTeachersServer,
   getSchoolSettingsServer,
+  getLessonPlanWeeksServer,
 } from "@/lib/firebase/server-db";
 import { requireTeacherAllocation } from "@/lib/academic-access";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
-import {
-  DEFAULT_SCHOOL_TIMEZONE,
-  addDays,
-  currentWeekId,
-  submissionWindowFor,
-} from "@/lib/lesson-plan-schedule";
+import { DEFAULT_SCHOOL_TIMEZONE } from "@/lib/lesson-plan-schedule";
+import { buildWeekSchedule } from "@/lib/lesson-plan-weeks";
 
 const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
 
@@ -27,14 +24,10 @@ export async function GET(req: NextRequest) {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     const settings = await getSchoolSettingsServer(authUser.schoolId);
     const timezone = settings?.timezone || DEFAULT_SCHOOL_TIMEZONE;
-    // "Next week" relative to today is the default the create form opens on — it's the week
-    // whose Saturday submission window is open (or coming up soonest). See lesson-plan-schedule.ts.
-    const defaultWeekId = addDays(currentWeekId(timezone), 7);
-
-    const weeks = Array.from({ length: 8 }, (_, i) => {
-      const weekId = addDays(defaultWeekId, (i - 5) * 7);
-      return { weekId, submissionWindow: submissionWindowFor(weekId, timezone) };
-    });
+    // ONE schedule for every screen: the standard weeks around now plus the admin-defined weeks
+    // (src/lib/lesson-plan-weeks.ts). The form opens on the week whose submission window is open
+    // (or the next one to start). The review page reads this same list.
+    const { weeks, defaultWeekId } = buildWeekSchedule(await getLessonPlanWeeksServer(authUser.schoolId), timezone);
 
     if (authUser.role === "TEACHER") {
       const allocation = await requireTeacherAllocation(authUser);

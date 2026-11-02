@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { getUserByEmailServer, createAuditLogServer, updateUserServer } from "@/lib/firebase/server-db";
+import {
+  getUserByEmailServer,
+  getUserByIdServer,
+  getUsernameRecordServer,
+  createAuditLogServer,
+  updateUserServer,
+} from "@/lib/firebase/server-db";
 import { createSessionCookieServer, AuthenticatedUser, SESSION_COOKIE_OPTIONS } from "@/lib/firebase/server-auth";
 import { dashboardPathForRole } from "@/lib/role-home";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
@@ -12,6 +18,7 @@ import { securityLog } from "@/lib/security-log";
 import { isAdminMfaEnabled, verifyTotp } from "@/lib/totp";
 import { isServiceUnavailableError, logFirestoreOutage, SERVICE_BUSY_MESSAGE } from "@/lib/firebase/firestore-errors";
 import { invalidateUserProfileCache } from "@/lib/server-cache";
+import { validateUsername } from "@/lib/username";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +53,27 @@ const json = (body: Record<string, unknown>, status = 200, headers: Record<strin
   NextResponse.json(body, { status, headers: { "Content-Type": "application/json", ...headers } });
 
 const INVALID_CREDENTIALS = "Invalid email or password.";
+
+/**
+ * Stand-in login address for a username that does not exist. The sign-in then runs the exact same
+ * steps (one Firebase check, one profile lookup, one bcrypt compare) and ends in the same generic
+ * failure, so the response and its timing don't reveal whether a username is real.
+ */
+const UNKNOWN_USERNAME_EMAIL = "unknown-username@invalid.allied-login.test";
+
+/**
+ * A login identifier without "@" is an admin-assigned username (see src/lib/username.ts). It is
+ * resolved to the account's login e-mail on the server only — the address is never sent to the
+ * browser. A username whose lock record and profile disagree resolves to nothing.
+ */
+async function resolveLoginEmail(identifier: string): Promise<string> {
+  if (identifier.includes("@")) return identifier;
+  if (validateUsername(identifier) !== null) return UNKNOWN_USERNAME_EMAIL;
+  const record = await getUsernameRecordServer(identifier);
+  if (!record) return UNKNOWN_USERNAME_EMAIL;
+  const profile = await getUserByIdServer(record.uid);
+  return profile && profile.username === identifier && profile.email ? profile.email.toLowerCase() : UNKNOWN_USERNAME_EMAIL;
+}
 
 /** The four portal tabs on /login, mapped to the account role each one is reserved for. */
 const PORTAL_ROLE: Record<string, AuthenticatedUser["role"]> = {
@@ -127,6 +155,19 @@ export async function POST(req: NextRequest) {
   };
 
   try {
+    // The address the credentials are actually checked against (the identifier itself for an
+    // e-mail login, the account's e-mail for a username login).
+    let loginEmail: string;
+    try {
+      loginEmail = await resolveLoginEmail(identifier);
+    } catch (resolveErr) {
+      if (isServiceUnavailableError(resolveErr)) {
+        logFirestoreOutage("login: username lookup", resolveErr);
+        return json({ error: SERVICE_BUSY_MESSAGE, serviceBusy: true }, 503, { "Retry-After": "120" });
+      }
+      throw resolveErr;
+    }
+
     // Who proved what. A Firebase Auth success only counts if the Firebase uid is the uid of the
     // profile this email maps to: Firebase accepts public self-sign-up with the web API key, so
     // "some Firebase account with this email exists" is NOT proof of being this school user.
@@ -140,7 +181,7 @@ export async function POST(req: NextRequest) {
         // checkRevoked: an ID token minted before a password reset/change (which revokes refresh
         // tokens) must not be able to open a new session.
         const decoded = await adminAuth.verifyIdToken(idToken, true);
-        if (decoded.email?.toLowerCase().trim() === identifier) firebaseUid = decoded.uid;
+        if (decoded.email?.toLowerCase().trim() === loginEmail) firebaseUid = decoded.uid;
       } catch {
         // fall through to password verification
       }
@@ -158,7 +199,7 @@ export async function POST(req: NextRequest) {
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ email: identifier, password, returnSecureToken: true }),
+              body: JSON.stringify({ email: loginEmail, password, returnSecureToken: true }),
               // Without this, an unreachable/slow Firebase endpoint hangs the request
               // indefinitely (undici's fetch has no default timeout) instead of falling through
               // to the fallbacks below — see identityToolkitSignal.
@@ -180,8 +221,8 @@ export async function POST(req: NextRequest) {
       }
 
       // 3. Local development only: demo credentials against the in-memory store.
-      if (!firebaseUid && devLoginAllowed() && DEV_CREDENTIALS[identifier]) {
-        if (DEV_CREDENTIALS[identifier] === password) devAuthenticated = true;
+      if (!firebaseUid && devLoginAllowed() && DEV_CREDENTIALS[loginEmail]) {
+        if (DEV_CREDENTIALS[loginEmail] === password) devAuthenticated = true;
         else return fail("bad_password");
       }
     }
@@ -192,7 +233,7 @@ export async function POST(req: NextRequest) {
     // (it is the only Firestore read on this path).
     let user: Awaited<ReturnType<typeof getUserByEmailServer>> = null;
     try {
-      user = await getUserByEmailServer(identifier);
+      user = await getUserByEmailServer(loginEmail);
     } catch (lookupErr) {
       // A genuine Firestore outage must say so — never fall through to fabricating an identity
       // from Firebase Auth. See the SECURITY note below for why that fallback was removed
@@ -226,8 +267,8 @@ export async function POST(req: NextRequest) {
         if (rawRole && VALID_ROLES.includes(rawRole) && claimedSchoolId) {
           user = {
             uid: fbUserRecord.uid,
-            email: identifier,
-            name: fbUserRecord.displayName || identifier.split("@")[0],
+            email: loginEmail,
+            name: fbUserRecord.displayName || loginEmail.split("@")[0],
             role: rawRole,
             schoolId: claimedSchoolId,
             teacherId: (fbUserRecord.customClaims?.teacherId as string | undefined) || undefined,
@@ -348,7 +389,10 @@ export async function POST(req: NextRequest) {
         schoolId: sessionData.schoolId,
         name: user.name,
       },
-      redirectUrl: dashboardPathForRole(user.role),
+      // An account that still has an admin-issued temporary password goes straight to the screen
+      // where it must be replaced; every other page and API refuses it until then.
+      ...(user.mustChangePassword ? { mustChangePassword: true } : {}),
+      redirectUrl: user.mustChangePassword ? "/change-password" : dashboardPathForRole(user.role),
     });
 
     response.cookies.set("allied_session", token, SESSION_COOKIE_OPTIONS);

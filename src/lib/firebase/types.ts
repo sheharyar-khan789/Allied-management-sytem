@@ -42,8 +42,34 @@ export interface UserProfile {
   studentId?: string;
   studentIds?: string[];
   photoUrl?: string;
+  /**
+   * Admin-assigned login username (lowercase, globally unique; see src/lib/username.ts). Teachers
+   * sign in with it instead of their e-mail address. The e-mail stays for communication and
+   * password recovery. Uniqueness is enforced by the `usernames/{username}` claim document.
+   */
+  username?: string;
+  /**
+   * True from the moment an admin creates the account with a temporary password until the user
+   * chooses their own. While true the account can reach nothing but the change-password screen
+   * (enforced server-side in requireAuth and the role layouts). Never set for existing accounts.
+   */
+  mustChangePassword?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * `usernames/{username}`: the uniqueness lock for a username. The document id IS the normalized
+ * username and it is created with a create-if-absent write, so two concurrent registrations can
+ * never both get the same one. Server-side only (Firestore rules deny every client access).
+ */
+export interface UsernameRecordDoc {
+  id: string;
+  username: string;
+  uid: string;
+  schoolId: string;
+  teacherId?: string;
+  createdAt: string;
 }
 
 export interface StudentDoc {
@@ -97,6 +123,8 @@ export interface TeacherDoc {
   id: string;
   schoolId: string;
   userId?: string;
+  /** Login username mirrored from the account for display (the lock is usernames/{username}). */
+  username?: string;
   employeeId: string;
   fullName: string;
   email: string;
@@ -506,6 +534,29 @@ export interface LessonPlanAdminCorrection {
   reason: string;
   /** The `days` content as it was immediately before this correction, so nothing is silently lost. */
   previousDays: LessonPlanDayEntry[];
+}
+
+/**
+ * `lessonPlanWeeks/{lpw_<schoolId>_<startDate>}`: an admin-defined lesson-plan week. The stable
+ * identifier of a week is its start date (`weekId`, YYYY-MM-DD) — exactly the key lesson plans
+ * already use, so a custom week never changes how existing plans are addressed. School weeks
+ * that have no entry here keep working as the standard Monday–Sunday weeks (see
+ * src/lib/lesson-plan-weeks.ts), so there is no final week and nothing to regenerate.
+ */
+export interface LessonPlanWeekDoc {
+  id: string;
+  schoolId: string;
+  /** YYYY-YYYY session this week belongs to (can be any session, including future ones). */
+  academicYear: string;
+  /** Start date, YYYY-MM-DD. Also the weekId plans are filed under. */
+  weekId: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy?: string;
 }
 
 export interface LessonPlanDoc {

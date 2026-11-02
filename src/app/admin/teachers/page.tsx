@@ -5,6 +5,17 @@ import { formatDisplayDate } from "@/lib/date-utils";
 import Link from "next/link";
 import FileUpload from "@/components/FileUpload";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
+import { suggestUsername, USERNAME_MAX } from "@/lib/username";
+
+/** Copies text and reports success; the clipboard can be unavailable (insecure context, denied). */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Every field starts empty. These are real personnel records: the form previously opened
 // pre-filled with an invented designation ("Senior Science & Math Educator"), qualification
@@ -20,6 +31,7 @@ const EMPTY_TEACHER_FORM = {
   specialization: "",
   phone: "",
   email: "",
+  username: "",
   photoUrl: "",
   baseSalary: "",
   joiningDate: "",
@@ -41,6 +53,10 @@ export default function TeachersManagementPage() {
   const [sendingActivationId, setSendingActivationId] = useState<string | null>(null);
 
   const [formData, setFormData] = useState(EMPTY_TEACHER_FORM);
+  // The username + temporary password of a teacher just created. Held in React state only, shown
+  // once, and discarded when the admin closes the dialog: never put in storage or the URL.
+  const [credentials, setCredentials] = useState<{ name: string; username: string; temporaryPassword: string } | null>(null);
+  const [copied, setCopied] = useState("");
   // One request per typed query, not one per keystroke.
   const debouncedSearch = useDebouncedValue(search.trim(), 400);
 
@@ -80,6 +96,7 @@ export default function TeachersManagementPage() {
       specialization: t.specialization || t.department || "",
       phone: t.phone || "",
       email: t.email || "",
+      username: t.username || "",
       photoUrl: t.photoUrl || "",
       baseSalary: String(t.baseSalary ?? t.salary ?? ""),
       joiningDate: t.joiningDate || "",
@@ -121,6 +138,13 @@ export default function TeachersManagementPage() {
       }
 
       setModalOpen(false);
+      if (data.credentials) {
+        setCredentials({
+          name: data.teacher?.fullName || `${formData.firstName} ${formData.lastName}`.trim(),
+          username: data.credentials.username,
+          temporaryPassword: data.credentials.temporaryPassword,
+        });
+      }
       if (data.activation) {
         setActivationNotice({
           name: data.teacher?.fullName || `${formData.firstName} ${formData.lastName}`.trim(),
@@ -208,6 +232,62 @@ export default function TeachersManagementPage() {
           <span>Add New Teacher</span>
         </button>
       </div>
+
+      {credentials && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="teacher-credentials-heading"
+            className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4"
+          >
+            <div>
+              <h3 id="teacher-credentials-heading" className="font-headline-md text-sm font-bold text-on-surface">
+                Login credentials for {credentials.name}
+              </h3>
+              <p className="text-xs text-error font-semibold mt-1">
+                Copy these now. The temporary password is shown only once and cannot be viewed again.
+              </p>
+            </div>
+            <dl className="space-y-3 text-xs">
+              <div>
+                <dt className="text-on-surface-variant font-semibold mb-1">Username</dt>
+                <dd className="flex items-center gap-2">
+                  <code className="flex-1 px-3 py-2 rounded bg-surface-container-low font-mono text-sm select-all break-all">{credentials.username}</code>
+                  <button type="button" onClick={async () => setCopied((await copyText(credentials.username)) ? "username" : "failed")}
+                    className="px-3 py-2 rounded bg-surface-container font-semibold hover:bg-surface-container-high">Copy</button>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-on-surface-variant font-semibold mb-1">Temporary password</dt>
+                <dd className="flex items-center gap-2">
+                  <code className="flex-1 px-3 py-2 rounded bg-surface-container-low font-mono text-sm select-all break-all">{credentials.temporaryPassword}</code>
+                  <button type="button" onClick={async () => setCopied((await copyText(credentials.temporaryPassword)) ? "password" : "failed")}
+                    className="px-3 py-2 rounded bg-surface-container font-semibold hover:bg-surface-container-high">Copy</button>
+                </dd>
+              </div>
+            </dl>
+            <p className="text-[11px] text-on-surface-variant">
+              Share them with the teacher through a private channel (in person or a private message), not a group chat or e-mail.
+              The teacher will be asked to choose their own password at the first login.
+            </p>
+            {copied && (
+              <p role="status" className="text-[11px] font-semibold text-on-tertiary-container">
+                {copied === "failed" ? "Copy was blocked by the browser. Select the text and copy it manually." : `Copied ${copied}.`}
+              </p>
+            )}
+            <div className="flex justify-between gap-2 pt-2 border-t border-surface-container-low">
+              <button type="button"
+                onClick={async () => setCopied((await copyText(`Username: ${credentials.username}\nTemporary password: ${credentials.temporaryPassword}`)) ? "both" : "failed")}
+                className="px-3 py-1.5 rounded bg-surface-container font-semibold hover:bg-surface-container-high text-xs">Copy both</button>
+              <button type="button" onClick={() => { setCredentials(null); setCopied(""); }}
+                className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold text-xs hover:bg-secondary/90">
+                I have copied them
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {activationNotice && (
         <div
@@ -347,6 +427,21 @@ export default function TeachersManagementPage() {
                     <td className="py-3 px-4">
                       <div className="font-medium text-on-surface">{t.phone}</div>
                       <div className="text-[10px] text-on-surface-variant truncate">{t.email}</div>
+                      {t.username ? (
+                        <div className="flex items-center gap-1 mt-0.5">
+                          <span className="text-[10px] font-mono font-semibold text-secondary truncate" title="Login username">@{t.username}</span>
+                          <button type="button" aria-label={`Copy username ${t.username}`}
+                            onClick={() => copyText(t.username)}
+                            className="text-on-surface-variant hover:text-on-surface">
+                            <span className="material-symbols-outlined text-[12px]">content_copy</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <button type="button" onClick={() => openEditModal(t)}
+                          className="mt-0.5 text-[10px] font-semibold text-error hover:underline">
+                          No username, assign one
+                        </button>
+                      )}
                     </td>
 
                     <td className="py-3 px-4">
@@ -377,13 +472,15 @@ export default function TeachersManagementPage() {
                           title={
                             t.activationStatus === "active"
                               ? "This teacher has set their own password and can sign in."
+                              : t.activationStatus === "temporary"
+                              ? "Created with a temporary password; the teacher has not changed it yet."
                               : "This teacher has not yet opened their activation link to set a password."
                           }
                         >
                           <span className="material-symbols-outlined text-[12px]">
                             {t.activationStatus === "active" ? "mark_email_read" : "hourglass_empty"}
                           </span>
-                          {t.activationStatus === "active" ? "Activated" : "Activation Pending"}
+                          {t.activationStatus === "active" ? "Activated" : t.activationStatus === "temporary" ? "Temporary Password" : "Activation Pending"}
                         </span>
                         <span className="text-[10px] text-on-surface-variant">
                           Joined: {formatDisplayDate(t.joiningDate)}
@@ -522,6 +619,33 @@ export default function TeachersManagementPage() {
                     placeholder="sana.javaid@alliedschool.edu"
                     className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                   />
+                </div>
+                <div className="sm:col-span-2">
+                  <label htmlFor="teachers-username" className="block font-semibold text-on-surface mb-1">
+                    Login Username {editingTeacher ? "" : "(recommended)"}
+                  </label>
+                  <div className="flex gap-2">
+                    <input id="teachers-username"
+                      type="text"
+                      value={formData.username}
+                      maxLength={USERNAME_MAX}
+                      autoCapitalize="none"
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(e) => setFormData({ ...formData, username: e.target.value.toLowerCase().replace(/\s/g, "") })}
+                      placeholder="e.g. ali.teacher01"
+                      className="flex-1 h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono"
+                    />
+                    <button type="button"
+                      onClick={() => setFormData({ ...formData, username: suggestUsername(`${formData.firstName} ${formData.lastName}`) })}
+                      className="px-3 h-8 rounded bg-surface-container font-semibold hover:bg-surface-container-high">Suggest</button>
+                  </div>
+                  <p className="text-[10px] text-on-surface-variant mt-1">
+                    3 to 30 characters: letters, numbers, dots, underscores, hyphens. Must be unique across the whole system.
+                    {editingTeacher
+                      ? " Changing it does not change the teacher's e-mail or password."
+                      : " With a username, a temporary password is generated and shown once; the teacher must change it at first login. Without one, an activation e-mail is sent instead."}
+                  </p>
                 </div>
                 <div>
                   <label htmlFor="teachers-phone-4" className="block font-semibold text-on-surface mb-1">Phone *</label>

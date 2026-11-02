@@ -59,6 +59,9 @@ beforeEach(async () => {
     await setDoc(doc(db, "attendance", "att-math"), { id: "att-math", schoolId: "A", classId: "cls-a", subjectId: "sub-a-math", studentId: "std-a2" });
     await setDoc(doc(db, "studentFeeLedgers", "A_std-a_2026"), { id: "A_std-a_2026", schoolId: "A", studentId: "std-a" });
     await setDoc(doc(db, "studentCharges", "chg-a"), { id: "chg-a", schoolId: "A", studentId: "std-a" });
+    // Server-only: login-username uniqueness locks and admin-defined lesson-plan weeks.
+    await setDoc(doc(db, "usernames", "ali.teacher01"), { id: "ali.teacher01", username: "ali.teacher01", uid: "tch-a", schoolId: "A" });
+    await setDoc(doc(db, "lessonPlanWeeks", "lpw_A_2026-12-24"), { id: "lpw_A_2026-12-24", schoolId: "A", weekId: "2026-12-24" });
   });
 });
 
@@ -136,6 +139,18 @@ test("server-only collections are never readable by clients", async () => {
   await assertFails(getDoc(doc(as("adminA"), "passwordResetTokens", "h")));
   await assertFails(getDoc(doc(as("studentA"), "studentFeeLedgers", "A_std-a_2026")));
   await assertFails(getDoc(doc(as("parentA"), "studentCharges", "chg-a")));
+});
+
+test("usernames and lessonPlanWeeks: no client can read or write them, in any school or role", async () => {
+  // A readable usernames collection would let anyone enumerate login names; a writable one would
+  // let a client claim/steal them. Both are reached only through the server API.
+  for (const who of ["adminA", "adminB", "teacherA", "studentA", "parentA"]) {
+    await assertFails(getDoc(doc(as(who), "usernames", "ali.teacher01")));
+    await assertFails(setDoc(doc(as(who), "usernames", "stolen.name"), { uid: who, schoolId: "A" }));
+    await assertFails(getDoc(doc(as(who), "lessonPlanWeeks", "lpw_A_2026-12-24")));
+    await assertFails(setDoc(doc(as(who), "lessonPlanWeeks", "lpw_A_2027-01-04"), { schoolId: "A" }));
+  }
+  await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), "usernames", "ali.teacher01")));
 });
 
 test("attendance: only the class incharge teacher, never a subject teacher", async () => {

@@ -10,6 +10,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { validateDateString, isDateBefore } from "@/lib/date-utils";
 import { deleteTeacherCompletely } from "@/lib/teacher-lifecycle";
+import { assignTeacherUsername } from "@/lib/teacher-username";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(
@@ -50,6 +51,7 @@ export async function GET(
       specialization: teacher.department,
       phone: teacher.phone,
       email: teacher.email,
+      username: teacher.username || "",
       status: teacher.status,
       photoUrl: teacher.photoUrl || "",
       joiningDate: teacher.joiningDate || (teacher.createdAt ? teacher.createdAt.split("T")[0] : ""),
@@ -269,12 +271,25 @@ export async function PUT(
 
     await saveTeacherServer(updated);
 
+    // Username (re)assignment: validated, atomically claimed, and applied without touching the
+    // teacher's Firebase account, e-mail or password. Done after the rest of the profile saved so
+    // a rejected username (taken/invalid) reports clearly without losing the other edits.
+    let usernameChange: { username: string; changed: boolean } | null = null;
+    if (body.username !== undefined && body.username !== null && String(body.username).trim() !== "") {
+      const result = await assignTeacherUsername(authUser.schoolId, updated, body.username);
+      if (!result.ok) {
+        return NextResponse.json({ error: result.error, profileSaved: true }, { status: result.status });
+      }
+      updated.username = result.username;
+      usernameChange = { username: result.username, changed: result.changed };
+    }
+
     await createAuditLogServer(
       authUser.schoolId,
       authUser.uid,
       authUser.email,
       authUser.role,
-      "UPDATE_TEACHER",
+      usernameChange?.changed ? "SET_TEACHER_USERNAME" : "UPDATE_TEACHER",
       "TEACHER",
       id,
       body.assignedClassIds !== undefined
@@ -283,6 +298,8 @@ export async function PUT(
               ? assignedClassIds.join(", ")
               : "none (unrestricted — see assertTeacherOwnsClass)"
           }.`
+        : usernameChange?.changed
+        ? `Set login username "${usernameChange.username}" for faculty member ${updated.fullName} (${updated.employeeId}).`
         : `Updated profile for faculty member ${updated.fullName} (${updated.employeeId}).`
     );
 

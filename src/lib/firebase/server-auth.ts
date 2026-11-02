@@ -45,7 +45,16 @@ export interface AuthenticatedUser {
   authAt?: number;
   /** Random per-sign-in id; lets logout revoke exactly this session. */
   sid?: string;
+  /**
+   * Read from the LIVE profile on every request (never carried in the session token, so it can
+   * not go stale or be forged): the account still has an admin-issued temporary password and may
+   * only reach the change-password screen. See requireAuth / requirePageRole.
+   */
+  mustChangePassword?: boolean;
 }
+
+/** The only API routes a user who must change their password may still call. */
+export const PASSWORD_CHANGE_EXEMPT_ROUTES = new Set(["/api/auth/change-password", "/api/auth/logout"]);
 
 export async function createSessionCookieServer(payload: AuthenticatedUser): Promise<string> {
   return signSessionToken(payload);
@@ -103,10 +112,13 @@ export function evaluateSessionAgainstProfile(
  * logout, role or school change, deactivation or deletion is therefore enforced on the next
  * request in that instance and within 30 seconds on any other instance.
  */
-async function checkSession(user: AuthenticatedUser): Promise<SessionCheckResult> {
+async function checkSession(user: AuthenticatedUser): Promise<{ result: SessionCheckResult; mustChangePassword: boolean }> {
   try {
     const profile = await getSessionProfileServer(user.schoolId, user.uid);
-    return evaluateSessionAgainstProfile(user, profile, hasAdminCredentials);
+    return {
+      result: evaluateSessionAgainstProfile(user, profile, hasAdminCredentials),
+      mustChangePassword: profile?.mustChangePassword === true,
+    };
   } catch (e) {
     if (isServiceUnavailableError(e)) {
       logFirestoreOutage("session check", e);
@@ -121,7 +133,7 @@ async function checkSession(user: AuthenticatedUser): Promise<SessionCheckResult
     // same fail-closed default the Firestore-authoritative branch above already uses for "no
     // profile found at all".
     console.error("Session revocation check failed:", (e as Error)?.message || "error");
-    return "PROFILE_MISSING";
+    return { result: "PROFILE_MISSING", mustChangePassword: false };
   }
 }
 
@@ -167,16 +179,17 @@ export async function getAuthenticatedUser(req?: NextRequest): Promise<Authentic
   };
 
   const check = await checkSession(user);
-  if (check !== "OK") {
+  if (check.result !== "OK") {
     securityLog("auth.session_revoked", {
       subject: user.uid,
       role: user.role,
       schoolId: user.schoolId,
-      reason: check,
+      reason: check.result,
       route: routeOf(req),
     });
     return null;
   }
+  if (check.mustChangePassword) user.mustChangePassword = true;
   return user;
 }
 
@@ -229,6 +242,26 @@ export async function requireAuth(
       reason: "role",
     });
     throw jsonError(403, { error: `Forbidden: User role ${user.role} is not authorized for this resource.` });
+  }
+
+  // A temporary password only opens the "choose your own password" step. Enforced here, on the
+  // server, for every API route — a direct request to a teacher API (or a typed dashboard URL,
+  // see requirePageRole) cannot bypass the screen the browser would have shown.
+  if (user.mustChangePassword && !PASSWORD_CHANGE_EXEMPT_ROUTES.has(routeOf(req) || "")) {
+    securityLog("authz.forbidden", {
+      subject: user.uid,
+      role: user.role,
+      schoolId: user.schoolId,
+      route: routeOf(req),
+      method: req?.method,
+      status: 403,
+      reason: "password_change_required",
+    });
+    throw jsonError(403, {
+      error: "You must change your temporary password before continuing.",
+      code: "PASSWORD_CHANGE_REQUIRED",
+      mustChangePassword: true,
+    });
   }
 
   return user;

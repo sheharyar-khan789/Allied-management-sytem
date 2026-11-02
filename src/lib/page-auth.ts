@@ -12,6 +12,8 @@ import { dashboardPathForRole } from "@/lib/role-home";
 export async function requirePageRole(role: UserRole): Promise<AuthenticatedUser> {
   const session = await getAuthenticatedUser();
   if (!session || !session.uid || !session.schoolId) redirect("/login");
+  // A temporary password must be replaced before any portal page loads (the API refuses too).
+  if (session.mustChangePassword) redirect("/change-password");
   if (session.role !== role) redirect(dashboardPathForRole(session.role));
   return session;
 }

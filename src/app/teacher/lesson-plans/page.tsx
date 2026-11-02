@@ -52,10 +52,21 @@ function fmt(iso: string | null, timezone: string): string {
   }
 }
 
+/** One entry of the shared week schedule from /api/lesson-plans/options (standard or admin-defined). */
+interface ScheduleWeek {
+  weekId: string;
+  label?: string;
+  startDate?: string;
+  endDate?: string;
+  kind?: "STANDARD" | "CUSTOM";
+  days?: { date: string; dayOfWeek: string }[];
+  submissionWindow: { opensAt: string; closesAt: string };
+}
+
 export default function TeacherLessonPlansPage() {
   const [timezone, setTimezone] = useState("Asia/Karachi");
   const [classesSubjects, setClassesSubjects] = useState<ClassSubjectOption[]>([]);
-  const [weeks, setWeeks] = useState<{ weekId: string; submissionWindow: { opensAt: string; closesAt: string } }[]>([]);
+  const [weeks, setWeeks] = useState<ScheduleWeek[]>([]);
   const [optionsLoading, setOptionsLoading] = useState(true);
   const [optionsError, setOptionsError] = useState("");
 
@@ -148,21 +159,29 @@ export default function TeacherLessonPlansPage() {
         if (found) {
           setDays(found.days);
         } else {
-          // Build blank Monday-Saturday day cells for this week (Sunday is never a plan day).
-          const [y, m, d] = weekId.split("-").map(Number);
-          const blanks: DayEntry[] = [];
-          const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-          for (let i = 0; i < 6; i++) {
-            const dt = new Date(Date.UTC(y, m - 1, d));
-            dt.setUTCDate(dt.getUTCDate() + i);
-            const dateStr = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
-            blanks.push({ date: dateStr, dayOfWeek: dayNames[i], content: "" });
+          // Blank day cells come from the shared schedule (a standard Monday week or an
+          // admin-defined week of any length; Sunday is never a plan day).
+          const scheduled = weeks.find((w) => w.weekId === weekId)?.days;
+          if (scheduled && scheduled.length > 0) {
+            setDays(scheduled.map((d) => ({ date: d.date, dayOfWeek: d.dayOfWeek, content: "" })));
+          } else {
+            // A historical standard week that is not in the nearby list: Monday to Saturday.
+            const [y, m, d] = weekId.split("-").map(Number);
+            const blanks: DayEntry[] = [];
+            const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+            for (let i = 0; i < 6; i++) {
+              const dt = new Date(Date.UTC(y, m - 1, d));
+              dt.setUTCDate(dt.getUTCDate() + i);
+              const dateStr = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+              blanks.push({ date: dateStr, dayOfWeek: dayNames[i], content: "" });
+            }
+            setDays(blanks);
           }
-          setDays(blanks);
         }
       })
       .catch(() => setPlanError("Failed to load this week's plan."))
       .finally(() => setPlanLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected, weekId]);
 
   const updateDayContent = (date: string, content: string) => {
@@ -256,7 +275,7 @@ export default function TeacherLessonPlansPage() {
             </select>
           </div>
           <div>
-            <label className="block font-semibold text-on-surface mb-1">School Week (Monday start)</label>
+            <label className="block font-semibold text-on-surface mb-1">School Week</label>
             <select
               value={weekId}
               onChange={(e) => setWeekId(e.target.value)}
@@ -264,7 +283,9 @@ export default function TeacherLessonPlansPage() {
             >
               {displayWeeks.map((w) => (
                 <option key={w.weekId} value={w.weekId}>
-                  Week of {w.weekId}
+                  {w.kind === "CUSTOM" && w.label && w.startDate && w.endDate
+                    ? `${w.label} (${w.startDate} to ${w.endDate})`
+                    : `Week of ${w.weekId}`}
                 </option>
               ))}
             </select>

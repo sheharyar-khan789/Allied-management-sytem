@@ -5,6 +5,11 @@ import {
   getTeachersServer,
   saveTeacherServer,
   createUserServer,
+  claimUsernameServer,
+  getUsernameRecordServer,
+  releaseUsernameServer,
+  deleteTeacherServer,
+  deleteUserProfileServer,
   createAuditLogServer,
   getClassesServer,
   getSubjectsServer,
@@ -19,6 +24,11 @@ import {
   releaseOrphanedTeacherAuthAccount,
 } from "@/lib/teacher-lifecycle";
 import { sendPasswordSetupLink } from "@/lib/account-email";
+import bcrypt from "bcryptjs";
+import { BCRYPT_COST } from "@/lib/password-reset";
+import { generateTemporaryPassword } from "@/lib/temp-password";
+import { normalizeUsername, validateUsername } from "@/lib/username";
+import { USERNAME_TAKEN_MESSAGE } from "@/lib/teacher-username";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest) {
@@ -62,7 +72,9 @@ export async function GET(req: NextRequest) {
       const managed = classes.filter((c) => c.classTeacherId === t.id).map((c) => `${c.name}-${c.section}`);
       const taught = subjects.filter((s) => s.teacherId === t.id).map((s) => `${s.name} (${s.code})`);
       const assigned = classes.filter((c) => (t.assignedClassIds || []).includes(c.id)).map((c) => `${c.name}-${c.section}`);
-      const hasSetPassword = Boolean(t.userId && users.get(t.userId)?.passwordHash);
+      const account = t.userId ? users.get(t.userId) : undefined;
+      const hasSetPassword = Boolean(account?.passwordHash);
+      const username = t.username || account?.username || "";
 
       return {
         id: t.id,
@@ -78,6 +90,7 @@ export async function GET(req: NextRequest) {
         specialization: t.department,
         phone: t.phone,
         email: t.email,
+        username,
         status: t.status,
         photoUrl: t.photoUrl || "",
         joiningDate: t.joiningDate || (t.createdAt ? t.createdAt.split("T")[0] : ""),
@@ -87,7 +100,8 @@ export async function GET(req: NextRequest) {
         assignedClasses: assigned,
         taughtSubjectsCount: taught.length,
         taughtSubjects: taught,
-        activationStatus: hasSetPassword ? "active" : "pending",
+        // "temporary": created with an admin-issued temporary password that is not replaced yet.
+        activationStatus: account?.mustChangePassword ? "temporary" : hasSetPassword ? "active" : "pending",
       };
     });
 
@@ -176,6 +190,20 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Optional login username. With one, the account is created with a generated temporary
+    // password (shown once to this admin) that must be replaced at the first login. Without one,
+    // the earlier flow is unchanged: an activation link is e-mailed and the teacher picks a password.
+    const wantsUsername = body.username !== undefined && body.username !== null && String(body.username).trim() !== "";
+    let username = "";
+    if (wantsUsername) {
+      const problem = validateUsername(body.username);
+      if (problem) return NextResponse.json({ error: problem, field: "username" }, { status: 400 });
+      username = normalizeUsername(body.username);
+      if (await getUsernameRecordServer(username)) {
+        return NextResponse.json({ error: USERNAME_TAKEN_MESSAGE, field: "username" }, { status: 409 });
+      }
+    }
+
     const existingTeachers = await getTeachersServer(authUser.schoolId);
     // Was `existingTeachers.length + 101`: after any deletion the count drops and the next
     // teacher was issued an employee id that an existing teacher still holds.
@@ -188,6 +216,9 @@ export async function POST(req: NextRequest) {
     const teacherEmail = email.trim().toLowerCase();
     let userUid = `user_tch_${uniqueSuffix}`;
     let createdAuthUid: string | null = null;
+    // Generated with a CSPRNG. It lives only in this request's memory and in the one response
+    // below: never written to Firestore, never logged, never returned by any later request.
+    const temporaryPassword = wantsUsername ? generateTemporaryPassword({ email: String(email), name: fullName }) : null;
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(teacherEmail)) {
       return NextResponse.json({ error: "Please enter a valid teacher email address." }, { status: 400 });
@@ -212,6 +243,8 @@ export async function POST(req: NextRequest) {
             emailVerified: false,
             displayName: fullName,
             disabled: false,
+            // Username accounts only: Firebase Auth alone holds the temporary password.
+            ...(temporaryPassword ? { password: temporaryPassword } : {}),
           });
         let teacherAuthUser;
         try {
@@ -235,6 +268,8 @@ export async function POST(req: NextRequest) {
           teacherId: teacherId,
         });
       } catch (authErr: any) {
+        // Nothing else exists yet; remove a half-created Auth account so none is left behind.
+        if (createdAuthUid) await adminAuth.deleteUser(createdAuthUid).catch(() => undefined);
         console.error("Firebase Auth creation error for teacher:", authErr);
         const duplicateEmail = authErr?.code === "auth/email-already-exists";
         return NextResponse.json(
@@ -246,6 +281,17 @@ export async function POST(req: NextRequest) {
           { status: duplicateEmail ? 409 : 400 }
         );
       }
+    }
+
+    // The atomic claim: even if two admins submit the same username at once, only one wins.
+    let usernameClaimed = false;
+    if (wantsUsername) {
+      const claim = await claimUsernameServer({ username, uid: userUid, schoolId: authUser.schoolId, teacherId });
+      if (claim === "TAKEN") {
+        if (createdAuthUid && hasAdminCredentials) await adminAuth.deleteUser(createdAuthUid).catch(() => undefined);
+        return NextResponse.json({ error: USERNAME_TAKEN_MESSAGE, field: "username" }, { status: 409 });
+      }
+      usernameClaimed = true;
     }
 
     const parsedSalary = body.baseSalary !== undefined && body.baseSalary !== ""
@@ -260,6 +306,7 @@ export async function POST(req: NextRequest) {
       userId: userUid,
       employeeId,
       fullName,
+      ...(username ? { username } : {}),
       email: teacherEmail,
       phone,
       designation: designation || "Subject Educator",
@@ -290,23 +337,36 @@ export async function POST(req: NextRequest) {
         schoolId: authUser.schoolId,
         teacherId: teacherId,
         status: cleanEndingDate ? "INACTIVE" : "ACTIVE",
+        ...(username ? { username, mustChangePassword: true } : {}),
+        // Without a Firebase Auth project (local development / tests) the app's own bcrypt check
+        // is the only way to sign in, so the HASH (never the password) is stored there. With a
+        // real Firebase project nothing password-related is written to Firestore at all.
+        ...(temporaryPassword && !hasAdminCredentials
+          ? { passwordHash: await bcrypt.hash(temporaryPassword, BCRYPT_COST) }
+          : {}),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
     } catch (dbErr: any) {
-      // Rollback Auth user if created
+      // Roll back EVERYTHING created so far, so a failed registration leaves no orphan behind: the
+      // Firebase account, the username claim, and whichever Firestore documents were written.
+      if (usernameClaimed) await releaseUsernameServer(username, userUid).catch(() => undefined);
+      await deleteUserProfileServer(userUid).catch(() => undefined);
+      await deleteTeacherServer(authUser.schoolId, teacherId).catch(() => undefined);
       if (createdAuthUid && hasAdminCredentials) {
         try {
           await adminAuth.deleteUser(createdAuthUid);
         } catch (delErr) {
-          console.error("Rollback teacher user failed:", delErr);
+          console.error("Rollback teacher user failed:", (delErr as Error)?.message || "error");
         }
       }
       throw dbErr;
     }
 
-    // An inactive (already ended) teacher gets no activation link.
-    const activation = cleanEndingDate
+    // A username account is handed over by the admin with the temporary password shown below;
+    // nothing containing a password is ever e-mailed. An inactive (already ended) teacher gets no
+    // activation link either.
+    const activation = cleanEndingDate || temporaryPassword
       ? null
       : await sendPasswordSetupLink(
           { uid: userUid, email: teacherEmail, name: fullName, schoolId: authUser.schoolId },
@@ -323,6 +383,7 @@ export async function POST(req: NextRequest) {
       "TEACHER",
       teacherId,
       `Registered faculty member ${fullName} (${employeeId}).` +
+        (username ? ` Login username "${username}" assigned; a temporary password was issued and must be changed at first login.` : "") +
         (activation
           ? activation.delivered
             ? ` Account activation email sent to ${teacherEmail} via ${activation.mode}.`
@@ -337,8 +398,13 @@ export async function POST(req: NextRequest) {
         activation: activation
           ? { sent: activation.delivered, channel: activation.mode, email: teacherEmail }
           : null,
+        // Present ONLY in this response, to the admin who just created the account. It is not
+        // stored anywhere, so it cannot be shown again; no later request ever returns it.
+        ...(temporaryPassword
+          ? { credentials: { username, temporaryPassword, mustChangePassword: true } }
+          : {}),
       },
-      { status: 201 }
+      { status: 201, headers: { "Cache-Control": "no-store, max-age=0", Pragma: "no-cache" } }
     );
   } catch (error: any) {
     if (error instanceof Response) return error;

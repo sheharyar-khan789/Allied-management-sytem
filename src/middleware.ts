@@ -192,6 +192,16 @@ export async function middleware(req: NextRequest) {
     return attachCsp(nextWithNonce());
   }
 
+  // The mandatory "replace your temporary password" screen. Any signed-in user may reach the page
+  // (it asks for the temporary password again, so it proves nothing by itself); the page layout
+  // and every API refuse to let anyone who does NOT owe a change stay on it or work around it.
+  if (pathname === "/change-password") {
+    if (!session || !session.uid) {
+      return attachCsp(NextResponse.redirect(new URL("/login", req.url)));
+    }
+    return attachSlidingSession(nextWithNonce(), session);
+  }
+
   const requireRole = async (allowed: SessionPayload["role"][]) => {
     if (!session || !session.uid) {
       return attachCsp(NextResponse.redirect(new URL("/login", req.url)));
@@ -239,6 +249,7 @@ export const config = {
     "/login",
     "/register-institution-x7k2p",
     "/reset-password",
+    "/change-password",
     "/",
   ],
 };

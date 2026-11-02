@@ -40,6 +40,7 @@ export default function TeacherProfilePage({
     specialization: "",
     phone: "",
     email: "",
+    username: "",
     photoUrl: "",
     status: "ACTIVE",
     baseSalary: "",
@@ -80,6 +81,7 @@ export default function TeacherProfilePage({
       specialization: teacher?.specialization || teacher?.department || "",
       phone: teacher?.phone || "",
       email: teacher?.email || "",
+      username: teacher?.username || "",
       photoUrl: teacher?.photoUrl || "",
       status: teacher?.status || "ACTIVE",
       baseSalary: String(teacher?.baseSalary ?? teacher?.salary ?? ""),
@@ -253,6 +255,7 @@ export default function TeacherProfilePage({
             </div>
             <p className="font-body-md text-xs text-on-surface-variant font-medium">
               {teacher.designation} • {teacher.qualification} • {teacher.phone} • {teacher.email}
+              {teacher.username ? ` • @${teacher.username}` : " • no login username yet"}
             </p>
           </div>
         </div>
@@ -599,6 +602,21 @@ export default function TeacherProfilePage({
                     value={formData.lastName}
                     onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
                     className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="teacher-profile-username" className="block font-semibold text-on-surface mb-1">Login Username</label>
+                  <input
+                    id="teacher-profile-username"
+                    type="text"
+                    maxLength={30}
+                    autoCapitalize="none"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={formData.username}
+                    onChange={(e) => setFormData({ ...formData, username: e.target.value.toLowerCase().replace(/\s/g, "") })}
+                    placeholder="e.g. ali.teacher01"
+                    className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono"
                   />
                 </div>
                 <div>

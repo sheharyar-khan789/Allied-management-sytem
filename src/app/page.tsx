@@ -9,5 +9,6 @@ export default async function HomePage() {
     redirect("/login");
   }
 
+  if (session.mustChangePassword) redirect("/change-password");
   redirect(dashboardPathForRole(session.role));
 }
