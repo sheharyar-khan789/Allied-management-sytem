@@ -27,6 +27,8 @@ import { POST as resetPost } from "../src/app/api/auth/reset-password/route";
 import { createSessionCookieServer } from "../src/lib/firebase/server-auth";
 import {
   createUserServer,
+  getClassesServer,
+  getSchoolSettingsServer,
   getStudentByIdServer,
   getStudentsServer,
   getTimetableServer,
@@ -442,6 +444,21 @@ async function run() {
   assert(reset.status === 200, "Reset link sets the new password");
   assert((await loginPost(req(null, "http://x/api/auth/login", "POST", { identifier: studentEmail, password: "Fresh#Student2026" }))).status === 200, "Student logs in with the new password");
   assert((await loginPost(req(null, "http://x/api/auth/login", "POST", { identifier: studentEmail, password: ahmedPassword }))).status === 401, "Old password is rejected");
+
+  // Login must never depend on whether the active academic session has any records at all —
+  // it only ever reads the `users` collection by email, never classes/exams/session-scoped
+  // data. Switch to a brand-new, completely empty session and confirm the same login still
+  // succeeds, then switch back so the rest of this file's assertions are unaffected.
+  {
+    const EMPTY_SESSION = "2099-2100";
+    const settingsBefore = await getSchoolSettingsServer(A);
+    await updateSchoolSettingsServer({ ...settingsBefore!, academicYear: EMPTY_SESSION, updatedAt: new Date().toISOString() });
+    assert((await getClassesServer(A)).length === 0, "Setup: the new session genuinely has zero classes");
+    const loginDuringEmptySession = await loginPost(req(null, "http://x/api/auth/login", "POST", { identifier: studentEmail, password: "Fresh#Student2026" }));
+    assert(loginDuringEmptySession.status === 200, "Login succeeds even while the active academic session has no classes/students/records at all");
+    await updateSchoolSettingsServer({ ...settingsBefore!, academicYear: YEAR, updatedAt: new Date().toISOString() });
+    assert((await getClassesServer(A)).length > 0, "Switched back: the original session's classes are restored, untouched");
+  }
   const reuse = await resetPost(req(null, "http://x/api/auth/reset-password", "POST", { token, newPassword: "Another#Pass2026" }));
   assert(reuse.status === 400 && (await json(reuse)).code === "USED", "Used link is rejected safely");
   const bogus = await resetPost(req(null, "http://x/api/auth/reset-password", "POST", { token: "A".repeat(43), newPassword: "Another#Pass2026" }));
