@@ -110,11 +110,18 @@ async function checkSession(user: AuthenticatedUser): Promise<SessionCheckResult
   } catch (e) {
     if (isServiceUnavailableError(e)) {
       logFirestoreOutage("session check", e);
-      // Cryptographically signed JWT token is valid: allow user to remain logged in during outages
-      return "OK";
+      // SECURITY: restored to match this function's own doc comment above ("fails closed") —
+      // a prior edit had this unconditionally `return "OK"`, which meant a revoked/suspended
+      // account, or a session invalidated by a password change elsewhere, kept working for as
+      // long as this one read kept failing. Throwing here is caught by each role layout
+      // (ServiceBusyNotice) and shown as a recoverable "service busy" page instead.
+      throw new ServiceUnavailableError(e);
     }
+    // An unexpected (non-outage) failure: do not assume the session is still good. This is the
+    // same fail-closed default the Firestore-authoritative branch above already uses for "no
+    // profile found at all".
     console.error("Session revocation check failed:", (e as Error)?.message || "error");
-    return "OK";
+    return "PROFILE_MISSING";
   }
 }
 
@@ -192,37 +199,16 @@ export async function requireAuth(
     user = await getAuthenticatedUser(req);
   } catch (e) {
     if (e instanceof ServiceUnavailableError) {
-      logFirestoreOutage("requireAuth token recovery", e);
-      let token: string | undefined;
-      if (req) {
-        token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
-      } else {
-        try {
-          const cookieStore = await cookies();
-          token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-        } catch {
-          // ignore
-        }
-      }
-      if (token) {
-        const claims = await verifySessionToken(token);
-        if (claims) {
-          user = {
-            uid: claims.uid,
-            email: claims.email,
-            role: claims.role,
-            schoolId: claims.schoolId,
-            name: claims.name,
-            teacherId: claims.teacherId,
-            studentId: claims.studentId,
-            studentIds: claims.studentIds,
-            authAt: claims.authAt,
-            sid: claims.sid,
-          };
-        }
-      }
+      // SECURITY: a prior edit here re-trusted the raw JWT claims directly on a confirmed
+      // Firestore outage, bypassing checkSession's revocation check entirely (a revoked/
+      // suspended account, or one whose password changed elsewhere, would keep working for as
+      // long as the outage lasted). Explicitly declined when asked: this must fail closed, the
+      // same way the page-layout boundary (ServiceBusyNotice) does — a 503 the caller/route
+      // handler turns into its own "service busy" response, never a bypassed auth check.
+      logFirestoreOutage("requireAuth", e);
+      throw serviceBusyResponse();
     }
-    if (!user) throw e;
+    throw e;
   }
 
   if (!user || !user.uid || !user.schoolId) {

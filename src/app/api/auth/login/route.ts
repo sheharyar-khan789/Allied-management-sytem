@@ -188,75 +188,67 @@ export async function POST(req: NextRequest) {
 
     if (firebaseRejected) return fail("bad_password");
 
-    // Profile lookup (also needed to bind the Firebase uid). If the database is unavailable and
-    // nothing has proven the credentials yet, the answer is the same 401 as a wrong password.
-    // Exactly one users lookup per login (it is the only Firestore read on this path).
+    // Profile lookup (also needed to bind the Firebase uid). Exactly one users lookup per login
+    // (it is the only Firestore read on this path).
     let user: Awaited<ReturnType<typeof getUserByEmailServer>> = null;
     try {
       user = await getUserByEmailServer(identifier);
     } catch (lookupErr) {
-      console.warn("User profile lookup from Firestore bypassed gracefully:", (lookupErr as Error)?.message);
+      // A genuine Firestore outage must say so — never fall through to fabricating an identity
+      // from Firebase Auth. See the SECURITY note below for why that fallback was removed
+      // entirely rather than only "fixed": it is not possible to safely synthesize a role here.
+      if (isServiceUnavailableError(lookupErr)) {
+        logFirestoreOutage("login: profile lookup", lookupErr);
+        return json({ error: SERVICE_BUSY_MESSAGE, serviceBusy: true }, 503, { "Retry-After": "120" });
+      }
+      console.warn("User profile lookup failed unexpectedly:", (lookupErr as Error)?.message);
     }
 
-    // Firebase account authenticated: provision or resolve profile directly from Firebase Auth
+    // SECURITY: a Firebase Auth account that authenticated (password verified, or a valid ID
+    // token) but has no Firestore `users` profile is granted NOTHING here — never a default
+    // role, never a default schoolId. The previous version of this block defaulted an unclaimed
+    // account to `role: requestedPortalRole || "ADMIN"` and `schoolId: "allied-school-main"`,
+    // which meant anyone who could create a Firebase Auth account (self-registration uses the
+    // public web API key — see the comment above re: "some Firebase account with this email
+    // exists is NOT proof of being this school user") and log in choosing the Admin tab was
+    // handed a real admin session for that hardcoded school, with the fabricated profile then
+    // persisted into production Firestore. The only safe source of identity for an
+    // unprovisioned account is custom claims the SERVER already set at account-creation time
+    // (students/teachers routes) — and only when BOTH role and schoolId are explicitly present.
+    // Absent either, `user` stays null and falls through to the existing, correct
+    // "This account is not set up for access" rejection below.
     if (!user && firebaseUid && hasAdminCredentials) {
       try {
         const fbUserRecord = await adminAuth.getUser(firebaseUid);
         const VALID_ROLES: AuthenticatedUser["role"][] = ["ADMIN", "TEACHER", "STUDENT", "PARENT"];
         const rawRole = fbUserRecord.customClaims?.role as AuthenticatedUser["role"] | undefined;
-        const claimedRole: AuthenticatedUser["role"] =
-          (rawRole && VALID_ROLES.includes(rawRole)) ? rawRole : (requestedPortalRole || "ADMIN");
-        const claimedSchoolId = (fbUserRecord.customClaims?.schoolId as string | undefined) || "allied-school-main";
-
-        user = {
-          uid: fbUserRecord.uid,
-          email: identifier,
-          name: fbUserRecord.displayName || identifier.split("@")[0],
-          role: claimedRole,
-          schoolId: claimedSchoolId,
-          teacherId: (fbUserRecord.customClaims?.teacherId as string | undefined) || undefined,
-          studentId: (fbUserRecord.customClaims?.studentId as string | undefined) || undefined,
-          status: "ACTIVE",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-
-        // Ensure claims exist on the Firebase Auth record
-        if (!fbUserRecord.customClaims?.role || !fbUserRecord.customClaims?.schoolId) {
-          await adminAuth.setCustomUserClaims(fbUserRecord.uid, {
-            role: claimedRole,
+        const claimedSchoolId = fbUserRecord.customClaims?.schoolId as string | undefined;
+        if (rawRole && VALID_ROLES.includes(rawRole) && claimedSchoolId) {
+          user = {
+            uid: fbUserRecord.uid,
+            email: identifier,
+            name: fbUserRecord.displayName || identifier.split("@")[0],
+            role: rawRole,
             schoolId: claimedSchoolId,
-            ...(user.teacherId ? { teacherId: user.teacherId } : {}),
-            ...(user.studentId ? { studentId: user.studentId } : {}),
-          }).catch(() => {});
-        }
-
-        // Persist to Firestore best-effort without blocking the login if Firestore is busy
-        try {
-          const { adminDb } = await import("@/lib/firebase/admin");
-          await adminDb.collection("users").doc(fbUserRecord.uid).set(user, { merge: true });
-          invalidateUserProfileCache(fbUserRecord.uid);
-        } catch (dbErr) {
-          console.warn("Could not persist user to Firestore:", (dbErr as Error)?.message);
+            teacherId: (fbUserRecord.customClaims?.teacherId as string | undefined) || undefined,
+            studentId: (fbUserRecord.customClaims?.studentId as string | undefined) || undefined,
+            status: "ACTIVE",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          // Firestore already has correct claims; just mirror the profile doc so future lookups
+          // don't need this fallback. Best-effort — a failure here must not block the login.
+          try {
+            const { adminDb } = await import("@/lib/firebase/admin");
+            await adminDb.collection("users").doc(fbUserRecord.uid).set(user, { merge: true });
+            invalidateUserProfileCache(fbUserRecord.uid);
+          } catch (dbErr) {
+            console.warn("Could not persist user to Firestore:", (dbErr as Error)?.message);
+          }
         }
       } catch (adminErr) {
-        console.warn("Could not auto-provision user from Firebase Auth:", (adminErr as Error)?.message || "error");
+        console.warn("Could not resolve Firebase Auth custom claims:", (adminErr as Error)?.message || "error");
       }
-    }
-
-    // Resilient fallback: if user proved password via Firebase Auth but has no Firestore doc yet
-    if (!user && firebaseUid) {
-      const assignedRole = requestedPortalRole || "ADMIN";
-      user = {
-        uid: firebaseUid,
-        email: identifier,
-        name: identifier.split("@")[0],
-        role: assignedRole,
-        schoolId: "allied-school-main",
-        status: "ACTIVE",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
     }
 
     let isAuthenticated = devAuthenticated && !!user;

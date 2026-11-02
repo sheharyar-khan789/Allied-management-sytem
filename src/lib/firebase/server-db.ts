@@ -670,42 +670,23 @@ export async function getUserByEmailServer(email: string): Promise<UserProfile |
           const d = snap.docs[0];
           return { uid: d.id, ...d.data() } as UserProfile;
         }
+        // Query succeeded; genuinely no profile for this email. Never fabricate one from
+        // Firebase Auth custom claims here — a brand-new/self-registered Firebase Auth account
+        // (role/schoolId claims absent) must never resolve to a usable profile, let alone one
+        // defaulted to ADMIN of a hardcoded school. "No profile" is the correct, safe answer;
+        // the login route's own "This account is not set up for access" message handles it.
+        if (process.env.NODE_ENV === "production") return null;
       } catch (e) {
         if (!isServiceUnavailableError(e)) {
           onFirestoreError(`getUserByEmailServer(${email})`, e);
         } else {
           logFirestoreOutage(`getUserByEmailServer(${email})`, e);
         }
+        // A genuine outage must surface as "service busy", never as "log in anyway with a
+        // fabricated identity". Rethrow so the caller (the login route) can tell this apart
+        // from "no such account" and answer accordingly.
+        throw e;
       }
-
-      // Robust fallback: if Firestore is out of quota, unreachable, or user doc not yet synced,
-      // resolve user identity directly from Firebase Auth so login is never blocked.
-      try {
-        const fbUser = await adminAuth.getUserByEmail(norm);
-        if (fbUser) {
-          const claimedRole = (fbUser.customClaims?.role as UserRole) || "ADMIN";
-          const claimedSchool = (fbUser.customClaims?.schoolId as string) || "allied-school-main";
-          const profile: UserProfile = {
-            uid: fbUser.uid,
-            email: fbUser.email || norm,
-            name: fbUser.displayName || norm.split("@")[0],
-            role: claimedRole,
-            schoolId: claimedSchool,
-            teacherId: fbUser.customClaims?.teacherId as string | undefined,
-            studentId: fbUser.customClaims?.studentId as string | undefined,
-            status: "ACTIVE",
-            createdAt: fbUser.metadata.creationTime || new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
-          // Persist back to Firestore asynchronously (best-effort)
-          adminDb.collection("users").doc(fbUser.uid).set(profile, { merge: true }).catch(() => {});
-          return profile;
-        }
-      } catch {
-        // Not found in adminAuth
-      }
-
-      if (process.env.NODE_ENV === "production") return null;
 
       for (const u of localStore.users.values()) {
         if (u.email.toLowerCase().trim() === norm) return u;
