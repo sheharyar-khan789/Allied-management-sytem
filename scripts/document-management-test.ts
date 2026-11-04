@@ -166,6 +166,34 @@ async function run() {
     assert(s1After?.documents?.some((d) => d.name === "STD-DM-001_certificate"), "Commit: the newly imported document is present");
   }
 
+  // ---------------------------------------------------------------- 7. oversized file never blocks the rest of the batch
+  {
+    const oversized = Buffer.concat([PDF_BYTES, Buffer.alloc(10 * 1024 * 1024 + 1)]);
+    const commit = await json(await docsImportPost(docsImportReq(ADMIN, [
+      { name: "STD-DM-002_toolarge.pdf", bytes: oversized },
+      { name: "STD-DM-001_photo.png", bytes: PNG_BYTES, type: "image/png" },
+    ])));
+    assert(commit.summary.imported === 1 && commit.summary.skippedOrFailed === 1, "Commit: an oversized file is skipped (never silently dropped - reported) without blocking the other valid file in the same batch");
+    const s2After = await getStudentByIdServer(A, s2.id);
+    assert(!s2After?.documents?.some((d) => d.name === "STD-DM-002_toolarge"), "Commit: the oversized file was never actually saved");
+  }
+
+  // ---------------------------------------------------------------- 8. repeated commit of the same files
+  // The API intentionally has no cross-request idempotency key (each commit call is independent,
+  // matching "never silently skip failed files" - every call does what it's told); the UI's own
+  // guard (disable Import after the first click, require a fresh preview to re-enable) is what
+  // prevents a double-click or retry from importing the same files twice. This documents the
+  // actual, unmodified backend behavior rather than assuming an idempotency guarantee that was
+  // never implemented there.
+  {
+    const before = (await getStudentByIdServer(A, s2.id))?.documents?.length || 0;
+    const first = await json(await docsImportPost(docsImportReq(ADMIN, [{ name: "STD-DM-002_repeat.pdf", bytes: PDF_BYTES }])));
+    const second = await json(await docsImportPost(docsImportReq(ADMIN, [{ name: "STD-DM-002_repeat.pdf", bytes: PDF_BYTES }])));
+    assert(first.summary.imported === 1 && second.summary.imported === 1, "Repeated commit: the backend has no cross-request dedup - each independent call does import (by design; the client guards against an accidental repeat, see StudentDocumentImportModal)");
+    const after = (await getStudentByIdServer(A, s2.id))?.documents?.length || 0;
+    assert(after === before + 2, "Repeated commit: confirms there are now two separate document records - the safeguard against this is client-side, not a hidden server dedup that could mask a real re-upload");
+  }
+
   console.log("==================================================");
   console.log(`RESULT: ${passed} passed, ${failed} failed`);
   console.log("==================================================");
