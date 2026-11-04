@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
 import MarksEntryGrid from "@/components/MarksEntryGrid";
+import ExamScheduleImportModal from "@/components/ExamScheduleImportModal";
 import { DEFAULT_GRADING_SCALE, EXAM_CATEGORIES, EXAM_CATEGORY_LABELS } from "@/lib/exam-results";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -62,6 +63,7 @@ export default function ExamsManagementPage() {
 
   const [formError, setFormError] = useState("");
   const [notice, setNotice] = useState("");
+  const [showBulkImport, setShowBulkImport] = useState(false);
 
   const loadClasses = useCallback(() => {
     fetch("/api/classes")
@@ -386,6 +388,10 @@ export default function ExamsManagementPage() {
             <span className="material-symbols-outlined text-[18px]">add</span>
             <span>New Exam</span>
           </button>
+          <button type="button" onClick={() => setShowBulkImport(true)} className={btnCls}>
+            <span className="material-symbols-outlined text-[18px]">upload_file</span>
+            <span>Bulk Import Exam</span>
+          </button>
           {selectedExamId && (
             <button type="button" onClick={() => openScheduleForm()} className={btnCls}>
               <span className="material-symbols-outlined text-[18px]">event</span>
@@ -658,6 +664,16 @@ export default function ExamsManagementPage() {
           onSaved={() => loadExams(selectedExamId, activeSchedule.id, true)}
         />
       ) : null}
+
+      {showBulkImport && (
+        <ExamScheduleImportModal
+          onClose={() => setShowBulkImport(false)}
+          onImported={(examId) => {
+            setShowBulkImport(false);
+            loadExams(examId);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -569,6 +569,10 @@ export async function PUT(req: NextRequest) {
     }
 
     // Verify every graded student actually belongs to this school and to the schedule's class.
+    // A student that doesn't belong, or appears twice, indicates a malformed/tampered request
+    // (never happens from the real grid) — that one is rejected outright rather than silently
+    // dropped, since there's no safe way to guess which of two conflicting rows for the same
+    // student was intended.
     const classStudents = await getStudentsServer(authUser.schoolId, schedule.classId);
     const studentsById = new Map(classStudents.map((s) => [s.id, s]));
     const seen = new Set<string>();
@@ -580,17 +584,7 @@ export async function PUT(req: NextRequest) {
       seen.add(sm.studentId);
     }
 
-    // Marks above the configured maximum (or negative) are rejected, not silently clamped.
     const totalMarks = schedule.totalMarks;
-    for (const sm of studentMarks) {
-      if (sm.marksObtained === null) continue;
-      const problem = validateObtainedMarks(sm.marksObtained, totalMarks);
-      if (problem) {
-        const name = studentsById.get(sm.studentId)?.fullName || sm.studentId;
-        return jsonError(`${name}: ${problem}`, 400);
-      }
-    }
-
     const [subjects, existingResults] = await Promise.all([
       getSubjectsServer(authUser.schoolId),
       resultsForSchedule(authUser.schoolId, schedule),
@@ -600,16 +594,43 @@ export async function PUT(req: NextRequest) {
     const existingById = new Map(existingResults.map((r) => [r.id, r]));
     const now = new Date().toISOString();
 
+    // Each row is validated and applied independently: an invalid mark on one student, or a
+    // student whose mark is already saved and locked for a TEACHER, is skipped and reported —
+    // it never blocks the other valid rows in the same save from going through (a class of 15
+    // with 2 problem rows still saves the other 13).
     const upserts: ExamResultDoc[] = [];
     const deleteIds: string[] = [];
+    const rejected: { studentId: string; name: string; reason: string }[] = [];
+    const locked: { studentId: string; name: string }[] = [];
+
     for (const sm of studentMarks) {
+      const student = studentsById.get(sm.studentId)!;
+      const name = student.fullName || sm.studentId;
       const id = resultIdFor(authUser.schoolId, schedule.examId, sm.studentId, schedule.subjectId);
       const existing = existingById.get(id);
+
+      // PER-RECORD LOCK: once a mark is saved for this student/exam/subject, a TEACHER can no
+      // longer change or clear it — by anyone's save, not only their own — even before the exam
+      // is published (that is the separate, broader isCorrectionAfterPublish gate above). Only
+      // ADMIN may correct an already-saved record. Enforced here server-side; a direct API call
+      // cannot bypass it by skipping the grid's disabled inputs.
+      if (existing && typeof existing.obtainedMarks === "number" && authUser.role === "TEACHER") {
+        locked.push({ studentId: sm.studentId, name });
+        continue;
+      }
+
       if (sm.marksObtained === null) {
         if (existing) deleteIds.push(id);
         continue;
       }
-      const student = studentsById.get(sm.studentId)!;
+
+      // Marks above the configured maximum (or negative) are rejected, not silently clamped.
+      const problem = validateObtainedMarks(sm.marksObtained, totalMarks);
+      if (problem) {
+        rejected.push({ studentId: sm.studentId, name, reason: problem });
+        continue;
+      }
+
       upserts.push({
         id,
         schoolId: authUser.schoolId,
@@ -632,29 +653,45 @@ export async function PUT(req: NextRequest) {
         academicYear: existing?.academicYear || exam.session || undefined,
         createdAt: existing?.createdAt || now,
         updatedAt: now,
+        ...(existing && authUser.role === "ADMIN" ? { correctedBy: authUser.uid, correctedAt: now } : {}),
       });
     }
 
     const { written, deleted } = await commitExamResultsServer(authUser.schoolId, upserts, deleteIds);
+    const correctedExisting = upserts.filter((u) => existingById.has(u.id)).length;
 
     await createAuditLogServer(
       authUser.schoolId,
       authUser.uid,
       authUser.email,
       authUser.role,
-      isCorrectionAfterPublish ? "CORRECT_PUBLISHED_EXAM_MARKS" : "ENTER_EXAM_MARKS",
+      isCorrectionAfterPublish || correctedExisting > 0 ? "CORRECT_PUBLISHED_EXAM_MARKS" : "ENTER_EXAM_MARKS",
       "EXAM_RESULT",
       examScheduleId,
       isCorrectionAfterPublish
         ? `Corrected marks for ${subjectName || schedule.subjectId} in the published exam "${exam.name}" (${written} saved, ${deleted} cleared) — already-published results were changed.`
+        : correctedExisting > 0
+        ? `Admin corrected ${correctedExisting} previously-saved mark(s) for ${subjectName || schedule.subjectId} in "${exam.name}" (${written} saved total, ${deleted} cleared).`
         : `Recorded marks for ${subjectName || schedule.subjectId} in "${exam.name}" (${written} saved, ${deleted} cleared).`
     );
+
+    const messageParts = [`Saved ${written} mark(s)${deleted ? ` and cleared ${deleted}` : ""} for ${subjectName || "this subject"}.`];
+    if (locked.length) {
+      messageParts.push(
+        `${locked.length} already saved and locked for you (ask an administrator to correct): ${locked.map((l) => l.name).join(", ")}.`
+      );
+    }
+    if (rejected.length) {
+      messageParts.push(`${rejected.length} rejected: ${rejected.map((r) => `${r.name} (${r.reason})`).join("; ")}.`);
+    }
 
     return NextResponse.json({
       success: true,
       saved: written,
       cleared: deleted,
-      message: `Saved ${written} mark(s)${deleted ? ` and cleared ${deleted}` : ""} for ${subjectName || "this subject"}.`,
+      locked,
+      rejected,
+      message: messageParts.join(" "),
     });
   } catch (error: any) {
     if (error instanceof Response) return error;

@@ -147,6 +147,7 @@ export default function TeacherGradebookPage() {
             schedule={activeSchedule}
             gradingScale={gradingScale}
             readOnly={Boolean(readOnlyReason)}
+            lockRecordedRows
             onSaved={() => load(examId, activeSchedule.id, true)}
           />
         </>

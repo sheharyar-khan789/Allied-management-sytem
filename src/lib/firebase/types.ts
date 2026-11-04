@@ -382,7 +382,7 @@ export interface StudentChargeDoc {
  * exam-results.ts). Optional and absent on exams created before this field existed; an exam
  * with no category is never category-gated (see resolveExamCategoryPermission).
  */
-export type ExamCategory = "MONTHLY_TEST" | "WEEKLY_TEST" | "FIRST_TERM" | "SECOND_TERM" | "MIDTERM" | "FINAL_TERM";
+export type ExamCategory = "MONTHLY_TEST" | "WEEKLY_TEST" | "FIRST_TERM" | "SECOND_TERM" | "MIDTERM" | "FINAL_TERM" | "ANNUAL_EXAM";
 
 export interface ExamDoc {
   id: string;
@@ -439,6 +439,10 @@ export interface ExamResultDoc {
   academicYear?: string;
   createdAt: string;
   updatedAt: string;
+  /** Set only when an ADMIN overwrites a mark a TEACHER (or another admin) already saved —
+   *  the per-record lock in PUT /api/exams means this is always a deliberate correction. */
+  correctedBy?: string;
+  correctedAt?: string;
 }
 
 export interface StudentObservationDoc {

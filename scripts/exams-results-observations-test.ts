@@ -187,10 +187,15 @@ async function run() {
 
   // ---------------------------------------------------------------- 4. marks entry
   {
-    const over = await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 45 }, { studentId: s2.id, marksObtained: 51 }] }));
-    assert(over.status === 400, "Marks PUT: a mark above the maximum is rejected");
-    assert((await getExamResultsServer(A, EXAM)).length === 0, "Marks PUT: a rejected submission saves nothing (all or nothing)");
-    assert((await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: -1 }] }))).status === 400, "Marks PUT: negative marks rejected");
+    // Per-row validation: one student's mark exceeding the maximum no longer blocks a classmate's
+    // valid mark in the same save (Part 11 — a batch with a problem row must not reject the whole
+    // upload). s1 is saved; s2 is reported back as rejected, not silently dropped.
+    const over = await json(await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 45 }, { studentId: s2.id, marksObtained: 51 }] })));
+    assert(over.success === true && over.saved === 1 && over.rejected?.length === 1 && over.rejected[0].studentId === s2.id, "Marks PUT: a mark above the maximum is rejected per-row, not the whole batch");
+    assert((await getExamResultsServer(A, EXAM)).length === 1, "Marks PUT: the other, valid row in the same batch is still saved");
+    const neg = await json(await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: -1 }] })));
+    assert(neg.success === true && neg.saved === 0 && neg.rejected?.length === 1, "Marks PUT: negative marks rejected (reported, not saved)");
+    assert((await getExamResultsServer(A, EXAM)).find((r) => r.studentId === s1.id)?.obtainedMarks === 45, "Marks PUT: the rejected negative value left the previously-saved mark unchanged");
     assert((await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s4.id, marksObtained: 10 }] }))).status === 403, "Marks PUT: student of another class rejected");
     assert((await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 10 }, { studentId: s1.id, marksObtained: 11 }] }))).status === 400, "Marks PUT: duplicate student in one submission rejected");
     assert((await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: MATH_SCH, grade: "A+", studentMarks: [{ studentId: s1.id, marksObtained: 10 }] }))).status === 400, "Marks PUT: client-supplied grade rejected");
@@ -230,12 +235,24 @@ async function run() {
   {
     const createdAt = (await getExamResultsServer(A, EXAM)).find((r) => r.studentId === s1.id)!.createdAt;
     await new Promise((r) => setTimeout(r, 5));
-    const edit = await examsPut(req(T_MATH, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 40 }] }));
-    assert(edit.status === 200, "Marks PUT: the allocated subject teacher can correct marks");
+
+    // PER-RECORD LOCK (Part 11): s1's mark is already saved — the allocated subject teacher can
+    // no longer change it themselves, even though the exam isn't published and they own this
+    // class/subject. The attempt is reported back as locked, not a hard error, and the stored
+    // mark is untouched.
+    const teacherEdit = await json(await examsPut(req(T_MATH, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 40 }] })));
+    assert(teacherEdit.success === true && teacherEdit.saved === 0 && teacherEdit.locked?.length === 1 && teacherEdit.locked[0].studentId === s1.id, "Marks PUT: a teacher cannot change an already-saved mark (locked)");
+    const stillSaved = (await getExamResultsServer(A, EXAM)).find((r) => r.studentId === s1.id)!;
+    assert(stillSaved.obtainedMarks === 45, "Marks PUT: the teacher's blocked edit left the saved mark unchanged");
+
+    // Only an ADMIN may correct an already-saved mark.
+    const edit = await examsPut(req(ADMIN, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 40 }] }));
+    assert(edit.status === 200, "Marks PUT: an admin can correct an already-saved mark");
     const after = (await getExamResultsServer(A, EXAM)).filter((r) => r.studentId === s1.id && r.subjectId === math.id);
     assert(after.length === 1 && after[0].obtainedMarks === 40 && after[0].percentage === 80, "Editing updates the same result (no duplicate)");
     assert(after[0].remarks === "Excellent algebra", "Editing without sending remarks keeps the saved remarks");
     assert(after[0].createdAt === createdAt && after[0].updatedAt !== createdAt, "Editing keeps createdAt and bumps updatedAt");
+    assert(typeof after[0].correctedBy === "string" && after[0].correctedBy.length > 0, "Editing an already-saved mark as admin is tagged with who corrected it");
 
     assert((await examsPut(req(T_ENG, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 1 }] }))).status === 403, "Marks PUT: a teacher of another subject is blocked");
     assert((await examsPut(req(T_SCI, "/api/exams", "PUT", { examScheduleId: MATH_SCH, studentMarks: [{ studentId: s1.id, marksObtained: 1 }] }))).status === 403, "Marks PUT: a teacher of another class is blocked");
