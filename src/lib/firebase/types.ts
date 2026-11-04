@@ -146,6 +146,16 @@ export interface TeacherDoc {
   weeklyLoad: number;
   salary?: number;
   baseSalary?: number;
+  /** Admin-uploaded only (no bulk import): qualification/educational/professional certificates,
+   *  passport photo, other authorized files. See src/lib/input-validation.ts teacherDocumentsArray. */
+  documents?: {
+    id: string;
+    name: string;
+    type: "CERTIFICATE" | "EDUCATIONAL" | "PROFESSIONAL" | "PHOTO" | "OTHER";
+    url: string;
+    uploadedAt: string;
+    size?: number;
+  }[];
   createdAt: string;
   updatedAt: string;
 }

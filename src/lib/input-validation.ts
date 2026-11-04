@@ -159,6 +159,21 @@ export const documentsArray = z
   )
   .max(50);
 
+/** Mirrors TeacherDoc["documents"]: qualification/educational/professional certificates,
+ *  passport photo, other authorized files. Admin-only, no bulk import (see Part 13). */
+export const teacherDocumentsArray = z
+  .array(
+    z.object({
+      id: z.string().trim().min(1).max(128),
+      name: z.string().trim().max(200),
+      type: z.enum(["CERTIFICATE", "EDUCATIONAL", "PROFESSIONAL", "PHOTO", "OTHER"]),
+      url: safeUrl,
+      uploadedAt: z.string().trim().max(40),
+      size: z.number().nonnegative().max(50 * 1024 * 1024).optional(),
+    })
+  )
+  .max(50);
+
 /** Optional reference to another record: an id, or empty/null for "none". */
 const optionalRef = z.union([idString, z.literal(""), z.null()]).optional();
 

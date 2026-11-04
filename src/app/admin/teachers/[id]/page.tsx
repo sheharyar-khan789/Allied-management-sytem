@@ -28,6 +28,13 @@ export default function TeacherProfilePage({
   const [salarySaved, setSalarySaved] = useState(false);
   const [salaryError, setSalaryError] = useState("");
 
+  // Document upload state
+  const [docModalOpen, setDocModalOpen] = useState(false);
+  const [docType, setDocType] = useState<"CERTIFICATE" | "EDUCATIONAL" | "PROFESSIONAL" | "PHOTO" | "OTHER">("CERTIFICATE");
+  const [docName, setDocName] = useState("");
+  const [docUrl, setDocUrl] = useState("");
+  const [docSaving, setDocSaving] = useState(false);
+
   // Edit Profile modal state
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editFormLoading, setEditFormLoading] = useState(false);
@@ -70,6 +77,53 @@ export default function TeacherProfilePage({
   useEffect(() => {
     fetchTeacherData();
   }, [id]);
+
+  const handleAddDocument = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!docUrl || !docName) return;
+    setDocSaving(true);
+    try {
+      const currentDocs = teacher?.documents || [];
+      const newDoc = {
+        id: `doc-${Date.now()}`,
+        name: docName,
+        type: docType,
+        url: docUrl,
+        uploadedAt: new Date().toISOString(),
+      };
+      const res = await fetch(`/api/teachers/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documents: [...currentDocs, newDoc] }),
+      });
+      if (res.ok) {
+        setDocModalOpen(false);
+        setDocName("");
+        setDocUrl("");
+        fetchTeacherData();
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setDocSaving(false);
+    }
+  };
+
+  const handleDeleteDocument = async (docId: string) => {
+    if (!confirm("Are you sure you want to remove this attached document?")) return;
+    try {
+      const currentDocs = teacher?.documents || [];
+      const updatedDocs = currentDocs.filter((d: any) => d.id !== docId);
+      const res = await fetch(`/api/teachers/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documents: updatedDocs }),
+      });
+      if (res.ok) fetchTeacherData();
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const openEditModal = () => {
     const names = (teacher?.fullName || "").split(" ");
@@ -539,6 +593,158 @@ export default function TeacherProfilePage({
           </div>
         </div>
       </div>
+
+      {/* Documents */}
+      <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4">
+        <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+          <h3 className="font-headline-md text-sm font-bold text-on-surface flex items-center gap-2">
+            <span className="material-symbols-outlined text-secondary text-[18px]">folder_open</span>
+            Documents &amp; Files
+          </h3>
+          <button
+            onClick={() => setDocModalOpen(true)}
+            className="px-3.5 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold flex items-center gap-1.5 hover:bg-secondary/90 shadow-sm"
+          >
+            <span className="material-symbols-outlined text-[18px]">upload_file</span>
+            <span>Upload Document</span>
+          </button>
+        </div>
+        <p className="text-xs text-on-surface-variant font-medium -mt-2">
+          Qualification certificates, professional/educational records, passport photo, and other authorized files.
+        </p>
+
+        {(!teacher.documents || teacher.documents.length === 0) ? (
+          <div className="p-8 rounded-xl bg-surface-container-low/60 border border-dashed border-outline-variant text-center space-y-2">
+            <span className="material-symbols-outlined text-4xl text-on-surface-variant">inventory_2</span>
+            <p className="text-xs font-semibold text-on-surface">No documents uploaded yet</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            {teacher.documents.map((doc: any) => (
+              <div
+                key={doc.id}
+                className="p-4 rounded-xl bg-surface-container-low/60 shadow-sm border border-surface-container-high/40 flex flex-col justify-between space-y-3"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-surface-container flex items-center justify-center shrink-0 text-secondary">
+                    <span className="material-symbols-outlined text-[22px]">
+                      {doc.url?.includes(".pdf") ? "picture_as_pdf" : "description"}
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-secondary/10 text-secondary">
+                      {doc.type.replace(/_/g, " ")}
+                    </span>
+                    <h5 className="font-semibold text-xs text-on-surface truncate mt-1" title={doc.name}>
+                      {doc.name}
+                    </h5>
+                    <p className="text-[10px] text-on-surface-variant mt-0.5">Uploaded {formatDisplayDate(doc.uploadedAt)}</p>
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-surface-container-low flex items-center justify-between">
+                  <a href={doc.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-secondary hover:underline">
+                    <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                    <span>View File</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteDocument(doc.id)}
+                    className="p-1 text-on-surface-variant hover:text-error rounded-md transition-colors"
+                    title="Delete document"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">delete</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Document Upload Modal */}
+      {docModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="attach-teacher-document-heading"
+            className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 my-8"
+          >
+            <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+              <h3 id="attach-teacher-document-heading" className="font-headline-md text-sm font-bold text-on-surface">
+                Upload Faculty Document
+              </h3>
+              <button
+                onClick={() => { setDocModalOpen(false); setDocUrl(""); setDocName(""); }}
+                className="text-on-surface-variant hover:text-on-surface"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleAddDocument} className="space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-on-surface mb-1">Document Category *</label>
+                <select
+                  value={docType}
+                  onChange={(e) => setDocType(e.target.value as any)}
+                  className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40"
+                >
+                  <option value="CERTIFICATE">Qualification Certificate</option>
+                  <option value="EDUCATIONAL">Educational Document</option>
+                  <option value="PROFESSIONAL">Professional Document</option>
+                  <option value="PHOTO">Passport-size Photograph</option>
+                  <option value="OTHER">Other Authorized Document</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-on-surface mb-1">Document Title / Label *</label>
+                <input
+                  type="text"
+                  required
+                  value={docName}
+                  onChange={(e) => setDocName(e.target.value)}
+                  placeholder="e.g. M.Ed Degree Certificate"
+                  className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 focus:outline-none focus:ring-2 focus:ring-secondary/20"
+                />
+              </div>
+
+              <FileUpload
+                folder="documents"
+                label="Select File to Upload *"
+                helperText="Upload PDF, JPG or PNG (up to 10MB)"
+                currentUrl={docUrl}
+                onUploadComplete={(url, meta) => {
+                  setDocUrl(url);
+                  if (!docName && meta?.filename) {
+                    setDocName(meta.filename.replace(/\.[^/.]+$/, ""));
+                  }
+                }}
+                onRemove={() => setDocUrl("")}
+                previewType="file"
+              />
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-surface-container-low">
+                <button
+                  type="button"
+                  onClick={() => { setDocModalOpen(false); setDocUrl(""); setDocName(""); }}
+                  className="px-4 py-2 rounded-lg text-xs font-semibold text-on-surface-variant hover:bg-surface-container-low"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={docSaving || !docUrl || !docName}
+                  className="px-4 py-2 rounded-lg text-xs font-semibold bg-secondary text-on-secondary hover:bg-secondary/90 disabled:opacity-50"
+                >
+                  {docSaving ? "Saving..." : "Upload Document"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Edit Teacher Modal */}
       {editModalOpen && (

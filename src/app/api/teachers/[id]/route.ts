@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireRecentAuth } from "@/lib/firebase/server-auth";
-import { findForbiddenFields, forbiddenFieldsResponse, isSafeStoredUrl } from "@/lib/input-validation";
+import { findForbiddenFields, forbiddenFieldsResponse, isSafeStoredUrl, teacherDocumentsArray } from "@/lib/input-validation";
 import {
   getTeacherByIdServer,
   saveTeacherServer,
@@ -92,6 +92,7 @@ export async function GET(
       // field, so every teacher permanently had an empty array.
       assignedClassIds: Array.isArray(teacher.assignedClassIds) ? teacher.assignedClassIds : [],
       baseSalary: teacher.baseSalary ?? teacher.salary ?? 0,
+      documents: teacher.documents || [],
     };
 
     return NextResponse.json({
@@ -133,6 +134,14 @@ export async function PUT(
     if (forbiddenFields.length > 0) return forbiddenFieldsResponse(forbiddenFields);
     if (body.photoUrl !== undefined && body.photoUrl !== null && !isSafeStoredUrl(body.photoUrl)) {
       return NextResponse.json({ error: "photoUrl must be an https:// URL." }, { status: 400 });
+    }
+    let parsedDocuments: ReturnType<typeof teacherDocumentsArray.parse> | undefined;
+    if (body.documents !== undefined) {
+      const docsParsed = teacherDocumentsArray.safeParse(body.documents);
+      if (!docsParsed.success) {
+        return NextResponse.json({ error: "Invalid documents: " + docsParsed.error.issues[0]?.message }, { status: 400 });
+      }
+      parsedDocuments = docsParsed.data;
     }
     for (const [key, max] of Object.entries({ firstName: 80, lastName: 80, designation: 120, qualification: 200, specialization: 120, phone: 30, email: 254 })) {
       if (body[key] !== undefined && body[key] !== null && (typeof body[key] !== "string" || body[key].length > max)) {
@@ -262,6 +271,7 @@ export async function PUT(
       email: body.email || existing.email,
       status: inferredStatus,
       photoUrl: body.photoUrl !== undefined ? body.photoUrl : existing.photoUrl,
+      documents: parsedDocuments !== undefined ? parsedDocuments : (existing.documents || []),
       baseSalary: updatedSalary,
       salary: updatedSalary,
       joiningDate: updatedJoiningDate,
@@ -300,6 +310,8 @@ export async function PUT(
           }.`
         : usernameChange?.changed
         ? `Set login username "${usernameChange.username}" for faculty member ${updated.fullName} (${updated.employeeId}).`
+        : parsedDocuments !== undefined
+        ? `Updated documents for faculty member ${updated.fullName} (${updated.employeeId}); now ${parsedDocuments.length} document(s) on file.`
         : `Updated profile for faculty member ${updated.fullName} (${updated.employeeId}).`
     );
 
