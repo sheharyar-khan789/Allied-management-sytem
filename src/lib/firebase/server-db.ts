@@ -720,19 +720,29 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
       const doc = await withFirestoreRetry("getUserByIdServer", () => adminDb.collection("users").doc(uid).get());
       if (doc.exists) return { uid: doc.id, ...doc.data() } as UserProfile;
     } catch (e) {
-      if (!isServiceUnavailableError(e)) {
-        onFirestoreError(`getUserByIdServer(${uid})`, e);
-      } else {
+      // SECURITY: a genuine outage must surface as "service busy", never as "resolve this
+      // session from Firebase Auth claims instead" — same rationale as getUserByEmailServer.
+      // checkSession (server-auth.ts) depends on this throw to fail closed instead of silently
+      // re-profiling the caller from whatever Firebase Auth claims happen to be on their account.
+      if (isServiceUnavailableError(e)) {
         logFirestoreOutage(`getUserByIdServer(${uid})`, e);
+        throw e;
       }
+      onFirestoreError(`getUserByIdServer(${uid})`, e);
     }
 
-    // Resilient fallback: resolve directly from Firebase Auth if Firestore doc unavailable/out of quota
+    // Bridge for a Firestore doc that genuinely doesn't exist yet (e.g. just created in Firebase
+    // Auth with custom claims, profile write still landing): only trusted when BOTH role and
+    // schoolId are explicitly present on the account's custom claims — never defaulted to ADMIN
+    // of a hardcoded school, which would hand that role to any Firebase Auth account (including a
+    // self-registered one) whose claims happen to be unset. Mirrors the same check already used
+    // for this purpose in /api/auth/login.
     try {
       const fbUser = await adminAuth.getUser(uid);
-      if (fbUser) {
-        const claimedRole = (fbUser.customClaims?.role as UserRole) || "ADMIN";
-        const claimedSchool = (fbUser.customClaims?.schoolId as string) || "allied-school-main";
+      const VALID_ROLES: UserRole[] = ["ADMIN", "TEACHER", "STUDENT", "PARENT"];
+      const claimedRole = fbUser.customClaims?.role as UserRole | undefined;
+      const claimedSchool = fbUser.customClaims?.schoolId as string | undefined;
+      if (fbUser && claimedRole && VALID_ROLES.includes(claimedRole) && claimedSchool) {
         return {
           uid: fbUser.uid,
           email: fbUser.email || "",
