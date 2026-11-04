@@ -30,6 +30,7 @@ import {
   validateObtainedMarks,
 } from "@/lib/exam-results";
 import { deleteFileFromStorage, storagePathFromDownloadUrl } from "@/lib/storage";
+import { eligibleStudentsForSubject, isStudentEligibleForSubject } from "@/lib/subject-allocation";
 
 const EXAM_STATUSES = ["UPCOMING", "ONGOING", "COMPLETED", "PUBLISHED"] as const;
 
@@ -159,7 +160,12 @@ export async function GET(req: NextRequest) {
         };
         if (oneRoster && sched.id !== rosterScheduleId) return { ...header, results: null };
 
-        const [classStudents, existingResults] = await classDataFor(sched.classId);
+        const [allClassStudents, existingResults] = await classDataFor(sched.classId);
+        // Subject-wise allocation (Part 12): an optional/elective subject's roster is only the
+        // students explicitly allocated to it, never the whole class — enforced here (display)
+        // and again in PUT (save), so a stale grid can never be used to save a mark for someone
+        // not actually taking the subject.
+        const classStudents = eligibleStudentsForSubject(allClassStudents, subject);
         const resultsByStudent = new Map(
           existingResults
             .filter((r) => r.scheduleId === sched.id || r.subjectId === sched.subjectId)
@@ -573,8 +579,12 @@ export async function PUT(req: NextRequest) {
     // (never happens from the real grid) — that one is rejected outright rather than silently
     // dropped, since there's no safe way to guess which of two conflicting rows for the same
     // student was intended.
-    const classStudents = await getStudentsServer(authUser.schoolId, schedule.classId);
+    const [classStudents, subjects] = await Promise.all([
+      getStudentsServer(authUser.schoolId, schedule.classId),
+      getSubjectsServer(authUser.schoolId),
+    ]);
     const studentsById = new Map(classStudents.map((s) => [s.id, s]));
+    const subjectDoc = subjects.find((s) => s.id === schedule.subjectId);
     const seen = new Set<string>();
     for (const sm of studentMarks) {
       if (!studentsById.has(sm.studentId)) {
@@ -585,19 +595,17 @@ export async function PUT(req: NextRequest) {
     }
 
     const totalMarks = schedule.totalMarks;
-    const [subjects, existingResults] = await Promise.all([
-      getSubjectsServer(authUser.schoolId),
-      resultsForSchedule(authUser.schoolId, schedule),
-    ]);
+    const existingResults = await resultsForSchedule(authUser.schoolId, schedule);
     const gradingScale = resolveGradingScale(settings);
-    const subjectName = subjects.find((s) => s.id === schedule.subjectId)?.name || schedule.subjectName;
+    const subjectName = subjectDoc?.name || schedule.subjectName;
     const existingById = new Map(existingResults.map((r) => [r.id, r]));
     const now = new Date().toISOString();
 
-    // Each row is validated and applied independently: an invalid mark on one student, or a
-    // student whose mark is already saved and locked for a TEACHER, is skipped and reported —
-    // it never blocks the other valid rows in the same save from going through (a class of 15
-    // with 2 problem rows still saves the other 13).
+    // Each row is validated and applied independently: an invalid mark on one student, a
+    // student not allocated to this optional subject, or a student whose mark is already saved
+    // and locked for a TEACHER, is skipped and reported — it never blocks the other valid rows
+    // in the same save from going through (a class of 15 with 2 problem rows still saves the
+    // other 13).
     const upserts: ExamResultDoc[] = [];
     const deleteIds: string[] = [];
     const rejected: { studentId: string; name: string; reason: string }[] = [];
@@ -608,6 +616,15 @@ export async function PUT(req: NextRequest) {
       const name = student.fullName || sm.studentId;
       const id = resultIdFor(authUser.schoolId, schedule.examId, sm.studentId, schedule.subjectId);
       const existing = existingById.get(id);
+
+      // Subject-wise allocation (Part 12): an optional subject can only be graded for students
+      // the Admin has actually allocated to it — never guessed, never the whole class by default.
+      // Checked here (not just filtered out of the roster) so a direct API call, or a grid that
+      // hasn't refreshed since an allocation changed, can't save a mark for an ineligible student.
+      if (!isStudentEligibleForSubject(student, subjectDoc)) {
+        rejected.push({ studentId: sm.studentId, name, reason: `${name} is not allocated to ${subjectName || "this optional subject"}.` });
+        continue;
+      }
 
       // PER-RECORD LOCK: once a mark is saved for this student/exam/subject, a TEACHER can no
       // longer change or clear it — by anyone's save, not only their own — even before the exam

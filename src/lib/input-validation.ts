@@ -186,6 +186,10 @@ export const subjectBodySchema = z
     classId: optionalRef,
     teacherId: optionalRef,
     credits: z.union([z.number().finite().min(0).max(100), z.string().trim().max(10), z.null()]).optional(),
+    // Optional (elective) subject, e.g. Biology vs Computer in Class 9/10 — only students the
+    // Admin has explicitly allocated to it (StudentDoc.optionalSubjectIds) are eligible for its
+    // marks/roster. Unset/false: compulsory, the existing behavior for every subject up to now.
+    isOptional: z.boolean().optional(),
   })
   .strict();
 

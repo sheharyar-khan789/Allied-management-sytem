@@ -115,6 +115,11 @@ export interface StudentDoc {
     uploadedAt: string;
     size?: number;
   }[];
+  /** Ids of optional/elective subjects (SubjectDoc.isOptional) of this student's own class that
+   *  an Admin has explicitly allocated to this student — e.g. Biology for one Class 9 student,
+   *  Computer for another, both still enrolled in the same class/section. Never set automatically
+   *  (not on import, not on promotion); absent/empty means no elective allocated yet. */
+  optionalSubjectIds?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -173,6 +178,10 @@ export interface SubjectDoc {
   academicYear?: string;
   createdAt: string;
   updatedAt: string;
+  /** Elective subject (e.g. Biology vs Computer within the same class) — only students the
+   *  Admin explicitly allocated to it (StudentDoc.optionalSubjectIds) are eligible for its
+   *  marks/roster. Unset/false: compulsory, every active student of the class is eligible. */
+  isOptional?: boolean;
 }
 
 export interface TimetableDoc {

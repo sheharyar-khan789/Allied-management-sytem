@@ -26,6 +26,7 @@ export default function ClassesAndSubjectsPage() {
   const [subjectClassId, setSubjectClassId] = useState("");
   const [subjectTeacherId, setSubjectTeacherId] = useState("");
   const [subjectCredits, setSubjectCredits] = useState("3");
+  const [subjectIsOptional, setSubjectIsOptional] = useState(false);
 
   const fetchClasses = async () => {
     try {
@@ -125,6 +126,7 @@ export default function ClassesAndSubjectsPage() {
     setSubjectClassId(preselectedClassId || classes[0]?.id || "");
     setSubjectTeacherId("");
     setSubjectCredits("3");
+    setSubjectIsOptional(false);
     setSubjectError("");
     setSubjectModalOpen(true);
   };
@@ -136,6 +138,7 @@ export default function ClassesAndSubjectsPage() {
     setSubjectClassId(sub.classId || cls.id || "");
     setSubjectTeacherId(sub.teacherId || "");
     setSubjectCredits(String(sub.credits || 3));
+    setSubjectIsOptional(Boolean(sub.isOptional));
     setSubjectError("");
     setSubjectModalOpen(true);
   };
@@ -164,6 +167,7 @@ export default function ClassesAndSubjectsPage() {
         classId: subjectClassId,
         teacherId: subjectTeacherId || null,
         credits: Number(subjectCredits) || 3,
+        isOptional: subjectIsOptional,
       };
 
       if (editingSubject) {
@@ -651,6 +655,24 @@ export default function ClassesAndSubjectsPage() {
                   onChange={(e) => setSubjectCredits(e.target.value)}
                   className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                 />
+              </div>
+
+              <div>
+                <label className="flex items-center gap-2 font-semibold text-on-surface">
+                  <input
+                    type="checkbox"
+                    checked={subjectIsOptional}
+                    onChange={(e) => setSubjectIsOptional(e.target.checked)}
+                    className="h-4 w-4"
+                  />
+                  Optional / elective subject
+                </label>
+                <p className="text-[10px] text-on-surface-variant mt-0.5">
+                  For a subject like Biology or Computer that only some students of this class take (e.g. Class 9/10
+                  streams). Only students you explicitly allocate on the Subject Allocation page will appear for
+                  marks entry — everyone else is skipped. Leave unchecked for a compulsory subject every student
+                  of this class takes, same as before.
+                </p>
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-surface-container-low">

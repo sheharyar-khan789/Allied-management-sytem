@@ -60,6 +60,10 @@ const studentFieldsSchema = {
   guardianOccupation: optText(80),
   photoUrl: safeUrl.optional(),
   documents: documentsArray.optional(),
+  // Subject-wise allocation (Part 12): ids of optional/elective subjects of this student's own
+  // class (SubjectDoc.isOptional) that the Admin is explicitly assigning to them. Validated
+  // server-side below against the student's real class and each subject's isOptional flag.
+  optionalSubjectIds: z.array(idString).max(20).optional(),
 };
 
 const studentUpdateSchema = z.object({
@@ -185,6 +189,7 @@ export async function GET(
       admissionDate: student.admissionDate || student.createdAt,
       photoUrl: student.photoUrl || "",
       documents: student.documents || [],
+      optionalSubjectIds: student.optionalSubjectIds || [],
       class: {
         id: student.classId,
         name: targetClass?.name || "",
@@ -195,6 +200,7 @@ export async function GET(
           name: sub.name,
           code: sub.code,
           credits: sub.credits,
+          isOptional: Boolean(sub.isOptional),
           teacher: { firstName: sub.teacherName || "Faculty", lastName: "" }
         }))
       },
@@ -372,6 +378,22 @@ export async function PUT(
       updated.section = targetClass.section;
     }
 
+    // Subject-wise allocation: every id must be a real optional subject of this student's own
+    // (final) class — never another class's subject, never a compulsory one (that would imply
+    // the Admin could "un-assign" a student from a subject everyone in the class already takes).
+    if (body.optionalSubjectIds !== undefined) {
+      const classSubjects = await getSubjectsServer(authUser.schoolId, updated.classId);
+      const validOptionalIds = new Set(classSubjects.filter((s) => s.isOptional).map((s) => s.id));
+      const invalid = body.optionalSubjectIds.filter((sid: string) => !validOptionalIds.has(sid));
+      if (invalid.length > 0) {
+        return NextResponse.json(
+          { error: `Not an optional subject of this student's class: ${invalid.join(", ")}.` },
+          { status: 400 }
+        );
+      }
+      updated.optionalSubjectIds = Array.from(new Set(body.optionalSubjectIds));
+    }
+
     await saveStudentServer(updated);
     if (updated.status !== existing.status) {
       await syncLoginActive(existing.userId, authUser.schoolId, updated.status === "ACTIVE");
@@ -396,7 +418,8 @@ export async function PUT(
       id,
       `Updated profile for student ${updated.fullName} (${updated.admissionNo}).` +
         (updated.monthlyFee !== (Number(existing.monthlyFee) || 0) ? ` Monthly fee: Rs. ${Number(existing.monthlyFee) || 0} → Rs. ${updated.monthlyFee}.` : "") +
-        (updated.annualFee !== (Number(existing.annualFee) || 0) ? ` Annual fee: Rs. ${Number(existing.annualFee) || 0} → Rs. ${updated.annualFee}.` : "")
+        (updated.annualFee !== (Number(existing.annualFee) || 0) ? ` Annual fee: Rs. ${Number(existing.annualFee) || 0} → Rs. ${updated.annualFee}.` : "") +
+        (body.optionalSubjectIds !== undefined ? ` Optional subjects set to: ${updated.optionalSubjectIds?.length ? updated.optionalSubjectIds.join(", ") : "none"}.` : "")
     );
 
     return NextResponse.json({ success: true, student: updated });

@@ -56,6 +56,7 @@ export async function GET(req: NextRequest) {
         teacherId: s.teacherId || null,
         teacherName: teacher ? teacher.fullName : s.teacherName || "Unassigned",
         credits: s.credits ?? 3,
+        isOptional: Boolean(s.isOptional),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       };
@@ -77,7 +78,7 @@ export async function POST(req: NextRequest) {
     const parsedBody = await parseJsonBody(req, subjectBodySchema);
     if (!parsedBody.ok) return parsedBody.response;
     const body = parsedBody.data;
-    const { name, code, classId, teacherId, credits } = body;
+    const { name, code, classId, teacherId, credits, isOptional } = body;
 
     if (!name || typeof name !== "string" || !name.trim()) {
       return NextResponse.json({ error: "Subject name is required." }, { status: 400 });
@@ -131,6 +132,7 @@ export async function POST(req: NextRequest) {
       teacherId: assignedTeacher ? assignedTeacher.id : null,
       teacherName,
       credits: Number(credits) || 3,
+      ...(isOptional ? { isOptional: true } : {}),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -178,7 +180,7 @@ export async function PUT(req: NextRequest) {
     const parsedBody = await parseJsonBody(req, subjectBodySchema);
     if (!parsedBody.ok) return parsedBody.response;
     const body = parsedBody.data;
-    const { id, name, code, classId, teacherId, credits } = body;
+    const { id, name, code, classId, teacherId, credits, isOptional } = body;
 
     if (!id || typeof id !== "string") {
       return NextResponse.json({ error: "Subject ID is required." }, { status: 400 });
@@ -224,6 +226,7 @@ export async function PUT(req: NextRequest) {
       teacherId: teacherId !== undefined ? (teacherId ? teacherId.trim() : null) : (existing.teacherId || null),
       teacherName: updatedTeacherName,
       credits: credits !== undefined ? Number(credits) || existing.credits : existing.credits,
+      isOptional: isOptional !== undefined ? Boolean(isOptional) : existing.isOptional,
       updatedAt: new Date().toISOString(),
     };
 

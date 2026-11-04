@@ -127,6 +127,7 @@ export async function GET(req: NextRequest) {
       admissionDate: st.admissionDate || st.createdAt,
       photoUrl: st.photoUrl || "",
       documents: st.documents || [],
+      optionalSubjectIds: st.optionalSubjectIds || [],
     }));
 
     return NextResponse.json({ success: true, students: mapped });
