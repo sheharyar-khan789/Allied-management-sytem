@@ -34,6 +34,7 @@ import {
   ClassDoc,
   SubjectDoc,
   AttendanceDoc,
+  TeacherAttendanceDoc,
   FeeChallanDoc,
   FeeStatus,
   PaymentDoc,
@@ -70,6 +71,7 @@ const localStore: {
   classes: Map<string, ClassDoc>;
   subjects: Map<string, SubjectDoc>;
   attendance: Map<string, AttendanceDoc>;
+  teacherAttendance: Map<string, TeacherAttendanceDoc>;
   feeChallans: Map<string, FeeChallanDoc>;
   payments: Map<string, PaymentDoc>;
   exams: Map<string, ExamDoc>;
@@ -100,6 +102,7 @@ const localStore: {
   classes: new Map(),
   subjects: new Map(),
   attendance: new Map(),
+  teacherAttendance: new Map(),
   feeChallans: new Map(),
   payments: new Map(),
   exams: new Map(),
@@ -2376,6 +2379,74 @@ export function analyticsAttendanceWindowStart(days = ANALYTICS_ATTENDANCE_WINDO
 
 export async function getStudentAttendanceServer(schoolId: string, studentId: string): Promise<AttendanceDoc[]> {
   return getAttendanceServer(schoolId, undefined, undefined, studentId);
+}
+
+// ---------------------------------------------------------------------------
+// TEACHER ATTENDANCE (Phase 11) — its own collection, never joined with student `attendance`.
+// ---------------------------------------------------------------------------
+
+/** All of one school's teacher-attendance records, optionally narrowed to one teacher and/or a
+ *  [fromDate, toDate] inclusive range. */
+export async function getTeacherAttendanceServer(
+  schoolId: string,
+  teacherId?: string,
+  fromDate?: string,
+  toDate?: string
+): Promise<TeacherAttendanceDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      let ref = adminDb.collection("teacherAttendance").where("schoolId", "==", schoolId);
+      if (teacherId) ref = ref.where("teacherId", "==", teacherId);
+      const snap = await withFirestoreRetry("getTeacherAttendanceServer", () => ref.get());
+      let records = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherAttendanceDoc));
+      if (fromDate) records = records.filter((r) => r.date >= fromDate);
+      if (toDate) records = records.filter((r) => r.date <= toDate);
+      return records;
+    } catch (e) {
+      if (isServiceUnavailableError(e)) throw e;
+      onFirestoreError(`getTeacherAttendanceServer(${schoolId})`, e);
+    }
+  }
+
+  let list = Array.from(localStore.teacherAttendance.values()).filter((r) => r.schoolId === schoolId);
+  if (teacherId) list = list.filter((r) => r.teacherId === teacherId);
+  if (fromDate) list = list.filter((r) => r.date >= fromDate);
+  if (toDate) list = list.filter((r) => r.date <= toDate);
+  return list;
+}
+
+export async function getTeacherAttendanceByIdServer(schoolId: string, id: string): Promise<TeacherAttendanceDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getTeacherAttendanceByIdServer", () => adminDb.collection("teacherAttendance").doc(id).get());
+      if (doc.exists) {
+        const data = doc.data() as TeacherAttendanceDoc;
+        return data.schoolId === schoolId ? { ...data, id: doc.id } : null;
+      }
+      return null;
+    } catch (e) {
+      if (isServiceUnavailableError(e)) throw e;
+      onFirestoreError(`getTeacherAttendanceByIdServer(${id})`, e);
+    }
+  }
+  const rec = localStore.teacherAttendance.get(id);
+  return rec && rec.schoolId === schoolId ? rec : null;
+}
+
+export async function saveTeacherAttendanceServer(record: TeacherAttendanceDoc): Promise<void> {
+  if (hasAdminCredentials) {
+    try {
+      await withFirestoreRetry("saveTeacherAttendanceServer", () =>
+        adminDb.collection("teacherAttendance").doc(record.id).set(record, { merge: false })
+      );
+      localStore.teacherAttendance.set(record.id, record);
+      return;
+    } catch (e) {
+      if (isServiceUnavailableError(e)) throw e;
+      onFirestoreError(`saveTeacherAttendanceServer(${record.id})`, e);
+    }
+  }
+  localStore.teacherAttendance.set(record.id, record);
 }
 
 export async function saveAttendanceRecordServer(record: AttendanceDoc): Promise<string> {

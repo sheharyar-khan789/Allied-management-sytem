@@ -156,6 +156,12 @@ export interface TeacherDoc {
     uploadedAt: string;
     size?: number;
   }[];
+  /**
+   * This teacher's enrolled id on a future biometric device — Admin-entered once a device and
+   * its real per-user ids exist (see src/lib/biometric-attendance.ts). Never a fingerprint
+   * template/image, only the device's own opaque user identifier.
+   */
+  biometricDeviceUserId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -264,6 +270,48 @@ export interface AttendanceDoc {
   /** uid of the last user who changed an existing record (admin overrides included). */
   updatedBy?: string;
   academicYear?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Teacher Attendance (Phase 11) — a completely separate module/collection from student
+ * `attendance` above; never joined or mixed with it. One document per teacher per calendar
+ * date (Asia/Karachi, or the school's configured timezone). See src/lib/teacher-attendance.ts
+ * for how a day's PRESENT/LEAVE/ABSENT is actually computed for monthly summaries (a day with no
+ * document here, that is a working day, is treated as ABSENT by that computation — nothing is
+ * backfilled into Firestore for it).
+ */
+export type TeacherAttendanceStatus = "PRESENT" | "ABSENT" | "LEAVE";
+
+export interface TeacherAttendanceDoc {
+  id: string; // schoolId_teacherId_date
+  schoolId: string;
+  teacherId: string;
+  teacherName?: string;
+  date: string; // YYYY-MM-DD, school timezone
+  status: TeacherAttendanceStatus;
+  /** How this record was created/last set. ADMIN_CORRECTION is never silently overwritten by a
+   *  later biometric event for the same date (see ingestBiometricEventServer). */
+  source: "BIOMETRIC" | "MANUAL" | "ADMIN_CORRECTION";
+  /** Local HH:MM check-in time, when known (biometric or manually recorded). */
+  checkInTime?: string;
+  /** Biometric provenance, when source is BIOMETRIC — never a fingerprint template/image. */
+  deviceId?: string;
+  /** The vendor's own unique event id, used for duplicate-event detection. */
+  eventId?: string;
+  remarks?: string;
+  /** uid of the admin who recorded/corrected this record. Absent for a raw biometric write. */
+  recordedBy?: string;
+  updatedBy?: string;
+  correctionHistory?: {
+    at: string;
+    by: string;
+    byName?: string;
+    previousStatus?: TeacherAttendanceStatus;
+    newStatus: TeacherAttendanceStatus;
+    reason?: string;
+  }[];
   createdAt: string;
   updatedAt: string;
 }
@@ -683,6 +731,13 @@ export interface SchoolSettingsDoc {
    * silently shifts the deadline. Defaults to Asia/Karachi (see DEFAULT_SCHOOL_TIMEZONE) when unset.
    */
   timezone?: string;
+  /**
+   * School-wide non-working dates (YYYY-MM-DD), e.g. public holidays — Admin-managed, from the
+   * Teacher Attendance page. A date in this list is excluded from teacher attendance's working-
+   * day count entirely (never counted as present, absent or leave). Sunday is always a
+   * non-working day too (see src/lib/teacher-attendance.ts) and does not need to be listed here.
+   */
+  holidays?: string[];
   /**
    * Per-category override of whether an allocated TEACHER may enter/edit marks for an exam of
    * that category (ADMIN can always write, regardless). A category absent from this map uses

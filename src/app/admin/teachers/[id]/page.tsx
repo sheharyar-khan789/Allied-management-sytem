@@ -24,6 +24,12 @@ export default function TeacherProfilePage({
   const [observations, setObservations] = useState<any[] | null>(null);
   const [observationsError, setObservationsError] = useState("");
   const [observationsLoading, setObservationsLoading] = useState(false);
+
+  // Attendance History tab state (current month only; full history/corrections on the
+  // dedicated Teacher Attendance page this links to).
+  const [attendanceData, setAttendanceData] = useState<any>(null);
+  const [attendanceError, setAttendanceError] = useState("");
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
   const [savingAccess, setSavingAccess] = useState(false);
   const [accessError, setAccessError] = useState("");
   const [accessSaved, setAccessSaved] = useState(false);
@@ -101,6 +107,24 @@ export default function TeacherProfilePage({
       .catch((err: Error) => setObservationsError(err.message))
       .finally(() => setObservationsLoading(false));
   }, [activeTab, id, observations]);
+
+  // Lazy-loaded the first time the Attendance History tab is opened; current month only, via
+  // the Phase 11 Teacher Attendance API (GET /api/teacher-attendance?teacherId=...).
+  useEffect(() => {
+    if (activeTab !== "attendance" || attendanceData !== null) return;
+    const now = new Date();
+    setAttendanceLoading(true);
+    setAttendanceError("");
+    fetch(`/api/teacher-attendance?teacherId=${encodeURIComponent(id)}&year=${now.getFullYear()}&month=${now.getMonth() + 1}`)
+      .then(async (res) => {
+        const json = await res.json();
+        if (!res.ok || !json.success) throw new Error(json.error || "Could not load attendance.");
+        return json;
+      })
+      .then(setAttendanceData)
+      .catch((err: Error) => setAttendanceError(err.message))
+      .finally(() => setAttendanceLoading(false));
+  }, [activeTab, id, attendanceData]);
 
   const handleAddDocument = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -679,14 +703,47 @@ export default function TeacherProfilePage({
 
       {/* Tab: Attendance History */}
       {activeTab === "attendance" && (
-      <div className="p-8 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 text-center space-y-2">
-        <span className="material-symbols-outlined text-4xl text-on-surface-variant">calendar_today</span>
-        <p className="text-sm font-semibold text-on-surface">Teacher attendance tracking is not set up yet</p>
-        <p className="text-xs text-on-surface-variant max-w-md mx-auto">
-          This school does not yet have a Teacher Attendance module (daily check-ins, monthly present/absent/leave
-          summaries). No attendance data exists for {teacher.firstName} {teacher.lastName} to show here — nothing is
-          fabricated. This tab will populate once that module is implemented and real records exist.
-        </p>
+      <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4">
+        <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+          <h3 className="font-headline-md text-sm font-bold text-on-surface flex items-center gap-2">
+            <span className="material-symbols-outlined text-secondary text-[18px]">calendar_today</span>
+            Attendance — Current Month
+          </h3>
+          <Link
+            href={`/admin/teacher-attendance?teacherId=${encodeURIComponent(id)}`}
+            className="px-3 py-1.5 rounded-lg bg-secondary text-on-secondary font-semibold text-xs hover:bg-secondary/90 flex items-center gap-1.5"
+          >
+            <span className="material-symbols-outlined text-[16px]">calendar_month</span>
+            <span>Full History &amp; Corrections</span>
+          </Link>
+        </div>
+
+        {attendanceLoading ? (
+          <p className="text-xs text-on-surface-variant py-4 text-center">Loading attendance...</p>
+        ) : attendanceError ? (
+          <div className="p-2.5 rounded bg-error-container text-on-error-container text-xs">{attendanceError}</div>
+        ) : attendanceData ? (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              {[
+                { label: "Working Days", value: attendanceData.summary.workingDays, cls: "" },
+                { label: "Present", value: attendanceData.summary.present, cls: "text-tertiary" },
+                { label: "Leave", value: attendanceData.summary.leave, cls: "text-secondary" },
+                { label: "Absent", value: attendanceData.summary.absent, cls: "text-error" },
+              ].map((s) => (
+                <div key={s.label} className="p-3 rounded-lg bg-surface-container-low/60 border border-surface-container-high/40">
+                  <div className="text-[10px] text-on-surface-variant font-bold uppercase tracking-wider">{s.label}</div>
+                  <div className={`text-xl font-bold mt-1 ${s.cls || "text-on-surface"}`}>{s.value}</div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-on-surface-variant">
+              Working days exclude Sundays and configured holidays. One allowed leave day per week; a second leave
+              day in the same week counts as absent. A real biometric check-in always counts as present. No
+              attendance data is fabricated — a day with no saved record counts as absent.
+            </p>
+          </>
+        ) : null}
       </div>
       )}
 

@@ -117,6 +117,9 @@ export async function GET(req: NextRequest) {
         ...EXAM_CATEGORY_PERMISSION_DEFAULTS,
         ...(settings.examCategoryPermissions || {}),
       },
+      // Non-working dates for Teacher Attendance's working-day calculation (Sunday is always
+      // non-working too and is never listed here — see src/lib/teacher-attendance.ts).
+      holidays: settings.holidays || [],
       studentLogin: await studentLoginView(settings),
     };
 
@@ -156,6 +159,7 @@ const settingsSchema = z.object({
   examCategoryPermissions: z
     .record(z.enum(EXAM_CATEGORIES as [ExamCategory, ...ExamCategory[]]), z.enum(["ALLOWED", "READ_ONLY"]))
     .optional(),
+  holidays: z.array(z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "each holiday must be YYYY-MM-DD.")).max(200).optional(),
 });
 
 export async function PUT(req: NextRequest) {
@@ -224,6 +228,9 @@ export async function PUT(req: NextRequest) {
       examCategoryPermissions: body.examCategoryPermissions !== undefined
         ? body.examCategoryPermissions
         : current?.examCategoryPermissions,
+      holidays: body.holidays !== undefined
+        ? Array.from(new Set(body.holidays))
+        : current?.holidays,
       studentLoginPrefix: body.studentLoginPrefix !== undefined
         ? cleanLoginPart(body.studentLoginPrefix, "ASD")
         : current?.studentLoginPrefix,
