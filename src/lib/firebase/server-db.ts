@@ -27,12 +27,14 @@ import {
 import {
   School,
   UserProfile,
+  UsernameRecordDoc,
   UserRole,
   StudentDoc,
   TeacherDoc,
   ClassDoc,
   SubjectDoc,
   AttendanceDoc,
+  TeacherAttendanceDoc,
   FeeChallanDoc,
   FeeStatus,
   PaymentDoc,
@@ -42,6 +44,7 @@ import {
   StudentObservationDoc,
   TeacherObservationDoc,
   LessonPlanDoc,
+  LessonPlanWeekDoc,
   LockedRecordDoc,
   AuditLogDoc,
   SchoolSettingsDoc,
@@ -62,11 +65,13 @@ const localStore: {
   schools: Map<string, School>;
   settings: Map<string, SchoolSettingsDoc>;
   users: Map<string, UserProfile>;
+  usernames: Map<string, UsernameRecordDoc>;
   students: Map<string, StudentDoc>;
   teachers: Map<string, TeacherDoc>;
   classes: Map<string, ClassDoc>;
   subjects: Map<string, SubjectDoc>;
   attendance: Map<string, AttendanceDoc>;
+  teacherAttendance: Map<string, TeacherAttendanceDoc>;
   feeChallans: Map<string, FeeChallanDoc>;
   payments: Map<string, PaymentDoc>;
   exams: Map<string, ExamDoc>;
@@ -75,6 +80,7 @@ const localStore: {
   studentObservations: Map<string, StudentObservationDoc>;
   teacherObservations: Map<string, TeacherObservationDoc>;
   lessonPlans: Map<string, LessonPlanDoc>;
+  lessonPlanWeeks: Map<string, LessonPlanWeekDoc>;
   lockedRecords: Map<string, LockedRecordDoc>;
   auditLogs: Map<string, AuditLogDoc>;
   timetables: Map<string, TimetableDoc>;
@@ -90,11 +96,13 @@ const localStore: {
   schools: new Map(),
   settings: new Map(),
   users: new Map(),
+  usernames: new Map(),
   students: new Map(),
   teachers: new Map(),
   classes: new Map(),
   subjects: new Map(),
   attendance: new Map(),
+  teacherAttendance: new Map(),
   feeChallans: new Map(),
   payments: new Map(),
   exams: new Map(),
@@ -103,6 +111,7 @@ const localStore: {
   studentObservations: new Map(),
   teacherObservations: new Map(),
   lessonPlans: new Map(),
+  lessonPlanWeeks: new Map(),
   lockedRecords: new Map(),
   auditLogs: new Map(),
   timetables: new Map(),
@@ -151,6 +160,12 @@ export function onFirestoreError(operation: string, error: any): void {
  */
 /** Firestore allows 500 writes per batch; stay under it. */
 export const FIRESTORE_BATCH_LIMIT = 450;
+
+/**
+ * Most students one list request may return. The old cap of 250 silently cut a school's list
+ * (a school with 389 students showed 250); a school is far smaller than this.
+ */
+export const STUDENT_LIST_MAX = 5000;
 
 export function cleanUndefined<T extends Record<string, any>>(obj: T): T {
   const result: Record<string, any> = {};
@@ -708,19 +723,29 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
       const doc = await withFirestoreRetry("getUserByIdServer", () => adminDb.collection("users").doc(uid).get());
       if (doc.exists) return { uid: doc.id, ...doc.data() } as UserProfile;
     } catch (e) {
-      if (!isServiceUnavailableError(e)) {
-        onFirestoreError(`getUserByIdServer(${uid})`, e);
-      } else {
+      // SECURITY: a genuine outage must surface as "service busy", never as "resolve this
+      // session from Firebase Auth claims instead" — same rationale as getUserByEmailServer.
+      // checkSession (server-auth.ts) depends on this throw to fail closed instead of silently
+      // re-profiling the caller from whatever Firebase Auth claims happen to be on their account.
+      if (isServiceUnavailableError(e)) {
         logFirestoreOutage(`getUserByIdServer(${uid})`, e);
+        throw e;
       }
+      onFirestoreError(`getUserByIdServer(${uid})`, e);
     }
 
-    // Resilient fallback: resolve directly from Firebase Auth if Firestore doc unavailable/out of quota
+    // Bridge for a Firestore doc that genuinely doesn't exist yet (e.g. just created in Firebase
+    // Auth with custom claims, profile write still landing): only trusted when BOTH role and
+    // schoolId are explicitly present on the account's custom claims — never defaulted to ADMIN
+    // of a hardcoded school, which would hand that role to any Firebase Auth account (including a
+    // self-registered one) whose claims happen to be unset. Mirrors the same check already used
+    // for this purpose in /api/auth/login.
     try {
       const fbUser = await adminAuth.getUser(uid);
-      if (fbUser) {
-        const claimedRole = (fbUser.customClaims?.role as UserRole) || "ADMIN";
-        const claimedSchool = (fbUser.customClaims?.schoolId as string) || "allied-school-main";
+      const VALID_ROLES: UserRole[] = ["ADMIN", "TEACHER", "STUDENT", "PARENT"];
+      const claimedRole = fbUser.customClaims?.role as UserRole | undefined;
+      const claimedSchool = fbUser.customClaims?.schoolId as string | undefined;
+      if (fbUser && claimedRole && VALID_ROLES.includes(claimedRole) && claimedSchool) {
         return {
           uid: fbUser.uid,
           email: fbUser.email || "",
@@ -778,6 +803,69 @@ export async function getUsersByIdsServer(uids: string[]): Promise<Map<string, U
 export async function getSessionProfileServer(schoolId: string, uid: string): Promise<UserProfile | null> {
   if (!hasAdminCredentials) return getUserByIdServer(uid);
   return cached(cacheKeys.sessionProfile(schoolId, uid), CACHE_TTL_MS.SESSION_PROFILE, () => getUserByIdServer(uid));
+}
+
+// ---------------------------------------------------------------------------
+// USERNAMES (login usernames; uniqueness locks)
+// ---------------------------------------------------------------------------
+export async function getUsernameRecordServer(username: string): Promise<UsernameRecordDoc | null> {
+  const id = username.trim().toLowerCase();
+  if (!id) return null;
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getUsernameRecordServer", () => adminDb.collection("usernames").doc(id).get());
+      return doc.exists ? ({ ...(doc.data() as UsernameRecordDoc), id: doc.id }) : null;
+    } catch (e) {
+      // A real outage must not look like "no such username" (a login would then be refused for
+      // the wrong reason, and a duplicate could slip past the pre-check).
+      if (isServiceUnavailableError(e)) throw e;
+      onFirestoreError(`getUsernameRecordServer(${id})`, e);
+      throw e;
+    }
+  }
+  return localStore.usernames.get(id) || null;
+}
+
+/**
+ * Atomically claims a username: succeeds only if nobody holds it (a create-if-absent write), so
+ * two concurrent claims cannot both win. Returns "TAKEN" when it already belongs to someone else.
+ */
+export async function claimUsernameServer(rec: Omit<UsernameRecordDoc, "id" | "createdAt">): Promise<"OK" | "TAKEN"> {
+  const id = rec.username.trim().toLowerCase();
+  const doc: UsernameRecordDoc = { ...rec, id, username: id, createdAt: new Date().toISOString() };
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("usernames").doc(id).create(cleanUndefined(doc));
+      return "OK";
+    } catch (e: any) {
+      if (e?.code === 6 || /ALREADY_EXISTS/i.test(String(e?.message))) return "TAKEN";
+      onFirestoreError(`claimUsernameServer(${id})`, e);
+      throw e;
+    }
+  }
+  if (localStore.usernames.has(id)) return "TAKEN";
+  localStore.usernames.set(id, doc);
+  return "OK";
+}
+
+/** Frees a username, but only if it is held by `uid` — never someone else's. */
+export async function releaseUsernameServer(username: string, uid: string): Promise<void> {
+  const id = username.trim().toLowerCase();
+  if (!id) return;
+  if (hasAdminCredentials) {
+    try {
+      const ref = adminDb.collection("usernames").doc(id);
+      await adminDb.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (snap.exists && (snap.data() as UsernameRecordDoc).uid === uid) tx.delete(ref);
+      });
+    } catch (e) {
+      onFirestoreError(`releaseUsernameServer(${id})`, e);
+      throw e;
+    }
+    return;
+  }
+  if (localStore.usernames.get(id)?.uid === uid) localStore.usernames.delete(id);
 }
 
 export async function createUserServer(user: UserProfile): Promise<void> {
@@ -1340,7 +1428,7 @@ async function fetchStudentsRaw(
     );
   }
   const sorted = students.sort((a, b) => a.fullName.localeCompare(b.fullName));
-  return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
+  return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, STUDENT_LIST_MAX)) : sorted;
 }
 
 /**
@@ -1360,7 +1448,7 @@ async function queryStudentsFirestore(
     let ref: Query = adminDb.collection("students").where("schoolId", "==", schoolId);
     if (cls !== "ALL") ref = ref.where("classId", "==", cls);
     if (st !== "ALL") ref = ref.where("status", "==", st);
-    if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, 250));
+    if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, STUDENT_LIST_MAX));
     const snap = await withFirestoreRetry("students", () => ref.get());
     return snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentDoc));
   };
@@ -1472,7 +1560,7 @@ export async function getStudentsServer(
   // The limit is applied after the session filter; limiting first would drop active-session
   // students whenever older sessions fill the page.
   const scoped = filterToSession(ctx, year, await fetchStudentsRaw(schoolId, classId, search, undefined, status));
-  return maxLimit && maxLimit > 0 ? scoped.slice(0, Math.min(maxLimit, 250)) : scoped;
+  return maxLimit && maxLimit > 0 ? scoped.slice(0, Math.min(maxLimit, STUDENT_LIST_MAX)) : scoped;
 }
 
 export async function getStudentByIdServer(schoolId: string, studentId: string): Promise<StudentDoc | null> {
@@ -2291,6 +2379,74 @@ export function analyticsAttendanceWindowStart(days = ANALYTICS_ATTENDANCE_WINDO
 
 export async function getStudentAttendanceServer(schoolId: string, studentId: string): Promise<AttendanceDoc[]> {
   return getAttendanceServer(schoolId, undefined, undefined, studentId);
+}
+
+// ---------------------------------------------------------------------------
+// TEACHER ATTENDANCE (Phase 11) — its own collection, never joined with student `attendance`.
+// ---------------------------------------------------------------------------
+
+/** All of one school's teacher-attendance records, optionally narrowed to one teacher and/or a
+ *  [fromDate, toDate] inclusive range. */
+export async function getTeacherAttendanceServer(
+  schoolId: string,
+  teacherId?: string,
+  fromDate?: string,
+  toDate?: string
+): Promise<TeacherAttendanceDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      let ref = adminDb.collection("teacherAttendance").where("schoolId", "==", schoolId);
+      if (teacherId) ref = ref.where("teacherId", "==", teacherId);
+      const snap = await withFirestoreRetry("getTeacherAttendanceServer", () => ref.get());
+      let records = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherAttendanceDoc));
+      if (fromDate) records = records.filter((r) => r.date >= fromDate);
+      if (toDate) records = records.filter((r) => r.date <= toDate);
+      return records;
+    } catch (e) {
+      if (isServiceUnavailableError(e)) throw e;
+      onFirestoreError(`getTeacherAttendanceServer(${schoolId})`, e);
+    }
+  }
+
+  let list = Array.from(localStore.teacherAttendance.values()).filter((r) => r.schoolId === schoolId);
+  if (teacherId) list = list.filter((r) => r.teacherId === teacherId);
+  if (fromDate) list = list.filter((r) => r.date >= fromDate);
+  if (toDate) list = list.filter((r) => r.date <= toDate);
+  return list;
+}
+
+export async function getTeacherAttendanceByIdServer(schoolId: string, id: string): Promise<TeacherAttendanceDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getTeacherAttendanceByIdServer", () => adminDb.collection("teacherAttendance").doc(id).get());
+      if (doc.exists) {
+        const data = doc.data() as TeacherAttendanceDoc;
+        return data.schoolId === schoolId ? { ...data, id: doc.id } : null;
+      }
+      return null;
+    } catch (e) {
+      if (isServiceUnavailableError(e)) throw e;
+      onFirestoreError(`getTeacherAttendanceByIdServer(${id})`, e);
+    }
+  }
+  const rec = localStore.teacherAttendance.get(id);
+  return rec && rec.schoolId === schoolId ? rec : null;
+}
+
+export async function saveTeacherAttendanceServer(record: TeacherAttendanceDoc): Promise<void> {
+  if (hasAdminCredentials) {
+    try {
+      await withFirestoreRetry("saveTeacherAttendanceServer", () =>
+        adminDb.collection("teacherAttendance").doc(record.id).set(record, { merge: false })
+      );
+      localStore.teacherAttendance.set(record.id, record);
+      return;
+    } catch (e) {
+      if (isServiceUnavailableError(e)) throw e;
+      onFirestoreError(`saveTeacherAttendanceServer(${record.id})`, e);
+    }
+  }
+  localStore.teacherAttendance.set(record.id, record);
 }
 
 export async function saveAttendanceRecordServer(record: AttendanceDoc): Promise<string> {
@@ -4333,6 +4489,69 @@ export async function getLessonPlanByIdServer(schoolId: string, id: string): Pro
  * state (test: duplicate/concurrent submissions). The in-memory fallback is single-threaded, so
  * no equivalent race exists there.
  */
+// Admin-defined lesson-plan weeks (see LessonPlanWeekDoc). A school has a handful per year, so the
+// whole list is read with one single-field query and cached briefly; every write drops the cache.
+export async function getLessonPlanWeeksServer(schoolId: string): Promise<LessonPlanWeekDoc[]> {
+  assertProductionDbReady();
+  const load = async (): Promise<LessonPlanWeekDoc[]> => {
+    const snap = await withFirestoreRetry("getLessonPlanWeeksServer", () =>
+      adminDb.collection("lessonPlanWeeks").where("schoolId", "==", schoolId).get()
+    );
+    return snap.docs.map((d) => ({ ...(d.data() as LessonPlanWeekDoc), id: d.id }));
+  };
+  let list: LessonPlanWeekDoc[];
+  if (hasAdminCredentials) {
+    try {
+      list = await cached(`school:${schoolId}:lpweeks`, CACHE_TTL_MS.SCHOOL_REFERENCE, load);
+    } catch (e) {
+      if (!isServiceUnavailableError(e)) onFirestoreError(`getLessonPlanWeeksServer(${schoolId})`, e);
+      else logFirestoreOutage(`getLessonPlanWeeksServer(${schoolId})`, e);
+      throw e;
+    }
+  } else {
+    list = Array.from(localStore.lessonPlanWeeks.values()).filter((w) => w.schoolId === schoolId);
+  }
+  return list.slice().sort((a, b) => a.startDate.localeCompare(b.startDate));
+}
+
+export async function saveLessonPlanWeekServer(week: LessonPlanWeekDoc): Promise<void> {
+  const data: LessonPlanWeekDoc = { ...week, updatedAt: new Date().toISOString() };
+  invalidateCache(`school:${week.schoolId}:lpweeks`);
+  if (hasAdminCredentials) {
+    try {
+      await withFirestoreRetry("saveLessonPlanWeekServer", () =>
+        adminDb.collection("lessonPlanWeeks").doc(week.id).set(cleanUndefined(data))
+      );
+    } catch (e) {
+      onFirestoreError(`saveLessonPlanWeekServer(${week.id})`, e);
+      throw e;
+    } finally {
+      invalidateCache(`school:${week.schoolId}:lpweeks`);
+    }
+    return;
+  }
+  localStore.lessonPlanWeeks.set(week.id, data);
+}
+
+/** Removes a week definition (the standard Monday week of those dates still works). Never touches plans. */
+export async function deleteLessonPlanWeekServer(schoolId: string, id: string): Promise<boolean> {
+  const existing = (await getLessonPlanWeeksServer(schoolId)).find((w) => w.id === id);
+  if (!existing) return false;
+  invalidateCache(`school:${schoolId}:lpweeks`);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("lessonPlanWeeks").doc(id).delete();
+    } catch (e) {
+      onFirestoreError(`deleteLessonPlanWeekServer(${id})`, e);
+      throw e;
+    } finally {
+      invalidateCache(`school:${schoolId}:lpweeks`);
+    }
+    return true;
+  }
+  return localStore.lessonPlanWeeks.delete(id);
+}
+
 export async function saveLessonPlanServer(
   doc: LessonPlanDoc,
   guard?: (current: LessonPlanDoc | null) => void

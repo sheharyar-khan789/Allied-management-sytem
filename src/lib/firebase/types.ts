@@ -42,8 +42,34 @@ export interface UserProfile {
   studentId?: string;
   studentIds?: string[];
   photoUrl?: string;
+  /**
+   * Admin-assigned login username (lowercase, globally unique; see src/lib/username.ts). Teachers
+   * sign in with it instead of their e-mail address. The e-mail stays for communication and
+   * password recovery. Uniqueness is enforced by the `usernames/{username}` claim document.
+   */
+  username?: string;
+  /**
+   * True from the moment an admin creates the account with a temporary password until the user
+   * chooses their own. While true the account can reach nothing but the change-password screen
+   * (enforced server-side in requireAuth and the role layouts). Never set for existing accounts.
+   */
+  mustChangePassword?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * `usernames/{username}`: the uniqueness lock for a username. The document id IS the normalized
+ * username and it is created with a create-if-absent write, so two concurrent registrations can
+ * never both get the same one. Server-side only (Firestore rules deny every client access).
+ */
+export interface UsernameRecordDoc {
+  id: string;
+  username: string;
+  uid: string;
+  schoolId: string;
+  teacherId?: string;
+  createdAt: string;
 }
 
 export interface StudentDoc {
@@ -89,6 +115,11 @@ export interface StudentDoc {
     uploadedAt: string;
     size?: number;
   }[];
+  /** Ids of optional/elective subjects (SubjectDoc.isOptional) of this student's own class that
+   *  an Admin has explicitly allocated to this student — e.g. Biology for one Class 9 student,
+   *  Computer for another, both still enrolled in the same class/section. Never set automatically
+   *  (not on import, not on promotion); absent/empty means no elective allocated yet. */
+  optionalSubjectIds?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -97,6 +128,8 @@ export interface TeacherDoc {
   id: string;
   schoolId: string;
   userId?: string;
+  /** Login username mirrored from the account for display (the lock is usernames/{username}). */
+  username?: string;
   employeeId: string;
   fullName: string;
   email: string;
@@ -113,6 +146,22 @@ export interface TeacherDoc {
   weeklyLoad: number;
   salary?: number;
   baseSalary?: number;
+  /** Admin-uploaded only (no bulk import): qualification/educational/professional certificates,
+   *  passport photo, other authorized files. See src/lib/input-validation.ts teacherDocumentsArray. */
+  documents?: {
+    id: string;
+    name: string;
+    type: "CERTIFICATE" | "EDUCATIONAL" | "PROFESSIONAL" | "PHOTO" | "OTHER";
+    url: string;
+    uploadedAt: string;
+    size?: number;
+  }[];
+  /**
+   * This teacher's enrolled id on a future biometric device — Admin-entered once a device and
+   * its real per-user ids exist (see src/lib/biometric-attendance.ts). Never a fingerprint
+   * template/image, only the device's own opaque user identifier.
+   */
+  biometricDeviceUserId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -145,6 +194,10 @@ export interface SubjectDoc {
   academicYear?: string;
   createdAt: string;
   updatedAt: string;
+  /** Elective subject (e.g. Biology vs Computer within the same class) — only students the
+   *  Admin explicitly allocated to it (StudentDoc.optionalSubjectIds) are eligible for its
+   *  marks/roster. Unset/false: compulsory, every active student of the class is eligible. */
+  isOptional?: boolean;
 }
 
 export interface TimetableDoc {
@@ -217,6 +270,48 @@ export interface AttendanceDoc {
   /** uid of the last user who changed an existing record (admin overrides included). */
   updatedBy?: string;
   academicYear?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Teacher Attendance (Phase 11) — a completely separate module/collection from student
+ * `attendance` above; never joined or mixed with it. One document per teacher per calendar
+ * date (Asia/Karachi, or the school's configured timezone). See src/lib/teacher-attendance.ts
+ * for how a day's PRESENT/LEAVE/ABSENT is actually computed for monthly summaries (a day with no
+ * document here, that is a working day, is treated as ABSENT by that computation — nothing is
+ * backfilled into Firestore for it).
+ */
+export type TeacherAttendanceStatus = "PRESENT" | "ABSENT" | "LEAVE";
+
+export interface TeacherAttendanceDoc {
+  id: string; // schoolId_teacherId_date
+  schoolId: string;
+  teacherId: string;
+  teacherName?: string;
+  date: string; // YYYY-MM-DD, school timezone
+  status: TeacherAttendanceStatus;
+  /** How this record was created/last set. ADMIN_CORRECTION is never silently overwritten by a
+   *  later biometric event for the same date (see ingestBiometricEventServer). */
+  source: "BIOMETRIC" | "MANUAL" | "ADMIN_CORRECTION";
+  /** Local HH:MM check-in time, when known (biometric or manually recorded). */
+  checkInTime?: string;
+  /** Biometric provenance, when source is BIOMETRIC — never a fingerprint template/image. */
+  deviceId?: string;
+  /** The vendor's own unique event id, used for duplicate-event detection. */
+  eventId?: string;
+  remarks?: string;
+  /** uid of the admin who recorded/corrected this record. Absent for a raw biometric write. */
+  recordedBy?: string;
+  updatedBy?: string;
+  correctionHistory?: {
+    at: string;
+    by: string;
+    byName?: string;
+    previousStatus?: TeacherAttendanceStatus;
+    newStatus: TeacherAttendanceStatus;
+    reason?: string;
+  }[];
   createdAt: string;
   updatedAt: string;
 }
@@ -354,7 +449,7 @@ export interface StudentChargeDoc {
  * exam-results.ts). Optional and absent on exams created before this field existed; an exam
  * with no category is never category-gated (see resolveExamCategoryPermission).
  */
-export type ExamCategory = "MONTHLY_TEST" | "WEEKLY_TEST" | "FIRST_TERM" | "SECOND_TERM" | "MIDTERM" | "FINAL_TERM";
+export type ExamCategory = "MONTHLY_TEST" | "WEEKLY_TEST" | "FIRST_TERM" | "SECOND_TERM" | "MIDTERM" | "FINAL_TERM" | "ANNUAL_EXAM";
 
 export interface ExamDoc {
   id: string;
@@ -411,6 +506,10 @@ export interface ExamResultDoc {
   academicYear?: string;
   createdAt: string;
   updatedAt: string;
+  /** Set only when an ADMIN overwrites a mark a TEACHER (or another admin) already saved —
+   *  the per-record lock in PUT /api/exams means this is always a deliberate correction. */
+  correctedBy?: string;
+  correctedAt?: string;
 }
 
 export interface StudentObservationDoc {
@@ -506,6 +605,29 @@ export interface LessonPlanAdminCorrection {
   reason: string;
   /** The `days` content as it was immediately before this correction, so nothing is silently lost. */
   previousDays: LessonPlanDayEntry[];
+}
+
+/**
+ * `lessonPlanWeeks/{lpw_<schoolId>_<startDate>}`: an admin-defined lesson-plan week. The stable
+ * identifier of a week is its start date (`weekId`, YYYY-MM-DD) — exactly the key lesson plans
+ * already use, so a custom week never changes how existing plans are addressed. School weeks
+ * that have no entry here keep working as the standard Monday–Sunday weeks (see
+ * src/lib/lesson-plan-weeks.ts), so there is no final week and nothing to regenerate.
+ */
+export interface LessonPlanWeekDoc {
+  id: string;
+  schoolId: string;
+  /** YYYY-YYYY session this week belongs to (can be any session, including future ones). */
+  academicYear: string;
+  /** Start date, YYYY-MM-DD. Also the weekId plans are filed under. */
+  weekId: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  updatedBy?: string;
 }
 
 export interface LessonPlanDoc {
@@ -609,6 +731,13 @@ export interface SchoolSettingsDoc {
    * silently shifts the deadline. Defaults to Asia/Karachi (see DEFAULT_SCHOOL_TIMEZONE) when unset.
    */
   timezone?: string;
+  /**
+   * School-wide non-working dates (YYYY-MM-DD), e.g. public holidays — Admin-managed, from the
+   * Teacher Attendance page. A date in this list is excluded from teacher attendance's working-
+   * day count entirely (never counted as present, absent or leave). Sunday is always a
+   * non-working day too (see src/lib/teacher-attendance.ts) and does not need to be listed here.
+   */
+  holidays?: string[];
   /**
    * Per-category override of whether an allocated TEACHER may enter/edit marks for an exam of
    * that category (ADMIN can always write, regardless). A category absent from this map uses

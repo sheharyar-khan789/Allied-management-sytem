@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import LessonPlanWeekManager from "@/components/LessonPlanWeekManager";
 
 interface Option { id: string; name: string; classId?: string; teacherId?: string | null }
 interface SummaryRow {
@@ -35,7 +36,8 @@ function fmt(iso: string | null, timezone: string): string {
 
 export default function AdminLessonPlansPage() {
   const [timezone, setTimezone] = useState("Asia/Karachi");
-  const [weeks, setWeeks] = useState<{ weekId: string }[]>([]);
+  const [weeks, setWeeks] = useState<{ weekId: string; label?: string; startDate?: string; endDate?: string; kind?: string }[]>([]);
+  const [showWeekManager, setShowWeekManager] = useState(false);
   const [classes, setClasses] = useState<Option[]>([]);
   const [subjects, setSubjects] = useState<Option[]>([]);
   const [teachers, setTeachers] = useState<Option[]>([]);
@@ -218,13 +220,25 @@ export default function AdminLessonPlansPage() {
         </p>
       </div>
 
+      <div>
+        <button type="button" onClick={() => setShowWeekManager((v) => !v)}
+          className="px-3 py-2 rounded-lg bg-surface-container text-on-surface text-xs font-semibold hover:bg-surface-container-high">
+          {showWeekManager ? "Hide week schedule" : "Manage lesson-plan weeks"}
+        </button>
+      </div>
+      {showWeekManager && <LessonPlanWeekManager onChanged={loadOptions} />}
+
       <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 text-xs">
           <div>
             <label className="block font-semibold text-on-surface mb-1">Week</label>
             <select value={weekId} onChange={(e) => setWeekId(e.target.value)} className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono">
               {weeks.map((w) => (
-                <option key={w.weekId} value={w.weekId}>Week of {w.weekId}</option>
+                <option key={w.weekId} value={w.weekId}>
+                  {w.kind === "CUSTOM" && w.label && w.startDate && w.endDate
+                    ? `${w.label} (${w.startDate} to ${w.endDate})`
+                    : `Week of ${w.weekId}`}
+                </option>
               ))}
             </select>
           </div>

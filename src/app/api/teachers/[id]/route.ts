@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth, requireRecentAuth } from "@/lib/firebase/server-auth";
-import { findForbiddenFields, forbiddenFieldsResponse, isSafeStoredUrl } from "@/lib/input-validation";
+import { findForbiddenFields, forbiddenFieldsResponse, isSafeStoredUrl, teacherDocumentsArray } from "@/lib/input-validation";
 import {
   getTeacherByIdServer,
   saveTeacherServer,
@@ -10,7 +10,9 @@ import {
 } from "@/lib/firebase/server-db";
 import { validateDateString, isDateBefore } from "@/lib/date-utils";
 import { deleteTeacherCompletely } from "@/lib/teacher-lifecycle";
+import { assignTeacherUsername } from "@/lib/teacher-username";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { deleteFileFromStorage, storagePathFromDownloadUrl } from "@/lib/storage";
 
 export async function GET(
   req: NextRequest,
@@ -50,6 +52,7 @@ export async function GET(
       specialization: teacher.department,
       phone: teacher.phone,
       email: teacher.email,
+      username: teacher.username || "",
       status: teacher.status,
       photoUrl: teacher.photoUrl || "",
       joiningDate: teacher.joiningDate || (teacher.createdAt ? teacher.createdAt.split("T")[0] : ""),
@@ -90,6 +93,7 @@ export async function GET(
       // field, so every teacher permanently had an empty array.
       assignedClassIds: Array.isArray(teacher.assignedClassIds) ? teacher.assignedClassIds : [],
       baseSalary: teacher.baseSalary ?? teacher.salary ?? 0,
+      documents: teacher.documents || [],
     };
 
     return NextResponse.json({
@@ -131,6 +135,14 @@ export async function PUT(
     if (forbiddenFields.length > 0) return forbiddenFieldsResponse(forbiddenFields);
     if (body.photoUrl !== undefined && body.photoUrl !== null && !isSafeStoredUrl(body.photoUrl)) {
       return NextResponse.json({ error: "photoUrl must be an https:// URL." }, { status: 400 });
+    }
+    let parsedDocuments: ReturnType<typeof teacherDocumentsArray.parse> | undefined;
+    if (body.documents !== undefined) {
+      const docsParsed = teacherDocumentsArray.safeParse(body.documents);
+      if (!docsParsed.success) {
+        return NextResponse.json({ error: "Invalid documents: " + docsParsed.error.issues[0]?.message }, { status: 400 });
+      }
+      parsedDocuments = docsParsed.data;
     }
     for (const [key, max] of Object.entries({ firstName: 80, lastName: 80, designation: 120, qualification: 200, specialization: 120, phone: 30, email: 254 })) {
       if (body[key] !== undefined && body[key] !== null && (typeof body[key] !== "string" || body[key].length > max)) {
@@ -260,6 +272,7 @@ export async function PUT(
       email: body.email || existing.email,
       status: inferredStatus,
       photoUrl: body.photoUrl !== undefined ? body.photoUrl : existing.photoUrl,
+      documents: parsedDocuments !== undefined ? parsedDocuments : (existing.documents || []),
       baseSalary: updatedSalary,
       salary: updatedSalary,
       joiningDate: updatedJoiningDate,
@@ -269,12 +282,37 @@ export async function PUT(
 
     await saveTeacherServer(updated);
 
+    // A document removed from the array (the admin deleted it) has its underlying file cleaned
+    // up too — see the identical rationale in PUT /api/students/[id]. Best-effort; never blocks
+    // the profile save that already succeeded.
+    if (parsedDocuments !== undefined) {
+      const keptIds = new Set(parsedDocuments.map((d) => d.id));
+      const removedDocs = (existing.documents || []).filter((d) => !keptIds.has(d.id));
+      for (const doc of removedDocs) {
+        const path = storagePathFromDownloadUrl(doc.url, authUser.schoolId);
+        if (path) await deleteFileFromStorage(path, authUser.schoolId).catch(() => false);
+      }
+    }
+
+    // Username (re)assignment: validated, atomically claimed, and applied without touching the
+    // teacher's Firebase account, e-mail or password. Done after the rest of the profile saved so
+    // a rejected username (taken/invalid) reports clearly without losing the other edits.
+    let usernameChange: { username: string; changed: boolean } | null = null;
+    if (body.username !== undefined && body.username !== null && String(body.username).trim() !== "") {
+      const result = await assignTeacherUsername(authUser.schoolId, updated, body.username);
+      if (!result.ok) {
+        return NextResponse.json({ error: result.error, profileSaved: true }, { status: result.status });
+      }
+      updated.username = result.username;
+      usernameChange = { username: result.username, changed: result.changed };
+    }
+
     await createAuditLogServer(
       authUser.schoolId,
       authUser.uid,
       authUser.email,
       authUser.role,
-      "UPDATE_TEACHER",
+      usernameChange?.changed ? "SET_TEACHER_USERNAME" : "UPDATE_TEACHER",
       "TEACHER",
       id,
       body.assignedClassIds !== undefined
@@ -283,6 +321,10 @@ export async function PUT(
               ? assignedClassIds.join(", ")
               : "none (unrestricted — see assertTeacherOwnsClass)"
           }.`
+        : usernameChange?.changed
+        ? `Set login username "${usernameChange.username}" for faculty member ${updated.fullName} (${updated.employeeId}).`
+        : parsedDocuments !== undefined
+        ? `Updated documents for faculty member ${updated.fullName} (${updated.employeeId}); now ${parsedDocuments.length} document(s) on file.`
         : `Updated profile for faculty member ${updated.fullName} (${updated.employeeId}).`
     );
 

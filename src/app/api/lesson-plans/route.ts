@@ -8,6 +8,7 @@ import {
   saveLessonPlanServer,
   getClassByIdServer,
   getSchoolSettingsServer,
+  getLessonPlanWeeksServer,
   createAuditLogServer,
 } from "@/lib/firebase/server-db";
 import { LessonPlanDayEntry, LessonPlanDoc } from "@/lib/firebase/types";
@@ -15,15 +16,14 @@ import { assertTeacherCanAccessLessonPlan, resolveAuthenticatedTeacher } from "@
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import {
   DEFAULT_SCHOOL_TIMEZONE,
-  LESSON_PLAN_TEACHING_DAYS,
   isLessonPlanLockedForTeacher,
   isWithinSubmissionWindow,
   lessonPlanDocId,
   lessonPlanStatus,
   submissionWindowFor,
-  weekDates,
   weekdayOf,
 } from "@/lib/lesson-plan-schedule";
+import { MAX_WEEK_DAYS, resolveWeek } from "@/lib/lesson-plan-weeks";
 
 const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
 
@@ -109,8 +109,8 @@ const dayEntrySchema = z.object({
 const saveSchema = z.object({
   classId: idString,
   subjectId: idString,
-  weekId: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "weekId must be a YYYY-MM-DD Monday date."),
-  days: z.array(dayEntrySchema).min(1).max(7),
+  weekId: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "weekId must be a YYYY-MM-DD date (a Monday, or the start date of an admin-defined week)."),
+  days: z.array(dayEntrySchema).min(1).max(MAX_WEEK_DAYS),
   action: z.enum(["SAVE_DRAFT", "SUBMIT"]),
 });
 
@@ -128,9 +128,10 @@ export async function POST(req: NextRequest) {
     if (!parsed.ok) return parsed.response;
     const body = parsed.data;
 
-    if (weekdayOf(body.weekId) !== "Monday") {
-      return jsonError("weekId must be the Monday that starts the school week.", 400);
-    }
+    // The week must exist in the shared schedule: a standard Monday week, or an admin-defined one.
+    const resolved = resolveWeek(body.weekId, await getLessonPlanWeeksServer(authUser.schoolId));
+    if (!resolved.ok) return jsonError(resolved.error, 400);
+    const week = resolved.week;
 
     const teacher = await resolveAuthenticatedTeacher(authUser);
     if (!teacher) return jsonError("Your account is not linked to a teacher profile in this school.", 403);
@@ -146,8 +147,8 @@ export async function POST(req: NextRequest) {
     const id = lessonPlanDocId(authUser.schoolId, teacher.id, body.classId, body.subjectId, body.weekId);
 
     // Validate every submitted date actually belongs to this week and is a teaching day
-    // (Monday-Saturday — Sunday is never a lesson-plan day), and de-duplicate by date.
-    const validDates = new Set(weekDates(body.weekId).filter((d) => weekdayOf(d) !== "Sunday"));
+    // (Sunday is never a lesson-plan day), and de-duplicate by date.
+    const validDates = new Set(week.days.map((d) => d.date));
     const byDate = new Map<string, LessonPlanDayEntry>();
     for (const d of body.days) {
       if (!validDates.has(d.date)) {
@@ -160,10 +161,7 @@ export async function POST(req: NextRequest) {
         ...(d.isNonTeachingDay ? { isNonTeachingDay: true } : {}),
       });
     }
-    const days = LESSON_PLAN_TEACHING_DAYS
-      .map((_, i) => weekDates(body.weekId)[i])
-      .filter((d) => validDates.has(d))
-      .map((d) => byDate.get(d) || { date: d, dayOfWeek: weekdayOf(d), content: "" });
+    const days = week.days.map((d) => byDate.get(d.date) || { date: d.date, dayOfWeek: d.dayOfWeek, content: "" });
 
     if (body.action === "SUBMIT" && !isWithinSubmissionWindow(body.weekId, tz, now)) {
       return jsonError(
@@ -194,8 +192,8 @@ export async function POST(req: NextRequest) {
           subjectId: body.subjectId,
           subjectName: subject.name,
           weekId: body.weekId,
-          weekStartDate: body.weekId,
-          weekEndDate: weekDates(body.weekId)[6],
+          weekStartDate: week.startDate,
+          weekEndDate: week.endDate,
           days,
           submitted: body.action === "SUBMIT" ? true : Boolean(existing?.submitted),
           submittedAt: body.action === "SUBMIT" ? now.toISOString() : (existing?.submittedAt ?? null),

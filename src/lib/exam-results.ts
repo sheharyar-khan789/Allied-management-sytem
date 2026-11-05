@@ -113,6 +113,7 @@ export const EXAM_CATEGORIES: ExamCategory[] = [
   "SECOND_TERM",
   "MIDTERM",
   "FINAL_TERM",
+  "ANNUAL_EXAM",
 ];
 
 export const EXAM_CATEGORY_LABELS: Record<ExamCategory, string> = {
@@ -122,6 +123,7 @@ export const EXAM_CATEGORY_LABELS: Record<ExamCategory, string> = {
   SECOND_TERM: "Second Term",
   MIDTERM: "Midterm",
   FINAL_TERM: "Final Term",
+  ANNUAL_EXAM: "Annual Exam",
 };
 
 export type TeacherMarksPermission = "ALLOWED" | "READ_ONLY";
@@ -139,6 +141,8 @@ export const EXAM_CATEGORY_PERMISSION_DEFAULTS: Record<ExamCategory, TeacherMark
   SECOND_TERM: "ALLOWED",
   MIDTERM: "ALLOWED",
   FINAL_TERM: "READ_ONLY",
+  // Same reasoning as Final Term: the school's biggest, most tightly admin-controlled exam.
+  ANNUAL_EXAM: "READ_ONLY",
 };
 
 /**

@@ -44,6 +44,7 @@ export default function MarksEntryGrid({
   schedule,
   gradingScale,
   readOnly = false,
+  lockRecordedRows = false,
   onSaved,
 }: {
   examTitle: string;
@@ -52,6 +53,10 @@ export default function MarksEntryGrid({
   /** Disables every input and the Save button — the grid is still fully visible. The server
    * enforces the actual restriction independently; this only avoids a dead-end save attempt. */
   readOnly?: boolean;
+  /** Teacher view only: a row whose mark is already saved is disabled individually (the server
+   * locks it the same way — see PUT /api/exams — this only avoids a doomed edit attempt). Admin
+   * pages never pass this; an admin's grid is never locked row-by-row. */
+  lockRecordedRows?: boolean;
   /** Reload this schedule's roster and marks from the server. */
   onSaved: () => Promise<void> | void;
 }) {
@@ -75,9 +80,13 @@ export default function MarksEntryGrid({
         const preview = value !== null && !problem ? computeSubjectResult(value, maxMarks, passingMarks, gradingScale) : null;
         const marksChanged = value !== r.savedMarks;
         const remarksChanged = value !== null && r.remarks.trim() !== r.savedRemarks.trim();
-        return { row: r, value, problem, preview, dirty: marksChanged || remarksChanged };
+        // Mirrors the server's per-record lock (PUT /api/exams): once a mark is saved, this view
+        // cannot change it — the server would reject the row anyway, so the input is disabled
+        // here to avoid a doomed edit rather than to actually enforce anything.
+        const locked = lockRecordedRows && r.recorded;
+        return { row: r, value, problem, preview, locked, dirty: !locked && (marksChanged || remarksChanged) };
       }),
-    [rows, maxMarks, passingMarks, gradingScale]
+    [rows, maxMarks, passingMarks, gradingScale, lockRecordedRows]
   );
 
   const invalidCount = parsed.filter((p) => p.problem).length;
@@ -190,7 +199,7 @@ export default function MarksEntryGrid({
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-container-low">
-              {parsed.map(({ row, problem, preview, dirty: isDirty }) => (
+              {parsed.map(({ row, problem, preview, locked, dirty: isDirty }) => (
                 <tr key={row.studentId} className={isDirty ? "bg-secondary/5" : "hover:bg-surface-container-low/40"}>
                   <td className="py-2 px-4 font-mono font-bold text-on-surface">{row.rollNumber}</td>
                   <td className="py-2 px-4 font-bold text-on-surface">
@@ -199,6 +208,14 @@ export default function MarksEntryGrid({
                       <a href={row.cardUrl} target="_blank" rel="noopener noreferrer" className="ml-2 text-primary text-[10px] hover:underline">
                         Card
                       </a>
+                    ) : null}
+                    {locked ? (
+                      <span
+                        className="ml-2 inline-flex items-center gap-0.5 text-[10px] text-on-surface-variant"
+                        title="Already saved. Ask an administrator to make corrections."
+                      >
+                        <span className="material-symbols-outlined text-[13px]">lock</span>
+                      </span>
                     ) : null}
                   </td>
                   <td className="py-2 px-4 font-mono text-on-surface-variant">{row.admissionNumber}</td>
@@ -211,7 +228,7 @@ export default function MarksEntryGrid({
                       step="any"
                       value={row.input}
                       placeholder="Not recorded"
-                      disabled={readOnly}
+                      disabled={readOnly || locked}
                       aria-label={`Marks for ${row.name}`}
                       aria-invalid={Boolean(problem)}
                       onChange={(e) => update(row.studentId, { input: e.target.value })}
@@ -230,7 +247,7 @@ export default function MarksEntryGrid({
                       type="text"
                       maxLength={500}
                       value={row.remarks}
-                      disabled={readOnly || row.input.trim() === ""}
+                      disabled={readOnly || locked || row.input.trim() === ""}
                       aria-label={`Remarks for ${row.name}`}
                       onChange={(e) => update(row.studentId, { remarks: e.target.value })}
                       className="w-44 h-8 px-2.5 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 disabled:opacity-40"

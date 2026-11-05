@@ -9,6 +9,7 @@ import {
   getTimetableServer,
   getUserByEmailServer,
   getUserByIdServer,
+  releaseUsernameServer,
   saveClassServer,
   saveSubjectServer,
   saveTimetableEntryServer,
@@ -87,6 +88,8 @@ export async function deleteTeacherCompletely(
   if (isTeacherProfileOf(profile, schoolId) && (!profile.teacherId || profile.teacherId === teacher.id)) {
     await deleteAuthAccount(profile.uid);
     await deleteUserProfileServer(profile.uid);
+    // Free the username (only if this account holds it) so it can be reused.
+    if (profile.username) await releaseUsernameServer(profile.username, profile.uid).catch(() => undefined);
     loginRemoved = true;
   } else if (!profile && teacher.userId) {
     await deleteAuthAccount(teacher.userId);

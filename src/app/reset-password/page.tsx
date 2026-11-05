@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, Suspense, useEffect, useRef } from "react";
+import React, { useState, Suspense, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -30,14 +30,12 @@ function ResetPasswordForm() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
-  const validatedRef = useRef(false);
 
   // Validate the token/oobCode on mount before showing the form.
   // This prevents infinite loading: we use a hard 10-second timeout so that even
   // if the API hangs, the user sees an error rather than an endless spinner.
   useEffect(() => {
-    if (!credential || validatedRef.current) return;
-    validatedRef.current = true;
+    if (!credential) return;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => {
@@ -80,6 +78,8 @@ function ResetPasswordForm() {
         }
       });
 
+    // The cleanup only aborts a request this effect started; a re-run (React Strict Mode in
+    // development) starts its own, so the validation can never be left half-finished.
     return () => {
       clearTimeout(timeout);
       controller.abort();
@@ -93,6 +93,8 @@ function ResetPasswordForm() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // One submission at a time: a double click must not send the one-time code twice.
+    if (submitting || success) return;
     setError("");
 
     if (password.length < 10) {
@@ -105,11 +107,15 @@ function ResetPasswordForm() {
     }
 
     setSubmitting(true);
+    // Never leave the button on "Updating Password..." forever if the network stalls.
+    const submitController = new AbortController();
+    const submitTimeout = setTimeout(() => submitController.abort(), 20_000);
     try {
       const res = await fetch("/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(token ? { token, newPassword: password } : { oobCode, newPassword: password }),
+        signal: submitController.signal,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -117,8 +123,13 @@ function ResetPasswordForm() {
       }
       setSuccess(true);
     } catch (err: any) {
-      setError(err.message || "An unexpected error occurred. Please try again.");
+      setError(
+        err?.name === "AbortError"
+          ? "The request took too long. Your password was not changed; please try again."
+          : err.message || "An unexpected error occurred. Please try again."
+      );
     } finally {
+      clearTimeout(submitTimeout);
       setSubmitting(false);
     }
   };
@@ -276,7 +287,7 @@ function ResetPasswordForm() {
             </h2>
             <p className="font-body-sm text-xs text-on-surface-variant mt-1">
               {isActivation
-                ? "Your password has been set. You can now sign in with your email and new password."
+                ? "Your password has been set. You can now sign in with your new password."
                 : "Your password has been changed successfully. You can now use your new password to sign in."}
             </p>
           </div>

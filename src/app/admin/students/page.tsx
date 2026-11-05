@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import StudentImportModal from "@/components/StudentImportModal";
+import StudentDocumentImportModal from "@/components/StudentDocumentImportModal";
 import StudentBulkPasswordPanel from "@/components/StudentBulkPasswordPanel";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 
@@ -16,6 +17,7 @@ export default function StudentsManagementPage() {
   const [selectedClass, setSelectedClass] = useState("all");
   const [selectedStatus, setSelectedStatus] = useState("all");
   const [importOpen, setImportOpen] = useState(false);
+  const [docImportOpen, setDocImportOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [passwordPanelOpen, setPasswordPanelOpen] = useState(false);
   const toggleSelected = (id: string) =>
@@ -188,6 +190,14 @@ export default function StudentsManagementPage() {
             <span className="material-symbols-outlined text-[18px]">upload_file</span>
             <span>Import Students</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setDocImportOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-xs font-semibold shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">folder_zip</span>
+            <span>Import Documents</span>
+          </button>
           <Link
             href="/admin/students/new"
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-label-md text-xs font-semibold hover:bg-secondary/90 shadow-sm transition-all"
@@ -200,6 +210,10 @@ export default function StudentsManagementPage() {
 
       {importOpen && (
         <StudentImportModal onClose={() => setImportOpen(false)} onImported={() => fetchStudents()} />
+      )}
+
+      {docImportOpen && (
+        <StudentDocumentImportModal onClose={() => setDocImportOpen(false)} onImported={() => fetchStudents()} />
       )}
 
       {/* Filter & Search Bar */}

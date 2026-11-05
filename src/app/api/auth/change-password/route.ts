@@ -5,7 +5,7 @@ import {
   createSessionCookieServer,
   SESSION_COOKIE_OPTIONS,
 } from "@/lib/firebase/server-auth";
-import { getUserByIdServer, updateUserServer } from "@/lib/firebase/server-db";
+import { createAuditLogServer, getUserByIdServer, updateUserServer } from "@/lib/firebase/server-db";
 import { setAuthPasswordServer, verifyAccountPasswordServer } from "@/lib/firebase/auth-password";
 import { BCRYPT_COST, checkPasswordPolicy } from "@/lib/password-reset";
 import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
@@ -89,11 +89,23 @@ export async function POST(req: NextRequest) {
     const changedAt = new Date();
     const { passwordHash: _omit, ...safeProfile } = profile;
     void _omit;
+    const wasTemporary = profile.mustChangePassword === true;
+    // The profile is the single source of truth for the forced-change requirement (requireAuth
+    // reads it on every request), so clearing it here, on the server, after Firebase has accepted
+    // the new password, is what ends the requirement. Nothing the browser sends can clear it.
     await updateUserServer({
       ...safeProfile,
       passwordHash,
       sessionsValidAfter: changedAt.toISOString(),
+      ...(wasTemporary ? { mustChangePassword: false } : {}),
     });
+    if (wasTemporary) {
+      await createAuditLogServer(
+        authUser.schoolId, authUser.uid, authUser.email, authUser.role,
+        "TEMP_PASSWORD_REPLACED", "AUTH", authUser.uid,
+        `${authUser.email} replaced the temporary password issued by the administrator.`
+      ).catch(() => undefined);
+    }
 
     const token = await createSessionCookieServer({
       uid: authUser.uid,

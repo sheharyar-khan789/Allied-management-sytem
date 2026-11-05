@@ -85,9 +85,9 @@ export async function GET(req: NextRequest) {
     }
 
     const limitParam = searchParams.get("limit");
-    // Default to a bounded read (capped further to 250 inside getStudentsServer) instead of an
-    // unconditionally unbounded full-collection fetch when the caller doesn't specify a limit.
-    const parsedLimit = limitParam ? parseInt(limitParam, 10) : 250;
+    // No limit = the whole school's list (served from the per-school cache). The previous default
+    // of 250 hid every student after the 250th from the admin list.
+    const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
 
     let students = await getStudentsServer(authUser.schoolId, classId, search, parsedLimit, status);
 
@@ -127,6 +127,7 @@ export async function GET(req: NextRequest) {
       admissionDate: st.admissionDate || st.createdAt,
       photoUrl: st.photoUrl || "",
       documents: st.documents || [],
+      optionalSubjectIds: st.optionalSubjectIds || [],
     }));
 
     return NextResponse.json({ success: true, students: mapped });

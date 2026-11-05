@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
-import { getClassesServer, getSubjectsServer, getLessonPlansServer } from "@/lib/firebase/server-db";
+import { getClassesServer, getSubjectsServer, getLessonPlansServer, getLessonPlanWeeksServer } from "@/lib/firebase/server-db";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
-import { lessonPlanStatus, weekdayOf } from "@/lib/lesson-plan-schedule";
+import { lessonPlanStatus } from "@/lib/lesson-plan-schedule";
+import { resolveWeek } from "@/lib/lesson-plan-weeks";
 
 const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
 
@@ -18,9 +19,10 @@ export async function GET(req: NextRequest) {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const { searchParams } = new URL(req.url);
     const weekId = searchParams.get("weekId") || "";
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekId) || weekdayOf(weekId) !== "Monday") {
-      return jsonError("weekId must be a valid Monday YYYY-MM-DD date.", 400);
-    }
+    // Same schedule the submission form uses: a standard Monday week or an admin-defined week.
+    const resolved = resolveWeek(weekId, await getLessonPlanWeeksServer(authUser.schoolId));
+    // A historical week that predates a covering custom week is still readable (read-only view).
+    if (!resolved.ok && !/^\d{4}-\d{2}-\d{2}$/.test(weekId)) return jsonError(resolved.error, 400);
     const classId = searchParams.get("classId") || undefined;
     const subjectId = searchParams.get("subjectId") || undefined;
     const teacherId = searchParams.get("teacherId") || undefined;

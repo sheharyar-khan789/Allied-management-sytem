@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
-import { getUserByEmailServer, createAuditLogServer, getStudentByIdServer, getStudentByUserIdServer } from "@/lib/firebase/server-db";
+import {
+  getUserByEmailServer,
+  getUserByIdServer,
+  getUsernameRecordServer,
+  createAuditLogServer,
+  getStudentByIdServer,
+  getStudentByUserIdServer,
+} from "@/lib/firebase/server-db";
+import { validateUsername } from "@/lib/username";
 import { sendPasswordSetupLink } from "@/lib/account-email";
 import { UserProfile } from "@/lib/firebase/types";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
@@ -77,9 +85,13 @@ export async function POST(req: NextRequest) {
 
   const rawEmail = (body?.email || body?.identifier || "").toString().trim().toLowerCase().slice(0, 254);
 
+  // A teacher may type the username they log in with instead of their e-mail address. It is
+  // resolved to the account's e-mail on the server below; the link only ever goes to that mailbox.
+  const isUsername = rawEmail !== "" && !rawEmail.includes("@") && validateUsername(rawEmail) === null;
+
   // Basic email syntax validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!rawEmail || !emailRegex.test(rawEmail)) {
+  if (!isUsername && (!rawEmail || !emailRegex.test(rawEmail))) {
     return NextResponse.json(
       { error: "A valid email address is required." },
       { status: 400, headers: { "Content-Type": "application/json" } }
@@ -89,17 +101,26 @@ export async function POST(req: NextRequest) {
   // Record this attempt against rate limiter
   recordAuthFailure(rateKey, 5, 900);
 
-  // Per-address limit stops mail-bombing one inbox from many IPs. The response stays identical
-  // so it can't be used to learn whether the address exists.
-  const emailKey = `forgot-email:${rawEmail}`;
-  if (!checkAuthRateLimit(emailKey, PER_EMAIL_MAX, PER_EMAIL_WINDOW_SECONDS).allowed) {
-    securityLog("auth.reset_rate_limited", { subject: rawEmail, ip: clientIp, reason: "per_email" });
-    return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
-  }
-  recordAuthFailure(emailKey, PER_EMAIL_MAX, PER_EMAIL_WINDOW_SECONDS);
-
   try {
-    const user = await getUserByEmailServer(rawEmail);
+    let lookupEmail = rawEmail;
+    if (isUsername) {
+      const record = await getUsernameRecordServer(rawEmail);
+      const owner = record ? await getUserByIdServer(record.uid) : null;
+      // An unknown username gets the same generic answer as an unknown e-mail.
+      if (!owner || owner.username !== rawEmail || !owner.email) return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
+      lookupEmail = owner.email.toLowerCase();
+    }
+
+    // Per-address limit stops mail-bombing one inbox from many IPs. The response stays identical
+    // so it can't be used to learn whether the address exists.
+    const emailKey = `forgot-email:${lookupEmail}`;
+    if (!checkAuthRateLimit(emailKey, PER_EMAIL_MAX, PER_EMAIL_WINDOW_SECONDS).allowed) {
+      securityLog("auth.reset_rate_limited", { subject: lookupEmail, ip: clientIp, reason: "per_email" });
+      return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
+    }
+    recordAuthFailure(emailKey, PER_EMAIL_MAX, PER_EMAIL_WINDOW_SECONDS);
+
+    const user = await getUserByEmailServer(lookupEmail);
 
     // Prevent account enumeration: unknown/inactive accounts get the same response.
     if (!user || user.status === "SUSPENDED" || user.status === "INACTIVE") {
