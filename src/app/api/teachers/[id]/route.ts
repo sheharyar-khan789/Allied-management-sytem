@@ -12,6 +12,7 @@ import { validateDateString, isDateBefore } from "@/lib/date-utils";
 import { deleteTeacherCompletely } from "@/lib/teacher-lifecycle";
 import { assignTeacherUsername } from "@/lib/teacher-username";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { deleteFileFromStorage, storagePathFromDownloadUrl } from "@/lib/storage";
 
 export async function GET(
   req: NextRequest,
@@ -280,6 +281,18 @@ export async function PUT(
     };
 
     await saveTeacherServer(updated);
+
+    // A document removed from the array (the admin deleted it) has its underlying file cleaned
+    // up too — see the identical rationale in PUT /api/students/[id]. Best-effort; never blocks
+    // the profile save that already succeeded.
+    if (parsedDocuments !== undefined) {
+      const keptIds = new Set(parsedDocuments.map((d) => d.id));
+      const removedDocs = (existing.documents || []).filter((d) => !keptIds.has(d.id));
+      for (const doc of removedDocs) {
+        const path = storagePathFromDownloadUrl(doc.url, authUser.schoolId);
+        if (path) await deleteFileFromStorage(path, authUser.schoolId).catch(() => false);
+      }
+    }
 
     // Username (re)assignment: validated, atomically claimed, and applied without touching the
     // teacher's Firebase account, e-mail or password. Done after the rest of the profile saved so

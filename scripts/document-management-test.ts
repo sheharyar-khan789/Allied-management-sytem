@@ -9,10 +9,12 @@
  */
 import { NextRequest } from "next/server";
 import { PUT as teacherPut, GET as teacherGet } from "../src/app/api/teachers/[id]/route";
+import { PUT as studentPut } from "../src/app/api/students/[id]/route";
 import { POST as docsImportPost } from "../src/app/api/students/documents-import/route";
 import { createSessionCookieServer } from "../src/lib/firebase/server-auth";
 import { saveClassServer, saveStudentServer, saveTeacherServer, getStudentByIdServer } from "../src/lib/firebase/server-db";
 import { ClassDoc, StudentDoc, TeacherDoc } from "../src/lib/firebase/types";
+import { saveStoredFile, getStoredFile } from "../src/lib/stored-files";
 
 let passed = 0;
 let failed = 0;
@@ -204,6 +206,34 @@ async function run() {
     assert(first.summary.imported === 1 && second.summary.imported === 1, "Repeated commit: the backend has no cross-request dedup - each independent call does import (by design; the client guards against an accidental repeat, see StudentDocumentImportModal)");
     const after = (await getStudentByIdServer(A, s2.id))?.documents?.length || 0;
     assert(after === before + 2, "Repeated commit: confirms there are now two separate document records - the safeguard against this is client-side, not a hidden server dedup that could mask a real re-upload");
+  }
+
+  // ---------------------------------------------------------------- 9. Phase 12: deleting a document
+  // cleans up its underlying stored file, not just the Firestore reference (confirmed gap fixed
+  // in PUT /api/students/[id] and PUT /api/teachers/[id]).
+  {
+    const studentFile = await saveStoredFile({ schoolId: A, folder: "documents", name: "s-keep-delete.pdf", contentType: "application/pdf", buffer: PDF_BYTES });
+    const keepFile = await saveStoredFile({ schoolId: A, folder: "documents", name: "s-keep.pdf", contentType: "application/pdf", buffer: PDF_BYTES });
+    const s1 = await getStudentByIdServer(A, "std-docmgmt-1");
+    const docToDelete = { id: "doc-to-delete", name: "ToDelete", type: "OTHER" as const, url: studentFile.url, uploadedAt: now };
+    const docToKeep = { id: "doc-to-keep", name: "ToKeep", type: "OTHER" as const, url: keepFile.url, uploadedAt: now };
+    await studentPut(req(ADMIN, "/api/students/std-docmgmt-1", "PUT", { documents: [...(s1?.documents || []), docToDelete, docToKeep] }), idParams("std-docmgmt-1"));
+    assert((await getStoredFile(A, "documents", "s-keep-delete.pdf")) !== null, "Storage cleanup setup: the file exists before deletion");
+
+    const s1AfterAdd = await getStudentByIdServer(A, "std-docmgmt-1");
+    await studentPut(req(ADMIN, "/api/students/std-docmgmt-1", "PUT", {
+      documents: (s1AfterAdd?.documents || []).filter((d) => d.id !== "doc-to-delete"),
+    }), idParams("std-docmgmt-1"));
+    assert((await getStoredFile(A, "documents", "s-keep-delete.pdf")) === null, "Storage cleanup: removing a student document from the array deletes its underlying stored file, not just the Firestore reference");
+    assert((await getStoredFile(A, "documents", "s-keep.pdf")) !== null, "Storage cleanup: a document that was NOT removed keeps its file intact");
+
+    const teacherFile = await saveStoredFile({ schoolId: A, folder: "documents", name: "t-keep-delete.pdf", contentType: "application/pdf", buffer: PDF_BYTES });
+    await teacherPut(req(ADMIN, `/api/teachers/${teacher.id}`, "PUT", {
+      documents: [{ id: "tdoc-to-delete", name: "ToDelete", type: "OTHER", url: teacherFile.url, uploadedAt: now }],
+    }), idParams(teacher.id));
+    assert((await getStoredFile(A, "documents", "t-keep-delete.pdf")) !== null, "Storage cleanup setup (teacher): the file exists before deletion");
+    await teacherPut(req(ADMIN, `/api/teachers/${teacher.id}`, "PUT", { documents: [] }), idParams(teacher.id));
+    assert((await getStoredFile(A, "documents", "t-keep-delete.pdf")) === null, "Storage cleanup: removing a teacher document from the array deletes its underlying stored file too");
   }
 
   console.log("==================================================");

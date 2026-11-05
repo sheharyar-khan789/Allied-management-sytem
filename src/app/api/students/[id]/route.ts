@@ -30,6 +30,7 @@ import { syncLoginActive } from "@/lib/account-status";
 import { z } from "zod";
 import { cnicNumber, documentsArray, idString, money, parseJsonBody, safeUrl } from "@/lib/input-validation";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { deleteFileFromStorage, storagePathFromDownloadUrl } from "@/lib/storage";
 
 const optText = (max: number) => z.string().trim().max(max).optional().or(z.literal(""));
 const optEmail = z.string().trim().max(254).email().optional().or(z.literal(""));
@@ -395,6 +396,21 @@ export async function PUT(
     }
 
     await saveStudentServer(updated);
+
+    // A document removed from the array (the admin deleted it) has its underlying file cleaned
+    // up too, so a deletion doesn't just drop the reference and leave the file to accumulate in
+    // Storage forever. Best-effort — same convention as exam result-sheet replacement/deletion
+    // (src/app/api/exams/route.ts): a cleanup failure here must never block the save that already
+    // succeeded, since the student record itself is already correctly updated.
+    if (body.documents !== undefined) {
+      const keptIds = new Set(updated.documents?.map((d) => d.id) || []);
+      const removedDocs = (existing.documents || []).filter((d) => !keptIds.has(d.id));
+      for (const doc of removedDocs) {
+        const path = storagePathFromDownloadUrl(doc.url, authUser.schoolId);
+        if (path) await deleteFileFromStorage(path, authUser.schoolId).catch(() => false);
+      }
+    }
+
     if (updated.status !== existing.status) {
       await syncLoginActive(existing.userId, authUser.schoolId, updated.status === "ACTIVE");
     }
