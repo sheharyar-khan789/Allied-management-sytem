@@ -102,6 +102,18 @@ async function run() {
     const dossier = await json(await teacherGet(req(ADMIN, `/api/teachers/${teacher.id}`), idParams(teacher.id)));
     assert(dossier.teacher.documents.length === 1 && dossier.teacher.documents[0].type === "CERTIFICATE", "GET: uploaded teacher document is returned");
 
+    const teacherReadAttempt = await teacherGet(req(TEACHER, `/api/teachers/${teacher.id}`), idParams(teacher.id));
+    assert(teacherReadAttempt.status === 403, "Unauthorized: a TEACHER cannot open a full teacher profile via the admin route (ADMIN only) - Phase 10");
+
+    // Correct Teacher ID mapping (Phase 10): a second teacher's profile must never bleed into
+    // the first's when both are fetched by their own id.
+    const teacher2: TeacherDoc = { ...teacher, id: "tch-docmgmt-2", employeeId: "EMP-DM-2", fullName: "Faculty Two", email: "f2@docmgmt.edu" };
+    await saveTeacherServer(teacher2);
+    const dossier2 = await json(await teacherGet(req(ADMIN, `/api/teachers/${teacher2.id}`), idParams(teacher2.id)));
+    assert(dossier2.teacher.id === teacher2.id && dossier2.teacher.fullName === "Faculty Two" && dossier2.teacher.documents.length === 0, "Correct Teacher ID mapping: a second teacher's profile is distinct and has none of the first teacher's documents");
+    const dossier1Again = await json(await teacherGet(req(ADMIN, `/api/teachers/${teacher.id}`), idParams(teacher.id)));
+    assert(dossier1Again.teacher.id === teacher.id && dossier1Again.teacher.documents.length === 1, "Correct Teacher ID mapping: the first teacher's own profile/documents are unaffected by the second");
+
     // Deleting (sending the array without it) removes it, as the existing student-document pattern does.
     const deleted = await json(await teacherPut(req(ADMIN, `/api/teachers/${teacher.id}`, "PUT", { documents: [] }), idParams(teacher.id)));
     assert(deleted.teacher.documents.length === 0, "Admin: can delete a teacher document");
