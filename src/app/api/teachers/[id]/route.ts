@@ -9,7 +9,12 @@ import {
   getSubjectsServer
 } from "@/lib/firebase/server-db";
 import { validateDateString, isDateBefore } from "@/lib/date-utils";
-import { deleteTeacherCompletely } from "@/lib/teacher-lifecycle";
+import {
+  deleteTeacherCompletely,
+  updateTeacherAccountEmail,
+  syncTeacherAccountStatus,
+  TeacherEmailUpdateResult
+} from "@/lib/teacher-lifecycle";
 import { assignTeacherUsername } from "@/lib/teacher-username";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import { deleteFileFromStorage, storagePathFromDownloadUrl } from "@/lib/storage";
@@ -261,18 +266,38 @@ export async function PUT(
       }
     }
 
+    // If the email address is changing, safely update the authentication account,
+    // login profile, and teacher record with full two-phase rollback protection.
+    let emailChangeResult: TeacherEmailUpdateResult | null = null;
+    if (body.email !== undefined && body.email !== null && String(body.email).trim() !== "") {
+      const targetEmail = String(body.email).trim().toLowerCase();
+      const currentEmail = (existing.email || "").trim().toLowerCase();
+      if (targetEmail !== currentEmail) {
+        const emailUpdate = await updateTeacherAccountEmail(authUser.schoolId, id, targetEmail, {
+          performedByUid: authUser.uid,
+          performedByEmail: authUser.email,
+          performedByRole: authUser.role,
+        });
+        if (!emailUpdate.ok) {
+          return NextResponse.json({ error: emailUpdate.error }, { status: emailUpdate.status });
+        }
+        emailChangeResult = emailUpdate;
+      }
+    }
+
+    const baseRecord = emailChangeResult?.teacher || existing;
     const updated: typeof existing = {
-      ...existing,
+      ...baseRecord,
       assignedClassIds,
-      fullName: body.firstName ? `${body.firstName} ${body.lastName || ""}`.trim() : existing.fullName,
-      designation: body.designation || existing.designation,
-      qualification: body.qualification || existing.qualification,
-      department: body.specialization || existing.department,
-      phone: body.phone || existing.phone,
-      email: body.email || existing.email,
+      fullName: body.firstName ? `${body.firstName} ${body.lastName || ""}`.trim() : baseRecord.fullName,
+      designation: body.designation || baseRecord.designation,
+      qualification: body.qualification || baseRecord.qualification,
+      department: body.specialization || baseRecord.department,
+      phone: body.phone || baseRecord.phone,
+      email: emailChangeResult?.email || baseRecord.email,
       status: inferredStatus,
-      photoUrl: body.photoUrl !== undefined ? body.photoUrl : existing.photoUrl,
-      documents: parsedDocuments !== undefined ? parsedDocuments : (existing.documents || []),
+      photoUrl: body.photoUrl !== undefined ? body.photoUrl : baseRecord.photoUrl,
+      documents: parsedDocuments !== undefined ? parsedDocuments : (baseRecord.documents || []),
       baseSalary: updatedSalary,
       salary: updatedSalary,
       joiningDate: updatedJoiningDate,
@@ -281,6 +306,15 @@ export async function PUT(
     };
 
     await saveTeacherServer(updated);
+
+    // If teacher status changed (ACTIVE <-> INACTIVE), sync login account status
+    if (inferredStatus !== existing.status) {
+      await syncTeacherAccountStatus(authUser.schoolId, updated, inferredStatus, {
+        performedByUid: authUser.uid,
+        performedByEmail: authUser.email,
+        performedByRole: authUser.role,
+      });
+    }
 
     // A document removed from the array (the admin deleted it) has its underlying file cleaned
     // up too — see the identical rationale in PUT /api/students/[id]. Best-effort; never blocks

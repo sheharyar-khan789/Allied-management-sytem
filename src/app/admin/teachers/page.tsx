@@ -33,6 +33,7 @@ const EMPTY_TEACHER_FORM = {
   email: "",
   username: "",
   photoUrl: "",
+  status: "ACTIVE",
   baseSalary: "",
   joiningDate: "",
   endingDate: "",
@@ -51,6 +52,7 @@ export default function TeachersManagementPage() {
     { name: string; email: string; sent: boolean; channel?: string } | null
   >(null);
   const [sendingActivationId, setSendingActivationId] = useState<string | null>(null);
+  const [accountNotice, setAccountNotice] = useState<string | null>(null);
 
   const [formData, setFormData] = useState(EMPTY_TEACHER_FORM);
   // The username + temporary password of a teacher just created. Held in React state only, shown
@@ -98,6 +100,7 @@ export default function TeachersManagementPage() {
       email: t.email || "",
       username: t.username || "",
       photoUrl: t.photoUrl || "",
+      status: t.status || "ACTIVE",
       baseSalary: String(t.baseSalary ?? t.salary ?? ""),
       joiningDate: t.joiningDate || "",
       endingDate: t.endingDate || "",
@@ -152,6 +155,9 @@ export default function TeachersManagementPage() {
           sent: Boolean(data.activation.sent),
           channel: data.activation.channel,
         });
+      }
+      if (editingTeacher) {
+        setAccountNotice(`Faculty account and profile for ${data.teacher?.fullName || 'the educator'} updated successfully.`);
       }
       setFormData(EMPTY_TEACHER_FORM);
       fetchTeachers();
@@ -286,6 +292,26 @@ export default function TeachersManagementPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {accountNotice && (
+        <div
+          role="status"
+          className="p-4 rounded-xl border bg-tertiary-container/10 border-on-tertiary-container/30 flex items-center justify-between"
+        >
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[20px] text-on-tertiary-container">check_circle</span>
+            <p className="text-xs font-semibold text-on-surface">{accountNotice}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAccountNotice(null)}
+            className="text-on-surface-variant hover:text-on-surface"
+            aria-label="Dismiss notice"
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
         </div>
       )}
 
@@ -716,6 +742,22 @@ export default function TeachersManagementPage() {
                     className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                   />
                 </div>
+                {editingTeacher && (
+                  <div>
+                    <label htmlFor="teachers-status" className="block font-semibold text-on-surface mb-1">
+                      Account Status
+                    </label>
+                    <select
+                      id="teachers-status"
+                      value={formData.status}
+                      onChange={(e) => setFormData({ ...formData, status: e.target.value })}
+                      className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
+                    >
+                      <option value="ACTIVE">Active (Can sign in)</option>
+                      <option value="INACTIVE">Inactive (Account locked)</option>
+                    </select>
+                  </div>
+                )}
                 {editingTeacher && (
                   <div className="col-span-2">
                     <label htmlFor="teachers-ending-date" className="block font-semibold text-on-surface mb-1">

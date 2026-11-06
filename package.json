@@ -37,6 +37,7 @@
     "test:concurrency": "tsx scripts/concurrency-load-test.ts",
     "test:student-list": "tsx scripts/student-list-cap-test.ts",
     "test:teacher-auth": "tsx scripts/teacher-username-lessonweeks-test.ts",
+    "test:teacher-account": "tsx scripts/teacher-account-email-test.ts",
     "test:exam-import": "tsx scripts/exam-schedule-import-test.ts",
     "test:subject-allocation": "tsx scripts/subject-allocation-test.ts",
     "test:documents": "tsx scripts/document-management-test.ts",

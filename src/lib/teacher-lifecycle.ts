@@ -1,5 +1,6 @@
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import {
+  createAuditLogServer,
   deleteTeacherServer,
   deleteUserProfileServer,
   getClassesServer,
@@ -10,10 +11,14 @@ import {
   getUserByEmailServer,
   getUserByIdServer,
   releaseUsernameServer,
+  revokeUserSessionsServer,
   saveClassServer,
   saveSubjectServer,
+  saveTeacherServer,
   saveTimetableEntryServer,
+  updateUserServer,
 } from "@/lib/firebase/server-db";
+import { cacheKeys, invalidateCache, invalidateUserProfileCache } from "@/lib/server-cache";
 import { TeacherDoc, UserProfile } from "@/lib/firebase/types";
 
 async function deleteAuthAccount(uid: string): Promise<void> {
@@ -160,4 +165,243 @@ export function nextEmployeeId(existing: Pick<TeacherDoc, "employeeId">[]): stri
     return n > max ? n : max;
   }, 100);
   return `TCH-${highest + 1}`;
+}
+
+export interface TeacherEmailUpdateResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+  unchanged?: boolean;
+  email?: string;
+  teacher?: TeacherDoc;
+  profile?: UserProfile;
+}
+
+/**
+ * Updates a teacher's account email securely:
+ * 1. Validates the email format and ensures length <= 254.
+ * 2. Resolves the teacher and their associated UserProfile.
+ * 3. Enforces that the email is not already taken by another teacher in the school,
+ *    another UserProfile in the system, or another Firebase Auth account.
+ * 4. Updates Firebase Authentication email securely with rollback protection.
+ * 5. Updates the Firestore UserProfile and TeacherDoc records.
+ * 6. Invalidates all caches and revokes active sessions.
+ * 7. Records an audit log entry.
+ *
+ * Preserves the existing Firebase UID, username, role, schoolId, teacherId,
+ * and all curriculum/timetable allocations.
+ */
+export async function updateTeacherAccountEmail(
+  schoolId: string,
+  teacherId: string,
+  newEmailRaw: string,
+  auditContext?: {
+    performedByUid?: string;
+    performedByEmail?: string;
+    performedByRole?: string;
+  }
+): Promise<TeacherEmailUpdateResult> {
+  if (!newEmailRaw || typeof newEmailRaw !== "string") {
+    return { ok: false, status: 400, error: "Please provide a valid email address." };
+  }
+  const newEmail = newEmailRaw.trim().toLowerCase();
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!EMAIL_RE.test(newEmail) || newEmail.length > 254) {
+    return { ok: false, status: 400, error: "Please provide a valid email address." };
+  }
+
+  const teacher = await getTeacherByIdServer(schoolId, teacherId);
+  if (!teacher || teacher.schoolId !== schoolId) {
+    return { ok: false, status: 404, error: "Teacher not found." };
+  }
+
+  let profile = teacher.userId ? await getUserByIdServer(teacher.userId) : null;
+  if (!profile && teacher.email) {
+    profile = await getUserByEmailServer(teacher.email);
+  }
+  if (!profile || profile.role !== "TEACHER" || profile.schoolId !== schoolId || (profile.teacherId && profile.teacherId !== teacher.id)) {
+    return { ok: false, status: 409, error: "This teacher has no login account to update." };
+  }
+
+  const oldEmail = (profile.email || teacher.email || "").toLowerCase().trim();
+  if (oldEmail === newEmail) {
+    return { ok: true, status: 200, unchanged: true, email: newEmail, teacher, profile };
+  }
+
+  // Check for duplicates within this school's teachers
+  const teachers = await getTeachersServer(schoolId);
+  if (teachers.some((t) => t.id !== teacher.id && (t.email || "").trim().toLowerCase() === newEmail)) {
+    return { ok: false, status: 409, error: "A teacher with this email already exists in this school." };
+  }
+
+  // Check for duplicates across all user profiles
+  const existingUser = await getUserByEmailServer(newEmail);
+  if (existingUser && existingUser.uid !== profile.uid) {
+    return { ok: false, status: 409, error: "This login email is already in use by another account." };
+  }
+
+  // Check for duplicates in Firebase Auth
+  if (hasAdminCredentials) {
+    try {
+      const authRecord = await adminAuth.getUserByEmail(newEmail);
+      if (authRecord.uid !== profile.uid) {
+        const released = await releaseOrphanedTeacherAuthAccount(schoolId, newEmail);
+        if (!released) {
+          return { ok: false, status: 409, error: "This login email is already in use by another account." };
+        }
+      }
+    } catch (err: any) {
+      if (err?.code !== "auth/user-not-found") throw err;
+    }
+  }
+
+  // Phase 1: Update Firebase Auth provider
+  let authUpdated = false;
+  if (hasAdminCredentials) {
+    try {
+      await adminAuth.updateUser(profile.uid, {
+        email: newEmail,
+      });
+      authUpdated = true;
+    } catch (err: any) {
+      if (err?.code === "auth/email-already-exists") {
+        return { ok: false, status: 409, error: "This login email is already in use by another account." };
+      }
+      if (err?.code === "auth/invalid-email") {
+        return { ok: false, status: 400, error: "This login email is not valid for the sign-in provider." };
+      }
+      console.error("[teacher-account] Firebase Auth email update failed:", err);
+      return { ok: false, status: 500, error: "Failed to update authentication account email." };
+    }
+  }
+
+  // Phase 2: Update Firestore records with rollback guarantee
+  const updatedProfile: UserProfile = {
+    ...profile,
+    email: newEmail,
+    updatedAt: new Date().toISOString(),
+  };
+  const updatedTeacher: TeacherDoc = {
+    ...teacher,
+    email: newEmail,
+    userId: profile.uid,
+    updatedAt: new Date().toISOString(),
+  };
+
+  try {
+    await updateUserServer(updatedProfile);
+    await saveTeacherServer(updatedTeacher);
+  } catch (dbErr: any) {
+    if (authUpdated && hasAdminCredentials) {
+      try {
+        await adminAuth.updateUser(profile.uid, { email: oldEmail });
+      } catch (rbErr) {
+        console.error("[teacher-account] Rollback of Firebase Auth email failed:", rbErr);
+      }
+    }
+    try {
+      await updateUserServer({ ...profile, email: oldEmail });
+    } catch {}
+    try {
+      await saveTeacherServer({ ...teacher, email: oldEmail });
+    } catch {}
+    console.error("[teacher-account] Database update failed:", dbErr);
+    return { ok: false, status: 500, error: "Failed to update teacher profile in database." };
+  }
+
+  // Cache invalidation & session revocation
+  invalidateUserProfileCache(profile.uid);
+  invalidateCache(cacheKeys.userByEmail(oldEmail));
+  invalidateCache(cacheKeys.userByEmail(newEmail));
+  await revokeUserSessionsServer(profile.uid);
+  if (hasAdminCredentials) {
+    await adminAuth.revokeRefreshTokens(profile.uid).catch(() => undefined);
+  }
+
+  // Audit log
+  if (auditContext?.performedByUid) {
+    await createAuditLogServer(
+      schoolId,
+      auditContext.performedByUid,
+      auditContext.performedByEmail || "",
+      auditContext.performedByRole || "ADMIN",
+      "UPDATE_TEACHER_EMAIL",
+      "TEACHER",
+      teacher.id,
+      `Changed teacher account email from ${oldEmail} to ${newEmail} for faculty member ${teacher.fullName} (${teacher.employeeId}).`
+    );
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    email: newEmail,
+    teacher: updatedTeacher,
+    profile: updatedProfile,
+  };
+}
+
+/**
+ * Synchronizes teacher account activation/deactivation status across Firestore and Firebase Auth.
+ * When deactivated:
+ *  - UserProfile.status becomes "INACTIVE"
+ *  - Firebase Auth disabled flag is set to true
+ *  - Active sessions and refresh tokens are revoked
+ * When reactivated:
+ *  - UserProfile.status becomes "ACTIVE"
+ *  - Firebase Auth disabled flag is set to false
+ */
+export async function syncTeacherAccountStatus(
+  schoolId: string,
+  teacher: TeacherDoc,
+  status: "ACTIVE" | "INACTIVE",
+  auditContext?: {
+    performedByUid?: string;
+    performedByEmail?: string;
+    performedByRole?: string;
+  }
+): Promise<{ ok: boolean; status: "ACTIVE" | "INACTIVE" }> {
+  let profile = teacher.userId ? await getUserByIdServer(teacher.userId) : null;
+  if (!profile && teacher.email) {
+    profile = await getUserByEmailServer(teacher.email);
+  }
+
+  if (profile && isTeacherProfileOf(profile, schoolId) && (!profile.teacherId || profile.teacherId === teacher.id)) {
+    if (profile.status !== status) {
+      await updateUserServer({ ...profile, status });
+      invalidateUserProfileCache(profile.uid);
+      if (status === "INACTIVE") {
+        await revokeUserSessionsServer(profile.uid);
+        if (hasAdminCredentials) {
+          await adminAuth.revokeRefreshTokens(profile.uid).catch(() => undefined);
+        }
+      }
+    }
+  }
+
+  const targetUid = profile?.uid || teacher.userId;
+  if (hasAdminCredentials && targetUid) {
+    try {
+      await adminAuth.updateUser(targetUid, { disabled: status === "INACTIVE" });
+    } catch (err: any) {
+      if (err?.code !== "auth/user-not-found") {
+        console.error("[teacher-status] Failed to update disabled in Auth:", err);
+      }
+    }
+  }
+
+  if (auditContext?.performedByUid && (!profile || profile.status !== status)) {
+    await createAuditLogServer(
+      schoolId,
+      auditContext.performedByUid,
+      auditContext.performedByEmail || "",
+      auditContext.performedByRole || "ADMIN",
+      status === "ACTIVE" ? "ACTIVATE_TEACHER_ACCOUNT" : "DEACTIVATE_TEACHER_ACCOUNT",
+      "TEACHER",
+      teacher.id,
+      `Set faculty member ${teacher.fullName} (${teacher.employeeId}) account status to ${status}.`
+    );
+  }
+
+  return { ok: true, status };
 }

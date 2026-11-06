@@ -51,6 +51,7 @@ export default function TeacherProfilePage({
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [editFormLoading, setEditFormLoading] = useState(false);
   const [editError, setEditError] = useState("");
+  const [profileSuccess, setProfileSuccess] = useState("");
   const [formData, setFormData] = useState({
     firstName: "",
     lastName: "",
@@ -220,6 +221,7 @@ export default function TeacherProfilePage({
         throw new Error(data.error || "Failed to update teacher profile.");
       }
       setEditModalOpen(false);
+      setProfileSuccess("Faculty profile and login account updated successfully.");
       fetchTeacherData();
     } catch (err: any) {
       setEditError(err.message || "Failed to update profile.");
@@ -310,6 +312,26 @@ export default function TeacherProfilePage({
 
   return (
     <div className="flex flex-col w-full gap-space-lg">
+      {profileSuccess && (
+        <div
+          role="status"
+          className="p-4 rounded-xl border bg-tertiary-container/10 border-on-tertiary-container/30 flex items-center justify-between"
+        >
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[20px] text-on-tertiary-container">check_circle</span>
+            <p className="text-xs font-semibold text-on-surface">{profileSuccess}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setProfileSuccess("")}
+            className="text-on-surface-variant hover:text-on-surface"
+            aria-label="Dismiss notice"
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
+
       {/* Teacher Profile Banner */}
       <div className="p-6 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="flex items-center gap-4">
