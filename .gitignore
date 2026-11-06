@@ -5,6 +5,7 @@ node_modules/
 .env.*.local
 .env.production
 *.tsbuildinfo
+*.docx
 
 Allied-management-sytem/
 stitch_school_management_saas_system/

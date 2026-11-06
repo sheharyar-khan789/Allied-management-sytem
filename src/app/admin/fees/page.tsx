@@ -6,6 +6,7 @@ import { formatCurrency, formatDate } from "@/lib/utils";
 import FileUpload from "@/components/FileUpload";
 import StudentFeeAccount from "@/components/StudentFeeAccount";
 import FeeImportModal from "@/components/FeeImportModal";
+import TransactionImportModal from "@/components/TransactionImportModal";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 
 const MONTHS = [
@@ -35,6 +36,7 @@ export default function FeeManagementPage() {
   // The ledger is paged on the server (50 rows per request); "Load more" appends the next page.
   const [loadingMore, setLoadingMore] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [transactionImportOpen, setTransactionImportOpen] = useState(false);
   // One request per typed query, not one per keystroke.
   const debouncedSearch = useDebouncedValue(search.trim(), 400);
 
@@ -157,6 +159,13 @@ export default function FeeManagementPage() {
 
         <div className="flex items-center gap-2 self-start sm:self-auto">
           <Link
+            href="/admin/fees/dashboard"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-xs font-semibold shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">monitoring</span>
+            <span>Dashboard</span>
+          </Link>
+          <Link
             href="/admin/fees/vouchers"
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-xs font-semibold shadow-sm transition-all"
           >
@@ -170,6 +179,13 @@ export default function FeeManagementPage() {
             <span className="material-symbols-outlined text-[18px]">print</span>
             <span>Print Vouchers</span>
           </Link>
+          <button
+            onClick={() => setTransactionImportOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-on-primary hover:bg-primary/90 font-label-md text-xs font-semibold shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">upload_file</span>
+            <span>Import 5-Col Transactions</span>
+          </button>
           <button
             onClick={() => setImportOpen(true)}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary hover:bg-secondary/90 font-label-md text-xs font-semibold shadow-sm transition-all"
@@ -189,6 +205,9 @@ export default function FeeManagementPage() {
 
       {importOpen && (
         <FeeImportModal onClose={() => setImportOpen(false)} onImported={() => fetchFees()} />
+      )}
+      {transactionImportOpen && (
+        <TransactionImportModal onClose={() => setTransactionImportOpen(false)} onImported={() => fetchFees()} />
       )}
 
       <div className="border-b border-surface-container-high/60 flex space-x-2 sm:space-x-4 overflow-x-auto no-print">

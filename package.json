@@ -11,6 +11,7 @@
     "test:vouchers": "tsx scripts/voucher-management-test.ts",
     "test:fee-voucher": "tsx scripts/fee-voucher-test.ts",
     "test:lesson-weeks": "tsx scripts/lesson-plan-custom-weeks-test.ts",
+    "test:transaction-import": "tsx scripts/transaction-import-test.ts",
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed-firebase.ts",
     "test:p0": "tsx scripts/p0-verification-test.ts",
