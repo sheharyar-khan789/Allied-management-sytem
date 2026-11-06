@@ -2,7 +2,70 @@
 
 import React, { useEffect, useState } from "react";
 import PrintToolbar from "@/components/PrintToolbar";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
+
+/** Late-payment surcharge printed on every voucher ("After Due Date"). */
+const AFTER_DUE_DATE_FEE = 200;
+const COPIES = ["Admin Office Copy", "Student Copy"];
+
+const num = (v: unknown) => Number(v) || 0;
+
+function VoucherCopy({ data, copyLabel }: { data: any; copyLabel: string }) {
+  const { school, student, challan: ch } = data;
+  const tuition = num(ch.tuitionFee);
+  const annual = num(ch.admissionFee) + num(ch.examFee); // annual subscription / admission charges
+  const bookDues = num(ch.otherFee);
+  const pending = num(ch.pendingFees);
+  const total = Math.max(0, tuition + annual + bookDues - num(ch.discount)) + pending;
+  const rows: [string, number][] = [
+    ["Tuition Fee", tuition],
+    ["Annual subscription", annual],
+    ["Pending Fees", pending],
+    ["Book Dues", bookDues],
+    ["Total", total],
+    ["Paid Dues", num(ch.paidAmount)],
+    ["After Due Date", AFTER_DUE_FEE],
+  ];
+
+  return (
+    <div className="voucher-copy">
+      <div className="v-head">
+        <div className="v-school">
+          <div className="v-name">{school.name || "Allied School"}</div>
+          <div className="v-small">Project of Punjab Group of Colleges</div>
+          {school.campusName ? <div className="v-campus">{school.campusName}</div> : null}
+          <div className="v-addr">{school.address}</div>
+          <div className="v-addr"><b>Ph no:</b> {school.phone}</div>
+        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/images/allied-schools-logo.jpeg" alt="" className="v-logo" />
+        <div className="v-info">
+          <div>Issue Date: {formatDate(ch.issueDate)}</div>
+          <div className="v-due">Due Date: {formatDate(ch.dueDate)}</div>
+          <div>Student Name: {student.fullName}</div>
+          <div>Father Name: {student.fatherName}</div>
+          <div>Class: {student.className}{student.section ? `-${student.section}` : ""}</div>
+        </div>
+      </div>
+      <div className="v-title">Fee Receipt</div>
+      <table className="v-table">
+        <thead>
+          <tr><th style={{ width: "14%" }}>Sr. No.</th><th>DESCRIPTION</th><th style={{ width: "22%" }}>Amount</th></tr>
+        </thead>
+        <tbody>
+          {rows.map(([label, amount], i) => (
+            <tr key={label} className={label === "Total" ? "v-total" : ""}>
+              <td>{i + 1}.</td>
+              <td>{label}</td>
+              <td>{amount}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="v-copy">{copyLabel}</div>
+    </div>
+  );
+}
 
 export default function PrintChallanPage({ params }: { params: Promise<{ id: string }> }) {
   const [id, setId] = useState("");
@@ -29,95 +92,37 @@ export default function PrintChallanPage({ params }: { params: Promise<{ id: str
       .finally(() => setLoading(false));
   }, [id]);
 
-  if (loading) {
-    return <p className="text-xs text-on-surface-variant p-8">Loading challan...</p>;
-  }
-  if (error || !data) {
-    return <p className="text-sm text-error p-8">{error || "Challan not found."}</p>;
-  }
-
-  const school = data.school;
-  const student = data.student;
-  const ch = data.challan;
-  const items = [
-    { label: "Tuition fee", amount: ch.tuitionFee },
-    { label: "Admission fee", amount: ch.admissionFee },
-    { label: "Exam fee", amount: ch.examFee },
-    { label: "Other fee", amount: ch.otherFee },
-  ].filter((i) => Number(i.amount) > 0);
+  if (loading) return <p className="text-xs text-on-surface-variant p-8">Loading challan...</p>;
+  if (error || !data) return <p className="text-sm text-error p-8">{error || "Challan not found."}</p>;
 
   return (
     <div>
-      <PrintToolbar title="Fee challan" />
-      <article className="print-sheet p-6 sm:p-8 rounded-xl bg-white border border-surface-container-high shadow-sm print:border-0 print:shadow-none print:rounded-none">
-        <header className="text-center border-b-2 border-on-surface pb-4 mb-4">
-          <h2 className="text-xl font-bold tracking-tight">{school.name}</h2>
-          {school.campusName ? <p className="text-xs mt-1">{school.campusName}</p> : null}
-          <p className="text-[11px] text-on-surface-variant mt-1">{school.address}</p>
-          <p className="text-[11px] text-on-surface-variant">
-            Phone: {school.phone} • Email: {school.email}
-          </p>
-          <p className="mt-3 text-sm font-bold uppercase tracking-wide">Fee Challan</p>
-        </header>
-
-        <div className="grid grid-cols-2 gap-3 text-xs mb-4">
-          <p><span className="text-on-surface-variant">Student:</span> <strong>{student.fullName}</strong></p>
-          <p><span className="text-on-surface-variant">Student ID:</span> <strong>{student.admissionNo}</strong></p>
-          <p><span className="text-on-surface-variant">Class:</span> <strong>{student.className}{student.section ? `-${student.section}` : ""}</strong></p>
-          <p><span className="text-on-surface-variant">Challan / Ref:</span> <strong className="font-mono">{ch.challanNo}</strong></p>
-          <p><span className="text-on-surface-variant">Issue date:</span> {formatDate(ch.issueDate)}</p>
-          <p><span className="text-on-surface-variant">Due date:</span> {formatDate(ch.dueDate)}</p>
-          <p><span className="text-on-surface-variant">Period:</span> {ch.month} {ch.year}</p>
-          <p><span className="text-on-surface-variant">Status:</span> <strong>{ch.status}</strong></p>
-        </div>
-
-        <table className="w-full text-xs border border-outline-variant">
-          <thead>
-            <tr className="bg-surface-container-low">
-              <th className="text-left py-2 px-3">Fee item</th>
-              <th className="text-right py-2 px-3">Amount</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.length === 0 ? (
-              <tr>
-                <td className="py-2 px-3">Total billed</td>
-                <td className="py-2 px-3 text-right">{formatCurrency(ch.totalExpected)}</td>
-              </tr>
-            ) : (
-              items.map((i) => (
-                <tr key={i.label} className="border-t border-outline-variant/40">
-                  <td className="py-2 px-3">{i.label}</td>
-                  <td className="py-2 px-3 text-right">{formatCurrency(i.amount)}</td>
-                </tr>
-              ))
-            )}
-            {Number(ch.discount) > 0 && (
-              <tr className="border-t border-outline-variant/40">
-                <td className="py-2 px-3">Discount</td>
-                <td className="py-2 px-3 text-right">-{formatCurrency(ch.discount)}</td>
-              </tr>
-            )}
-          </tbody>
-          <tfoot>
-            <tr className="border-t-2 border-on-surface font-bold">
-              <td className="py-2 px-3">Total amount</td>
-              <td className="py-2 px-3 text-right">{formatCurrency(ch.totalExpected)}</td>
-            </tr>
-            <tr>
-              <td className="py-2 px-3">Paid amount</td>
-              <td className="py-2 px-3 text-right">{formatCurrency(ch.paidAmount)}</td>
-            </tr>
-            <tr>
-              <td className="py-2 px-3">Outstanding</td>
-              <td className="py-2 px-3 text-right">{formatCurrency(ch.outstanding)}</td>
-            </tr>
-          </tfoot>
-        </table>
-
-        <p className="text-[10px] text-on-surface-variant mt-6">
-          This is a recording/view challan. Do not treat this document as proof of an online payment.
-        </p>
+      <style>{`
+        @media print { @page { size: A4 landscape; margin: 10mm; } }
+        .voucher-sheet { display: flex; gap: 14px; width: 100%; background: #fff; color: #000; }
+        .voucher-copy { flex: 1; border: 1.5px solid #000; font-family: Arial, sans-serif; break-inside: avoid; }
+        .v-head { display: flex; border-bottom: 1.5px solid #000; }
+        .v-school { flex: 1.3; padding: 4px 6px; }
+        .v-name { font-size: 15px; font-weight: 700; }
+        .v-small { font-size: 8px; }
+        .v-campus { font-size: 11px; font-weight: 700; text-decoration: underline; }
+        .v-addr { font-size: 10px; }
+        .v-logo { width: 62px; height: 62px; object-fit: contain; align-self: center; }
+        .v-info { flex: 1.1; border-left: 1.5px solid #000; padding: 3px 6px; font-size: 10px; font-weight: 700; line-height: 1.5; }
+        .v-due { font-size: 12px; }
+        .v-title { text-align: center; font-size: 10px; font-weight: 700; text-decoration: underline; padding: 1px 0; }
+        .v-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: center; }
+        .v-table th, .v-table td { border: 1.5px solid #000; padding: 3px 4px; }
+        .v-table td:nth-child(2), .v-table th { font-weight: 700; }
+        .v-total td { background: #d9d9d9; font-weight: 700; }
+        .v-copy { text-align: center; font-size: 9px; font-weight: 700; padding: 3px 0 14px; }
+        @media print { .voucher-sheet { gap: 0; } .voucher-copy { border-width: 1px; } }
+      `}</style>
+      <PrintToolbar title="Fee voucher" />
+      <article className="voucher-sheet">
+        {COPIES.map((c) => (
+          <VoucherCopy key={c} data={data} copyLabel={c} />
+        ))}
       </article>
     </div>
   );
