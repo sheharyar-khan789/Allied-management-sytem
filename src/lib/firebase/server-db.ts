@@ -3117,14 +3117,20 @@ export async function getFeeChallanStatsServer(schoolId: string, filter: FeeChal
 }
 
 /** Challans of specific students (active session), e.g. the students matching a ledger search. */
-export async function getFeeChallansForStudentsServer(schoolId: string, studentIds: string[]): Promise<FeeChallanDoc[]> {
+export async function getFeeChallansForStudentsServer(
+  schoolId: string,
+  studentIds: string[],
+  scope?: SessionScope
+): Promise<FeeChallanDoc[]> {
   const ids = Array.from(new Set(studentIds.filter(Boolean)));
   if (ids.length === 0) return [];
   if (!hasAdminCredentials) {
     const wanted = new Set(ids);
-    return (await getFeeChallansServer(schoolId)).filter((c) => wanted.has(c.studentId));
+    return (await getFeeChallansServer(schoolId, undefined, undefined, undefined, undefined, undefined, scope)).filter((c) =>
+      wanted.has(c.studentId)
+    );
   }
-  const { ctx, year } = await resolveSessionScope(schoolId);
+  const { ctx, year } = await resolveSessionScope(schoolId, scope);
   const out: FeeChallanDoc[] = [];
   for (const part of chunk(ids, 30)) {
     const snap = await withFirestoreRetry("feeChallans.forStudents", () =>

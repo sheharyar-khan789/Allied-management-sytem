@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
-import { getSchoolServer, getSchoolSettingsServer } from "@/lib/firebase/server-db";
+import { getSchoolServer, getSchoolSettingsServer, getFeeChallansForStudentsServer } from "@/lib/firebase/server-db";
 import { assertCanViewChallan } from "@/lib/academic-access";
 import { schoolPrintIdentity } from "@/lib/school-display";
+import { buildVoucher } from "@/lib/fee-voucher-server";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -10,38 +11,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const authUser = await requireAuth(req, ["ADMIN", "STUDENT", "PARENT"]);
     const { id } = await params;
     const { challan, student } = await assertCanViewChallan(authUser, id);
-    const [school, settings] = await Promise.all([
+    const [school, settings, studentChallans] = await Promise.all([
       getSchoolServer(authUser.schoolId),
       getSchoolSettingsServer(authUser.schoolId),
+      // Pending balances come from the challan's own academic session.
+      getFeeChallansForStudentsServer(authUser.schoolId, [student.id], challan.academicYear ? { academicYear: challan.academicYear } : undefined),
     ]);
-
     return NextResponse.json({
       success: true,
-      school: schoolPrintIdentity(school, settings),
-      student: {
-        id: student.id,
-        fullName: student.fullName,
-        admissionNo: student.admissionNo,
-        className: student.className || challan.className || "",
-        section: student.section || "",
-      },
-      challan: {
-        id: challan.id,
-        challanNo: challan.challanNo,
-        month: challan.month,
-        year: challan.year,
-        issueDate: challan.issueDate,
-        dueDate: challan.dueDate,
-        tuitionFee: challan.tuitionFee,
-        admissionFee: challan.admissionFee,
-        examFee: challan.examFee,
-        otherFee: challan.otherFee,
-        discount: challan.discount,
-        totalExpected: challan.totalExpected,
-        paidAmount: challan.paidAmount,
-        outstanding: Math.max(0, (challan.totalExpected || 0) - (challan.paidAmount || 0)),
-        status: challan.status,
-      },
+      voucher: buildVoucher(schoolPrintIdentity(school, settings), student, challan, studentChallans),
     });
   } catch (error: unknown) {
     if (error instanceof Response) return error;

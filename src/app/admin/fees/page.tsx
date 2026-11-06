@@ -163,6 +163,13 @@ export default function FeeManagementPage() {
             <span className="material-symbols-outlined text-[18px]">receipt</span>
             <span>Voucher Management</span>
           </Link>
+          <Link
+            href="/print/challans"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-xs font-semibold shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">print</span>
+            <span>Print Vouchers</span>
+          </Link>
           <button
             onClick={() => setImportOpen(true)}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary hover:bg-secondary/90 font-label-md text-xs font-semibold shadow-sm transition-all"
