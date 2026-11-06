@@ -29,7 +29,13 @@ const ACADEMIC_YEAR_RE = /^\d{4}-\d{4}$/;
 export async function GET(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
-    const academicYear = new URL(req.url).searchParams.get("academicYear") || "";
+    const { searchParams } = new URL(req.url);
+    const academicYear = searchParams.get("academicYear") || "";
+    const search = (searchParams.get("search") || "").trim().toLowerCase();
+    const statusFilter = (searchParams.get("status") || "").toUpperCase().trim();
+    const sortBy = searchParams.get("sortBy") || "startDate";
+    const sortOrder = searchParams.get("sortOrder") === "desc" ? -1 : 1;
+
     const [weeks, plans, settings] = await Promise.all([
       getLessonPlanWeeksServer(authUser.schoolId),
       getLessonPlansServer(authUser.schoolId),
@@ -40,12 +46,26 @@ export async function GET(req: NextRequest) {
     const counts = new Map<string, number>();
     for (const p of plans) counts.set(p.weekId, (counts.get(p.weekId) || 0) + 1);
 
-    const rows = weeks
+    let rows = weeks
       .filter((w) => !academicYear || w.academicYear === academicYear)
+      .filter((w) => {
+        if (!statusFilter || statusFilter === "ALL") return true;
+        const s = (w.status ?? "ACTIVE");
+        return s === statusFilter;
+      })
+      .filter((w) => {
+        if (!search) return true;
+        const matchLabel = w.label.toLowerCase().includes(search);
+        const matchNum = w.weekNumber !== undefined && String(w.weekNumber).includes(search);
+        return matchLabel || matchNum;
+      })
       .map((w) => ({
         id: w.id,
         weekId: w.weekId,
         label: w.label,
+        weekNumber: w.weekNumber ?? null,
+        status: (w.status ?? "ACTIVE") as "ACTIVE" | "INACTIVE",
+        order: w.order ?? null,
         academicYear: w.academicYear,
         startDate: w.startDate,
         endDate: w.endDate,
@@ -54,6 +74,25 @@ export async function GET(req: NextRequest) {
         // Dates can only be edited while nothing has been filed under the week.
         datesEditable: (counts.get(w.weekId) || 0) === 0,
       }));
+
+    rows.sort((a, b) => {
+      if (sortBy === "weekNumber") {
+        const numA = a.weekNumber ?? 999999;
+        const numB = b.weekNumber ?? 999999;
+        return (numA - numB) * sortOrder || a.startDate.localeCompare(b.startDate);
+      }
+      if (sortBy === "label") {
+        return a.label.localeCompare(b.label) * sortOrder;
+      }
+      if (sortBy === "order") {
+        const ordA = a.order ?? 999999;
+        const ordB = b.order ?? 999999;
+        return (ordA - ordB) * sortOrder || a.startDate.localeCompare(b.startDate);
+      }
+      // default: startDate
+      return a.startDate.localeCompare(b.startDate) * sortOrder;
+    });
+
     return NextResponse.json({
       success: true,
       timezone,
@@ -74,6 +113,9 @@ const createSchema = z.object({
   label: z.unknown(),
   startDate: z.unknown(),
   endDate: z.unknown(),
+  weekNumber: z.unknown().optional(),
+  status: z.unknown().optional(),
+  order: z.unknown().optional(),
   academicYear: z.string().trim().regex(ACADEMIC_YEAR_RE, "academicYear must look like 2026-2027.").optional(),
 });
 
@@ -88,15 +130,35 @@ export async function POST(req: NextRequest) {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const parsed = await parseJsonBody(req, createSchema);
     if (!parsed.ok) return parsed.response;
-    const checked = validateWeekInput({ label: parsed.data.label, startDate: parsed.data.startDate, endDate: parsed.data.endDate });
+    const checked = validateWeekInput({
+      label: parsed.data.label,
+      startDate: parsed.data.startDate,
+      endDate: parsed.data.endDate,
+      weekNumber: parsed.data.weekNumber,
+      status: parsed.data.status,
+      order: parsed.data.order,
+    });
     if (!checked.ok) return jsonError(checked.error, 400);
-    const { label, startDate, endDate } = checked.value;
+    const { label, startDate, endDate, weekNumber, status, order } = checked.value;
 
     const [existing, plans, settings] = await Promise.all([
       getLessonPlanWeeksServer(authUser.schoolId),
       getLessonPlansServer(authUser.schoolId),
       getSchoolSettingsServer(authUser.schoolId),
     ]);
+    const sessionYear = parsed.data.academicYear || settings?.academicYear || getDefaultAcademicYear();
+
+    if (weekNumber !== undefined) {
+      const duplicateNum = existing.find(
+        (w) => w.academicYear === sessionYear && w.weekNumber === weekNumber
+      );
+      if (duplicateNum) {
+        return jsonError(
+          `Week number ${weekNumber} is already used by "${duplicateNum.label}" in session ${sessionYear}. Week numbers must be unique within an academic session.`,
+          409
+        );
+      }
+    }
 
     const same = existing.find((w) => w.weekId === startDate);
     if (same) return jsonError(`A week starting on ${startDate} already exists ("${same.label}").`, 409);
@@ -121,11 +183,14 @@ export async function POST(req: NextRequest) {
     const week: LessonPlanWeekDoc = {
       id: weekDocId(authUser.schoolId, startDate),
       schoolId: authUser.schoolId,
-      academicYear: parsed.data.academicYear || settings?.academicYear || getDefaultAcademicYear(),
+      academicYear: sessionYear,
       weekId: startDate,
       label,
+      ...(weekNumber !== undefined ? { weekNumber } : {}),
       startDate,
       endDate,
+      status: status || "ACTIVE",
+      ...(order !== undefined ? { order } : {}),
       createdBy: authUser.uid,
       createdAt: now,
       updatedAt: now,
@@ -134,7 +199,7 @@ export async function POST(req: NextRequest) {
     await createAuditLogServer(
       authUser.schoolId, authUser.uid, authUser.email, authUser.role,
       "CREATE_LESSON_PLAN_WEEK", "LESSON_PLAN_WEEK", week.id,
-      `Created lesson-plan week "${label}" (${startDate} to ${endDate}, session ${week.academicYear}).`
+      `Created lesson-plan week "${label}" (Week ${weekNumber ?? "—"}, ${startDate} to ${endDate}, status ${week.status}, session ${week.academicYear}).`
     );
     return NextResponse.json({ success: true, week }, { status: 201 });
   } catch (error: any) {

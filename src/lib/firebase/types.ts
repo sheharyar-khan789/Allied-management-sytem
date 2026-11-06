@@ -621,9 +621,15 @@ export interface LessonPlanWeekDoc {
   academicYear: string;
   /** Start date, YYYY-MM-DD. Also the weekId plans are filed under. */
   weekId: string;
+  /** Custom week number (e.g. 1, 2, 3...) */
+  weekNumber?: number;
   label: string;
   startDate: string;
   endDate: string;
+  /** Active status. Inactive weeks are hidden from teachers for new plans. Defaults to ACTIVE. */
+  status?: "ACTIVE" | "INACTIVE";
+  /** Optional ordering index */
+  order?: number;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

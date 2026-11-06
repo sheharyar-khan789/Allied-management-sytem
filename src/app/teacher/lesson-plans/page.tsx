@@ -56,6 +56,7 @@ function fmt(iso: string | null, timezone: string): string {
 interface ScheduleWeek {
   weekId: string;
   label?: string;
+  weekNumber?: number;
   startDate?: string;
   endDate?: string;
   kind?: "STANDARD" | "CUSTOM";
@@ -284,7 +285,7 @@ export default function TeacherLessonPlansPage() {
               {displayWeeks.map((w) => (
                 <option key={w.weekId} value={w.weekId}>
                   {w.kind === "CUSTOM" && w.label && w.startDate && w.endDate
-                    ? `${w.label} (${w.startDate} to ${w.endDate})`
+                    ? (w.weekNumber ? `Week ${w.weekNumber}: ${w.label} (${w.startDate} to ${w.endDate})` : `${w.label} (${w.startDate} to ${w.endDate})`)
                     : `Week of ${w.weekId}`}
                 </option>
               ))}

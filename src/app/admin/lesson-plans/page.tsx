@@ -36,7 +36,7 @@ function fmt(iso: string | null, timezone: string): string {
 
 export default function AdminLessonPlansPage() {
   const [timezone, setTimezone] = useState("Asia/Karachi");
-  const [weeks, setWeeks] = useState<{ weekId: string; label?: string; startDate?: string; endDate?: string; kind?: string }[]>([]);
+  const [weeks, setWeeks] = useState<{ weekId: string; label?: string; weekNumber?: number; startDate?: string; endDate?: string; kind?: string }[]>([]);
   const [showWeekManager, setShowWeekManager] = useState(false);
   const [classes, setClasses] = useState<Option[]>([]);
   const [subjects, setSubjects] = useState<Option[]>([]);
@@ -236,7 +236,7 @@ export default function AdminLessonPlansPage() {
               {weeks.map((w) => (
                 <option key={w.weekId} value={w.weekId}>
                   {w.kind === "CUSTOM" && w.label && w.startDate && w.endDate
-                    ? `${w.label} (${w.startDate} to ${w.endDate})`
+                    ? (w.weekNumber ? `Week ${w.weekNumber}: ${w.label} (${w.startDate} to ${w.endDate})` : `${w.label} (${w.startDate} to ${w.endDate})`)
                     : `Week of ${w.weekId}`}
                 </option>
               ))}

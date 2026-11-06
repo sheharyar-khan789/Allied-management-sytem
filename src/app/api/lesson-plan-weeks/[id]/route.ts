@@ -21,6 +21,9 @@ const updateSchema = z.object({
   label: z.unknown().optional(),
   startDate: z.unknown().optional(),
   endDate: z.unknown().optional(),
+  weekNumber: z.unknown().optional(),
+  status: z.unknown().optional(),
+  order: z.unknown().optional(),
   academicYear: z.string().trim().regex(/^\d{4}-\d{4}$/, "academicYear must look like 2026-2027.").optional(),
 });
 
@@ -45,10 +48,26 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       label: body.label !== undefined ? body.label : current.label,
       startDate: body.startDate !== undefined ? body.startDate : current.startDate,
       endDate: body.endDate !== undefined ? body.endDate : current.endDate,
+      weekNumber: body.weekNumber !== undefined ? body.weekNumber : current.weekNumber,
+      status: body.status !== undefined ? body.status : (current.status ?? "ACTIVE"),
+      order: body.order !== undefined ? body.order : current.order,
     });
     if (!checked.ok) return jsonError(checked.error, 400);
-    const { label, startDate, endDate } = checked.value;
+    const { label, startDate, endDate, weekNumber, status, order } = checked.value;
     const datesChanged = startDate !== current.startDate || endDate !== current.endDate;
+
+    const targetSession = body.academicYear || current.academicYear;
+    if (weekNumber !== undefined) {
+      const duplicateNum = weeks.find(
+        (w) => w.id !== current.id && w.academicYear === targetSession && w.weekNumber === weekNumber
+      );
+      if (duplicateNum) {
+        return jsonError(
+          `Week number ${weekNumber} is already used by "${duplicateNum.label}" in session ${targetSession}. Week numbers must be unique within an academic session.`,
+          409
+        );
+      }
+    }
 
     const plans = await getLessonPlansServer(authUser.schoolId);
     if (datesChanged) {
@@ -73,9 +92,12 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       id: nextId,
       weekId: startDate,
       label,
+      ...(weekNumber !== undefined ? { weekNumber } : {}),
       startDate,
       endDate,
-      academicYear: body.academicYear || current.academicYear,
+      status,
+      ...(order !== undefined ? { order } : {}),
+      academicYear: targetSession,
       updatedAt: now,
       updatedBy: authUser.uid,
     };
@@ -86,7 +108,7 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     await createAuditLogServer(
       authUser.schoolId, authUser.uid, authUser.email, authUser.role,
       "UPDATE_LESSON_PLAN_WEEK", "LESSON_PLAN_WEEK", nextId,
-      `Updated lesson-plan week "${label}" (${startDate} to ${endDate}).`
+      `Updated lesson-plan week "${label}" (Week ${weekNumber ?? "—"}, ${startDate} to ${endDate}, status ${status}).`
     );
     return NextResponse.json({ success: true, week: updated });
   } catch (error: any) {

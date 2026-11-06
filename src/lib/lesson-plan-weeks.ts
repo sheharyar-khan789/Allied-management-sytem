@@ -41,6 +41,9 @@ export interface ResolvedWeek {
   startDate: string;
   endDate: string;
   kind: "STANDARD" | "CUSTOM";
+  weekNumber?: number;
+  status?: "ACTIVE" | "INACTIVE";
+  order?: number;
   /** Plan days: every date of the week except Sundays (never a lesson-plan day). */
   days: WeekDay[];
 }
@@ -74,8 +77,24 @@ export function standardWeek(weekId: string): ResolvedWeek {
   return { weekId, label: standardWeekLabel(weekId), startDate: weekId, endDate, kind: "STANDARD", days: teachingDays(weekId, endDate) };
 }
 
-export function customWeek(w: Pick<LessonPlanWeekDoc, "weekId" | "label" | "startDate" | "endDate">): ResolvedWeek {
-  return { weekId: w.weekId, label: w.label, startDate: w.startDate, endDate: w.endDate, kind: "CUSTOM", days: teachingDays(w.startDate, w.endDate) };
+export function customWeek(
+  w: Pick<LessonPlanWeekDoc, "weekId" | "label" | "startDate" | "endDate"> & {
+    weekNumber?: number;
+    status?: "ACTIVE" | "INACTIVE";
+    order?: number;
+  }
+): ResolvedWeek {
+  return {
+    weekId: w.weekId,
+    label: w.label,
+    startDate: w.startDate,
+    endDate: w.endDate,
+    kind: "CUSTOM",
+    weekNumber: w.weekNumber,
+    status: w.status ?? "ACTIVE",
+    order: w.order,
+    days: teachingDays(w.startDate, w.endDate),
+  };
 }
 
 export type WeekResolution = { ok: true; week: ResolvedWeek } | { ok: false; error: string };
@@ -103,10 +122,23 @@ export interface WeekInput {
   label: unknown;
   startDate: unknown;
   endDate: unknown;
+  weekNumber?: unknown;
+  status?: unknown;
+  order?: unknown;
 }
 
 export type WeekInputResult =
-  | { ok: true; value: { label: string; startDate: string; endDate: string } }
+  | {
+      ok: true;
+      value: {
+        label: string;
+        startDate: string;
+        endDate: string;
+        weekNumber?: number;
+        status: "ACTIVE" | "INACTIVE";
+        order?: number;
+      };
+    }
   | { ok: false; error: string };
 
 /** Validates what an admin typed. Dates are real calendar dates (Feb 29 only in leap years). */
@@ -123,7 +155,35 @@ export function validateWeekInput(input: WeekInput): WeekInputResult {
     return { ok: false, error: `A week can span at most ${MAX_WEEK_DAYS} days.` };
   }
   if (teachingDays(startDate, endDate).length === 0) return { ok: false, error: "The week must include at least one teaching day (not only Sundays)." };
-  return { ok: true, value: { label, startDate, endDate } };
+
+  let weekNumber: number | undefined;
+  if (input.weekNumber !== undefined && input.weekNumber !== null && input.weekNumber !== "") {
+    const parsedNum = Number(input.weekNumber);
+    if (!Number.isInteger(parsedNum) || parsedNum <= 0 || parsedNum > 999) {
+      return { ok: false, error: "Week number must be a positive integer between 1 and 999." };
+    }
+    weekNumber = parsedNum;
+  }
+
+  let status: "ACTIVE" | "INACTIVE" = "ACTIVE";
+  if (input.status !== undefined && input.status !== null) {
+    const s = String(input.status).toUpperCase().trim();
+    if (s === "INACTIVE") {
+      status = "INACTIVE";
+    } else if (s === "ACTIVE") {
+      status = "ACTIVE";
+    } else {
+      return { ok: false, error: "Status must be either ACTIVE or INACTIVE." };
+    }
+  }
+
+  let order: number | undefined;
+  if (input.order !== undefined && input.order !== null && input.order !== "") {
+    const o = Number(input.order);
+    if (Number.isInteger(o)) order = o;
+  }
+
+  return { ok: true, value: { label, startDate, endDate, weekNumber, status, order } };
 }
 
 export const weekDocId = (schoolId: string, startDate: string) => `lpw_${schoolId}_${startDate}`;
@@ -159,6 +219,8 @@ export function buildWeekSchedule(
   const from = addDays(today, -TEACHER_HORIZON_PAST_DAYS);
   const to = addDays(today, TEACHER_HORIZON_FUTURE_DAYS);
   for (const c of customWeeks) {
+    // Only active custom weeks appear in the active schedule for new submissions
+    if (c.status === "INACTIVE") continue;
     if (c.endDate >= from && c.startDate <= to) entries.push(withWindow(customWeek(c), c.academicYear));
   }
   entries.sort((a, b) => a.startDate.localeCompare(b.startDate));

@@ -177,6 +177,10 @@ export async function POST(req: NextRequest) {
     // original submission timestamp. The lock itself is still re-checked transactionally below.
     const existing = await getLessonPlanByIdServer(authUser.schoolId, id);
 
+    if (week.status === "INACTIVE" && !existing) {
+      return jsonError("This week has been deactivated by an administrator and is no longer available for new lesson plans.", 403);
+    }
+
     let lockedResponse: Response | null = null;
     let wasAlreadySubmitted = false;
     try {
