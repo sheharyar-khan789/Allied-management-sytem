@@ -301,7 +301,7 @@ export default function TimetableManagementPage() {
             </div>
           );
         })()
-      ) : !loadError && visible.length === 0 ? (
+      ) : !loadError && slots.length === 0 ? (
         <div className="p-12 text-center space-y-2 bg-surface-container-lowest rounded-xl border border-surface-container-high/40">
           <span className="material-symbols-outlined text-4xl text-outline-variant">calendar_month</span>
           <p className="text-sm font-semibold text-on-surface">

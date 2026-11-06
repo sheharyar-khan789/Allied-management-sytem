@@ -27,6 +27,7 @@
     "test:quota": "npx --yes firebase-tools@15 emulators:exec --project demo-allied-quota --only firestore,auth \"tsx scripts/firestore-quota-budget-test.ts && tsx scripts/firestore-quota-resilience-test.ts && tsx scripts/student-list-reads-test.ts\"",
     "test:quota-unit": "tsx scripts/firestore-quota-unit-test.ts",
     "test:timetable-import": "tsx scripts/timetable-import-phone-admin-test.ts",
+    "test:timetable-audit": "tsx scripts/timetable-audit-fixes-test.ts",
     "test:exams": "tsx scripts/exams-results-observations-test.ts",
     "test:teacher-observations": "tsx scripts/teacher-observations-test.ts",
     "test:fee-import": "tsx scripts/fee-import-test.ts",

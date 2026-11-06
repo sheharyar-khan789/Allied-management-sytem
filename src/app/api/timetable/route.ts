@@ -13,19 +13,12 @@ import {
 import { TimetableDoc } from "@/lib/firebase/types";
 import { requireTeacherAllocation, resolveSessionStudent } from "@/lib/academic-access";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
-import { SlotResult, TIMETABLE_DAYS, toMinutes, validateTimetableSlot } from "@/lib/timetable-import";
+import { SlotResult, TIMETABLE_DAYS, toMinutes, validateTimetableSlot, sortTimetableEntries } from "@/lib/timetable-import";
 
 export const dynamic = "force-dynamic";
 
 function sortEntries(items: TimetableDoc[]): TimetableDoc[] {
-  // A startTime that fails to parse (missing, corrupted, or from before validation existed) must
-  // sort LAST, never first: `?? 0` previously treated it as midnight, so any such period jumped
-  // to the very top of its day, ahead of every correctly-timed period — reported as newly added
-  // periods 7/8 appearing above period 1 instead of after period 6.
-  const at = (t: TimetableDoc) => toMinutes(t.startTime) ?? Number.MAX_SAFE_INTEGER;
-  return [...items].sort(
-    (a, b) => TIMETABLE_DAYS.indexOf(a.dayOfWeek) - TIMETABLE_DAYS.indexOf(b.dayOfWeek) || at(a) - at(b)
-  );
+  return sortTimetableEntries(items);
 }
 
 function jsonError(error: string, status: number) {

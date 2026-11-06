@@ -20,6 +20,7 @@ import {
   updateCacheWhere,
 } from "../server-cache";
 import { getDefaultAcademicYear } from "../school-display";
+import { sortTimetableEntries } from "../timetable-import";
 import {
   AcademicSessionContext,
   resolveRecordSession,
@@ -2128,7 +2129,7 @@ async function fetchTimetableRaw(
           );
         }
       }
-      return items.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+      return sortTimetableEntries(items);
     } catch (e) {
       onFirestoreError(`getTimetableServer(${schoolId})`, e);
     }
@@ -2138,7 +2139,7 @@ async function fetchTimetableRaw(
   if (teacherId) list = list.filter((t) => t.teacherId === teacherId);
   if (classId) list = list.filter((t) => t.classId === classId);
   if (dayOfWeek && dayOfWeek !== "All") list = list.filter((t) => t.dayOfWeek === dayOfWeek);
-  return list.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+  return sortTimetableEntries(list);
 }
 
 export async function getTimetableServer(

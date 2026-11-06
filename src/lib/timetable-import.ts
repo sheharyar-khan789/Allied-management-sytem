@@ -19,6 +19,67 @@ export const DEFAULT_IMPORT_DAYS: TimetableDoc["dayOfWeek"][] = ["Monday", "Tues
 
 export const IMPORT_MAX_ROWS = 600;
 
+/** Case-insensitive, whitespace-trimmed comparison for room identifiers. */
+export function isSameRoom(r1?: string | null, r2?: string | null): boolean {
+  if (!r1 || !r2) return false;
+  const a = r1.trim().toLowerCase();
+  const b = r2.trim().toLowerCase();
+  if (!a || !b || a === "-" || b === "-") return false;
+  return a === b;
+}
+
+/**
+ * Numeric period ordering (e.g. "Period 1" -> 1, "Period 10" -> 10, "1" -> 1).
+ * Non-numbered periods (e.g. "Assembly", "Break") sort gracefully after numbers.
+ */
+export function periodOrder(periodName: string | undefined | null): number {
+  if (!periodName) return Number.MAX_SAFE_INTEGER;
+  const match = /(\d+)/.exec(periodName);
+  if (match) return parseInt(match[1], 10);
+  return Number.MAX_SAFE_INTEGER - 1000;
+}
+
+export function comparePeriodNames(a: string | undefined | null, b: string | undefined | null): number {
+  const pa = periodOrder(a);
+  const pb = periodOrder(b);
+  if (pa !== pb) return pa - pb;
+  return (a || "").localeCompare(b || "", undefined, { numeric: true });
+}
+
+/**
+ * Canonical sorting for timetable entries across the application:
+ * 1. Day of week (Monday -> Tuesday -> Wednesday -> Thursday -> Friday -> Saturday -> Sunday)
+ * 2. Start time (chronological minutes since midnight)
+ * 3. Period name/number (Period 1 -> Period 2 ...)
+ * 4. Class name (e.g. Class 9-A -> Class 9-B)
+ * 5. Subject name
+ */
+export function sortTimetableEntries<
+  T extends Pick<TimetableDoc, "dayOfWeek" | "periodName" | "startTime"> & Partial<TimetableDoc>
+>(items: T[]): T[] {
+  const at = (t: T) => toMinutes(t.startTime) ?? Number.MAX_SAFE_INTEGER;
+  return [...items].sort((a, b) => {
+    // 1. Day of week
+    const dayDiff = TIMETABLE_DAYS.indexOf(a.dayOfWeek) - TIMETABLE_DAYS.indexOf(b.dayOfWeek);
+    if (dayDiff !== 0) return dayDiff;
+
+    // 2. Start time
+    const timeDiff = at(a) - at(b);
+    if (timeDiff !== 0) return timeDiff;
+
+    // 3. Period
+    const periodDiff = comparePeriodNames(a.periodName, b.periodName);
+    if (periodDiff !== 0) return periodDiff;
+
+    // 4. Class
+    const classDiff = (a.className || "").localeCompare(b.className || "", undefined, { numeric: true });
+    if (classDiff !== 0) return classDiff;
+
+    // 5. Subject
+    return (a.subjectName || "").localeCompare(b.subjectName || "");
+  });
+}
+
 // ---------------------------------------------------------------------------------------------
 // Times
 // ---------------------------------------------------------------------------------------------
@@ -449,7 +510,7 @@ export function validateTimetableSlot(
     (t) => t.classId === classId && t.subjectId === subject.id && (t.teacherId || "") === (teacher?.id || "") && overlaps(t)
   );
   const roomClash =
-    roomNo && roomNo !== "-" ? sameDay.find((t) => t.roomNo === roomNo && t.classId !== classId && overlaps(t)) : undefined;
+    roomNo && roomNo !== "-" ? sameDay.find((t) => isSameRoom(t.roomNo, roomNo) && t.classId !== classId && overlaps(t)) : undefined;
   const clash = duplicate || teacherClash || roomClash;
   if (clash) {
     const when = `${dayOfWeek} ${clash.startTime}–${clash.endTime}`;

@@ -100,7 +100,13 @@ export default function TimetableGrid({
           .map(([id]) => id);
   const rowLabel = (key: string) => (rows === "day" ? key : entries.find((e) => e.classId === key)?.className || key);
   const inRow = (key: string) => entries.filter((e) => (rows === "day" ? e.dayOfWeek === key : e.classId === key));
-  const sortByTime = (list: TimetableEntry[]) => [...list].sort((a, b) => minutes(a.startTime) - minutes(b.startTime));
+  const sortByTime = (list: TimetableEntry[]) =>
+    [...list].sort(
+      (a, b) =>
+        minutes(a.startTime) - minutes(b.startTime) ||
+        (a.periodName || "").localeCompare(b.periodName || "", undefined, { numeric: true }) ||
+        (a.subjectName || "").localeCompare(b.subjectName || "")
+    );
 
   return (
     <>
