@@ -153,6 +153,11 @@ export const cacheKeys = {
 };
 
 /** Drops every cached copy of one user's profile (all schools), e.g. after logout or a role change. */
-export function invalidateUserProfileCache(uid: string): void {
+export function invalidateUserProfileCache(uid: string, ...emails: (string | undefined | null)[]): void {
   invalidateCacheWhere((key) => key.startsWith("profile:") && key.endsWith(`:${uid}`));
+  for (const email of emails) {
+    if (email) {
+      invalidateCache(cacheKeys.userByEmail(email));
+    }
+  }
 }

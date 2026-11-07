@@ -19,6 +19,8 @@ import {
   updateUserServer,
 } from "@/lib/firebase/server-db";
 import { cacheKeys, invalidateCache, invalidateUserProfileCache } from "@/lib/server-cache";
+import { sendPasswordSetupLink } from "@/lib/account-email";
+import { resolveAppBaseUrl } from "@/lib/password-reset";
 import { TeacherDoc, UserProfile } from "@/lib/firebase/types";
 
 async function deleteAuthAccount(uid: string): Promise<void> {
@@ -404,4 +406,163 @@ export async function syncTeacherAccountStatus(
   }
 
   return { ok: true, status };
+}
+
+
+export interface TeacherPasswordResetResult {
+  ok: boolean;
+  status: number;
+  error?: string;
+  email?: string;
+  channel?: string;
+  sent?: boolean;
+  resetLink?: string;
+}
+
+/**
+ * Authoritative Teacher Password Reset:
+ * 1. Admin requests password reset for teacherId in schoolId.
+ * 2. Backend resolves the teacher's current account by UID first.
+ * 3. Retrieves current authoritative email from Firebase Auth / UserProfile.
+ * 4. Ensures any desync between Auth and Firestore is repaired immediately.
+ * 5. Generates the Firebase password reset link and dispatches the reset email to the NEW email.
+ * 6. Drops stale caches so old emails can never be targeted.
+ * 7. Records an audit log event.
+ */
+export async function resetTeacherPassword(
+  schoolId: string,
+  teacherId: string,
+  requestContext: { origin?: string | null; host?: string | null },
+  auditContext?: {
+    performedByUid?: string;
+    performedByEmail?: string;
+    performedByRole?: string;
+  }
+): Promise<TeacherPasswordResetResult> {
+  const teacher = await getTeacherByIdServer(schoolId, teacherId);
+  if (!teacher || teacher.schoolId !== schoolId) {
+    return { ok: false, status: 404, error: "Teacher not found." };
+  }
+
+  if (teacher.status !== "ACTIVE") {
+    return { ok: false, status: 409, error: "This teacher's account is inactive." };
+  }
+
+  // Resolve profile using UID first
+  let profile = teacher.userId ? await getUserByIdServer(teacher.userId) : null;
+  if (!profile && teacher.email) {
+    profile = await getUserByEmailServer(teacher.email);
+  }
+  if (!profile && hasAdminCredentials && teacher.email) {
+    try {
+      const fb = await adminAuth.getUserByEmail(teacher.email);
+      if (fb.uid) {
+        profile = await getUserByIdServer(fb.uid);
+      }
+    } catch {}
+  }
+
+  if (
+    !profile ||
+    profile.role !== "TEACHER" ||
+    profile.schoolId !== schoolId ||
+    (profile.teacherId && profile.teacherId !== teacher.id)
+  ) {
+    return { ok: false, status: 404, error: "This teacher has no login account to reset." };
+  }
+
+  if (profile.status !== "ACTIVE") {
+    return { ok: false, status: 409, error: "This teacher's account is inactive." };
+  }
+
+  // Authoritative email resolution from Firebase Auth if live
+  let authoritativeEmail = (profile.email || teacher.email || "").toLowerCase().trim();
+  if (hasAdminCredentials && profile.uid) {
+    try {
+      const authRecord = await adminAuth.getUser(profile.uid);
+      if (authRecord.email) {
+        const authEmail = authRecord.email.toLowerCase().trim();
+        if (authEmail !== authoritativeEmail) {
+          authoritativeEmail = authEmail;
+          profile.email = authoritativeEmail;
+          await updateUserServer(profile);
+          if (teacher.email !== authoritativeEmail) {
+            await saveTeacherServer({ ...teacher, email: authoritativeEmail });
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err?.code === "auth/user-not-found") {
+        return { ok: false, status: 404, error: "Authentication account not found for this teacher." };
+      }
+      console.error("[teacher-reset] Firebase Auth check failed:", err);
+    }
+  }
+
+  // Guarantee teacherDoc has userId and authoritative email linked
+  if (teacher.userId !== profile.uid || teacher.email !== authoritativeEmail) {
+    await saveTeacherServer({
+      ...teacher,
+      userId: profile.uid,
+      email: authoritativeEmail,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  // Invalidate any stale caches
+  invalidateUserProfileCache(profile.uid, authoritativeEmail, teacher.email);
+  invalidateCache(cacheKeys.userByEmail(authoritativeEmail));
+  if (teacher.email && teacher.email.toLowerCase().trim() !== authoritativeEmail) {
+    invalidateCache(cacheKeys.userByEmail(teacher.email.toLowerCase().trim()));
+  }
+  invalidateCache(cacheKeys.teacher(schoolId, teacher.id));
+  invalidateCache(cacheKeys.teachers(schoolId));
+
+  // Generate password reset link / send email
+  const delivery = await sendPasswordSetupLink(
+    {
+      uid: profile.uid,
+      email: authoritativeEmail,
+      name: profile.name || teacher.fullName,
+      schoolId: profile.schoolId,
+    },
+    "RESET",
+    requestContext
+  );
+
+  let resetLink: string | undefined = undefined;
+  if (hasAdminCredentials) {
+    try {
+      const base = resolveAppBaseUrl(requestContext, process.env);
+      const continueUrl = base.ok ? `${base.baseUrl}/login` : undefined;
+      resetLink = await adminAuth.generatePasswordResetLink(authoritativeEmail, continueUrl ? { url: continueUrl } : undefined);
+    } catch (e) {
+      // Best-effort for link generation
+    }
+  }
+
+  if (auditContext?.performedByUid) {
+    await createAuditLogServer(
+      schoolId,
+      auditContext.performedByUid,
+      auditContext.performedByEmail || "",
+      auditContext.performedByRole || "ADMIN",
+      delivery.delivered ? "ADMIN_RESET_TEACHER_PASSWORD" : "TEACHER_PASSWORD_RESET_FAILED",
+      "TEACHER",
+      teacher.id,
+      delivery.delivered
+        ? `Password reset link for ${authoritativeEmail} (${teacher.fullName}) dispatched via ${delivery.mode}.`
+        : `Password reset link for ${authoritativeEmail} (${teacher.fullName}) failed via ${delivery.mode}: ${delivery.message}`
+    );
+  }
+
+  return {
+    ok: delivery.delivered || delivery.mode === "dev-console",
+    status: delivery.delivered || delivery.mode === "dev-console" ? 200 : 502,
+    email: authoritativeEmail,
+    channel: delivery.mode,
+    sent: delivery.delivered,
+    resetLink,
+    error: delivery.delivered || delivery.mode === "dev-console" ? undefined : delivery.message,
+  };
 }

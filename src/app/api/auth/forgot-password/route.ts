@@ -11,6 +11,7 @@ import {
 import { validateUsername } from "@/lib/username";
 import { sendPasswordSetupLink } from "@/lib/account-email";
 import { UserProfile } from "@/lib/firebase/types";
+import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { checkAuthRateLimit, recordAuthFailure } from "@/lib/rate-limiter";
 import { getClientIp, rejectCrossSite } from "@/lib/request-security";
 import { securityLog } from "@/lib/security-log";
@@ -103,12 +104,22 @@ export async function POST(req: NextRequest) {
 
   try {
     let lookupEmail = rawEmail;
+    let resolvedUser: UserProfile | null = null;
     if (isUsername) {
       const record = await getUsernameRecordServer(rawEmail);
       const owner = record ? await getUserByIdServer(record.uid) : null;
-      // An unknown username gets the same generic answer as an unknown e-mail.
       if (!owner || owner.username !== rawEmail || !owner.email) return NextResponse.json(GENERIC_SUCCESS_RESPONSE);
-      lookupEmail = owner.email.toLowerCase();
+      lookupEmail = owner.email.toLowerCase().trim();
+      resolvedUser = owner;
+      if (hasAdminCredentials && owner.uid) {
+        try {
+          const authUser = await adminAuth.getUser(owner.uid);
+          if (authUser.email) {
+            lookupEmail = authUser.email.toLowerCase().trim();
+            resolvedUser.email = lookupEmail;
+          }
+        } catch {}
+      }
     }
 
     // Per-address limit stops mail-bombing one inbox from many IPs. The response stays identical
@@ -120,7 +131,15 @@ export async function POST(req: NextRequest) {
     }
     recordAuthFailure(emailKey, PER_EMAIL_MAX, PER_EMAIL_WINDOW_SECONDS);
 
-    const user = await getUserByEmailServer(lookupEmail);
+    const user = resolvedUser || (await getUserByEmailServer(lookupEmail));
+    if (user && hasAdminCredentials && user.uid) {
+      try {
+        const authUser = await adminAuth.getUser(user.uid);
+        if (authUser.email) {
+          user.email = authUser.email.toLowerCase().trim();
+        }
+      } catch {}
+    }
 
     // Prevent account enumeration: unknown/inactive accounts get the same response.
     if (!user || user.status === "SUSPENDED" || user.status === "INACTIVE") {

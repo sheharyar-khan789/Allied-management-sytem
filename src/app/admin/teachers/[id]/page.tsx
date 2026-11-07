@@ -52,6 +52,8 @@ export default function TeacherProfilePage({
   const [editFormLoading, setEditFormLoading] = useState(false);
   const [editError, setEditError] = useState("");
   const [profileSuccess, setProfileSuccess] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetNotice, setResetNotice] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [formData, setFormData] = useState({
     firstName: "",
     lastName: "",
@@ -195,6 +197,33 @@ export default function TeacherProfilePage({
     setEditModalOpen(true);
   };
 
+  const handleResetPassword = async () => {
+    if (!confirm(`Send password reset link to ${teacher?.email || "this teacher"}?`)) return;
+    setResetLoading(true);
+    setResetNotice(null);
+    try {
+      const res = await fetch(`/api/teachers/${id}/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to send password reset link.");
+      }
+      setResetNotice({
+        type: "success",
+        message: data.message || `Password reset link has been dispatched to ${data.email || teacher.email}.`,
+      });
+    } catch (err: any) {
+      setResetNotice({
+        type: "error",
+        message: err.message || "Failed to send password reset link.",
+      });
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setEditError("");
@@ -324,6 +353,32 @@ export default function TeacherProfilePage({
           <button
             type="button"
             onClick={() => setProfileSuccess("")}
+            className="text-on-surface-variant hover:text-on-surface"
+            aria-label="Dismiss notice"
+          >
+            <span className="material-symbols-outlined text-[18px]">close</span>
+          </button>
+        </div>
+      )}
+
+      {resetNotice && (
+        <div
+          role="status"
+          className={`p-4 rounded-xl border flex items-center justify-between ${
+            resetNotice.type === "success"
+              ? "bg-tertiary-container/10 border-on-tertiary-container/30 text-on-surface"
+              : "bg-error-container/20 border-error/30 text-error"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-[20px]">
+              {resetNotice.type === "success" ? "check_circle" : "error"}
+            </span>
+            <p className="text-xs font-semibold">{resetNotice.message}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setResetNotice(null)}
             className="text-on-surface-variant hover:text-on-surface"
             aria-label="Dismiss notice"
           >

@@ -3,6 +3,7 @@ import { requireAuth, requireRecentAuth } from "@/lib/firebase/server-auth";
 import { findForbiddenFields, forbiddenFieldsResponse, isSafeStoredUrl, teacherDocumentsArray } from "@/lib/input-validation";
 import {
   getTeacherByIdServer,
+  getUserByIdServer,
   saveTeacherServer,
   createAuditLogServer,
   getClassesServer,
@@ -272,7 +273,16 @@ export async function PUT(
     if (body.email !== undefined && body.email !== null && String(body.email).trim() !== "") {
       const targetEmail = String(body.email).trim().toLowerCase();
       const currentEmail = (existing.email || "").trim().toLowerCase();
-      if (targetEmail !== currentEmail) {
+      let profileNeedsSync = false;
+      if (existing.userId) {
+        try {
+          const prof = await getUserByIdServer(existing.userId);
+          if (prof && (prof.email || "").toLowerCase().trim() !== targetEmail) {
+            profileNeedsSync = true;
+          }
+        } catch {}
+      }
+      if (targetEmail !== currentEmail || profileNeedsSync) {
         const emailUpdate = await updateTeacherAccountEmail(authUser.schoolId, id, targetEmail, {
           performedByUid: authUser.uid,
           performedByEmail: authUser.email,
@@ -288,6 +298,7 @@ export async function PUT(
     const baseRecord = emailChangeResult?.teacher || existing;
     const updated: typeof existing = {
       ...baseRecord,
+      userId: emailChangeResult?.teacher?.userId || existing.userId,
       assignedClassIds,
       fullName: body.firstName ? `${body.firstName} ${body.lastName || ""}`.trim() : baseRecord.fullName,
       designation: body.designation || baseRecord.designation,

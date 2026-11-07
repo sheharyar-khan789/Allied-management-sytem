@@ -5,16 +5,20 @@ import {
   getTeacherByIdServer,
   getUserByEmailServer,
   getUserByIdServer,
+  saveTeacherServer,
+  updateUserServer,
 } from "@/lib/firebase/server-db";
 import { sendPasswordSetupLink } from "@/lib/account-email";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
+import { cacheKeys, invalidateCache, invalidateUserProfileCache } from "@/lib/server-cache";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Re-sends a teacher's account activation (set-your-password) email. ADMIN-only and resolved
  * within the admin's own school, so a teacher id from another school is simply not found. The
- * link goes only to the email on the teacher's own login profile.
+ * link goes only to the authoritative email on the teacher's own login profile / Firebase Auth account.
  */
 export async function POST(
   req: NextRequest,
@@ -31,6 +35,15 @@ export async function POST(
 
     let profile = teacher.userId ? await getUserByIdServer(teacher.userId) : null;
     if (!profile && teacher.email) profile = await getUserByEmailServer(teacher.email);
+    if (!profile && hasAdminCredentials && teacher.email) {
+      try {
+        const fb = await adminAuth.getUserByEmail(teacher.email);
+        if (fb.uid) {
+          profile = await getUserByIdServer(fb.uid);
+        }
+      } catch {}
+    }
+
     if (
       !profile ||
       profile.role !== "TEACHER" ||
@@ -39,14 +52,61 @@ export async function POST(
     ) {
       return NextResponse.json({ error: "This teacher has no login account to activate." }, { status: 404 });
     }
-    if (profile.status !== "ACTIVE") {
+    if (profile.status !== "ACTIVE" || teacher.status !== "ACTIVE") {
       return NextResponse.json({ error: "This teacher's account is inactive." }, { status: 409 });
     }
 
-    const delivery = await sendPasswordSetupLink(profile, "ACTIVATION", {
-      origin: req.headers.get("origin"),
-      host: req.headers.get("host"),
-    });
+    // Authoritative email resolution
+    let authoritativeEmail = (profile.email || teacher.email || "").toLowerCase().trim();
+    if (hasAdminCredentials && profile.uid) {
+      try {
+        const authRecord = await adminAuth.getUser(profile.uid);
+        if (authRecord.email) {
+          const authEmail = authRecord.email.toLowerCase().trim();
+          if (authEmail !== authoritativeEmail) {
+            authoritativeEmail = authEmail;
+            profile.email = authoritativeEmail;
+            await updateUserServer(profile);
+            if (teacher.email !== authoritativeEmail) {
+              await saveTeacherServer({ ...teacher, email: authoritativeEmail });
+            }
+          }
+        }
+      } catch (err: any) {
+        if (err?.code === "auth/user-not-found") {
+          return NextResponse.json({ error: "Authentication account not found for this teacher." }, { status: 404 });
+        }
+      }
+    }
+
+    if (teacher.userId !== profile.uid || teacher.email !== authoritativeEmail) {
+      await saveTeacherServer({
+        ...teacher,
+        userId: profile.uid,
+        email: authoritativeEmail,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    // Invalidate stale caches
+    invalidateUserProfileCache(profile.uid, authoritativeEmail, teacher.email);
+    invalidateCache(cacheKeys.userByEmail(authoritativeEmail));
+    invalidateCache(cacheKeys.teacher(authUser.schoolId, teacher.id));
+    invalidateCache(cacheKeys.teachers(authUser.schoolId));
+
+    const delivery = await sendPasswordSetupLink(
+      {
+        uid: profile.uid,
+        email: authoritativeEmail,
+        name: profile.name || teacher.fullName,
+        schoolId: profile.schoolId,
+      },
+      "ACTIVATION",
+      {
+        origin: req.headers.get("origin"),
+        host: req.headers.get("host"),
+      }
+    );
 
     await createAuditLogServer(
       authUser.schoolId,
@@ -57,13 +117,12 @@ export async function POST(
       "TEACHER",
       teacher.id,
       delivery.delivered
-        ? `Account activation email sent to ${profile.email} via ${delivery.mode}.`
-        : `Account activation email to ${profile.email} was NOT delivered (${delivery.mode}): ${delivery.message}`
+        ? `Account activation email sent to ${authoritativeEmail} via ${delivery.mode}.`
+        : `Account activation email to ${authoritativeEmail} was NOT delivered (${delivery.mode}): ${delivery.message}`
     );
 
     return NextResponse.json(
-      { success: delivery.delivered, sent: delivery.delivered, channel: delivery.mode, email: profile.email },
-      // dev-console: local development without any mail channel; the link is in the server log.
+      { success: delivery.delivered, sent: delivery.delivered, channel: delivery.mode, email: authoritativeEmail },
       { status: delivery.delivered || delivery.mode === "dev-console" ? 200 : 502 }
     );
   } catch (error: any) {

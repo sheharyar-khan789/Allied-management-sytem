@@ -33,6 +33,8 @@ import {
 import { POST as teachersPost } from "../src/app/api/teachers/route";
 import { PUT as teacherPut, GET as teacherGet } from "../src/app/api/teachers/[id]/route";
 import { PUT as loginEmailPut } from "../src/app/api/teachers/[id]/login-email/route";
+import { POST as resetPasswordPost } from "../src/app/api/teachers/[id]/reset-password/route";
+import { POST as activationPost } from "../src/app/api/teachers/[id]/activation/route";
 import { POST as loginPost } from "../src/app/api/auth/login/route";
 import { POST as changePasswordPost } from "../src/app/api/auth/change-password/route";
 import { POST as forgotPost } from "../src/app/api/auth/forgot-password/route";
@@ -423,6 +425,108 @@ async function run() {
   const emailLog = logs.find((l: any) => l.action === "UPDATE_TEACHER_EMAIL" && l.entityId === teacherId);
   assert(Boolean(emailLog), "Audit log records UPDATE_TEACHER_EMAIL");
   assert(emailLog?.details?.includes(NEW_EMAIL_1), "Audit log details mention updated email");
+
+  
+  console.log("\n--- Section 10: Admin Teacher Password Reset & Authoritative Email Resolution ---");
+  // 1. Admin sends password reset via POST /api/teachers/[id]/reset-password
+  const adminResetCapture = await captureLink(() =>
+    resetPasswordPost(req(ADMIN_A, `/api/teachers/${teacherId}/reset-password`, "POST"), idParams(teacherId))
+  );
+  const adminResetJson = await json(adminResetCapture.res);
+  assert(adminResetCapture.res.status === 200, "Admin reset password returns 200 OK");
+  assert(adminResetJson.email === NEW_EMAIL_2, `Admin reset response targets NEW email (${NEW_EMAIL_2})`);
+  assert(adminResetCapture.to === NEW_EMAIL_2, `Captured reset email recipient is NEW email (${NEW_EMAIL_2})`);
+  assert(adminResetCapture.to !== "rashid.initial@school-tam.edu", "Old initial email was NEVER targeted by reset link");
+  assert(adminResetCapture.to !== NEW_EMAIL_1, "Previous intermediate email was NEVER targeted by reset link");
+
+  // 2. Teacher activation endpoint also targets the new authoritative email
+  const adminActCapture = await captureLink(() =>
+    activationPost(req(ADMIN_A, `/api/teachers/${teacherId}/activation`, "POST"), idParams(teacherId))
+  );
+  const adminActJson = await json(adminActCapture.res);
+  assert(adminActCapture.res.status === 200, "Teacher activation returns 200 OK");
+  assert(adminActJson.email === NEW_EMAIL_2, `Activation targets NEW email (${NEW_EMAIL_2})`);
+  assert(adminActCapture.to === NEW_EMAIL_2, `Activation captured recipient is NEW email (${NEW_EMAIL_2})`);
+
+  // 3. Stale cache / desync test:
+  // If TeacherDoc temporarily had an old email in cache, resetPassword resolves by UID and synchronizes
+  const desyncTeacherId = "tch-tam-desync";
+  const desyncUid = "uid-tam-desync";
+  const DESYNC_OLD_EMAIL = "desync.old@school-tam.edu";
+  const DESYNC_NEW_EMAIL = "desync.new@school-tam.edu";
+
+  await saveTeacherServer({
+    id: desyncTeacherId,
+    schoolId: schoolA,
+    userId: desyncUid,
+    employeeId: "TCH-999",
+    fullName: "Desync Test Teacher",
+    email: DESYNC_OLD_EMAIL, // stale email on teacher record
+    phone: "03000000000",
+    status: "ACTIVE",
+    joiningDate: "2026-08-01",
+    department: "Science",
+    designation: "Instructor",
+  });
+  await updateUserServer({
+    uid: desyncUid,
+    schoolId: schoolA,
+    email: DESYNC_NEW_EMAIL, // updated email on user profile
+    name: "Desync Test Teacher",
+    role: "TEACHER",
+    teacherId: desyncTeacherId,
+    status: "ACTIVE",
+    updatedAt: now,
+  });
+
+  const staleResetCapture = await captureLink(() =>
+    resetPasswordPost(req(ADMIN_A, `/api/teachers/${desyncTeacherId}/reset-password`, "POST"), idParams(desyncTeacherId))
+  );
+  const staleResetJson = await json(staleResetCapture.res);
+  assert(staleResetCapture.res.status === 200, "Reset password succeeds despite desynced teacher email");
+  assert(staleResetJson.email === DESYNC_NEW_EMAIL, `Reset password resolved authoritative NEW email (${DESYNC_NEW_EMAIL})`);
+  assert(staleResetCapture.to === DESYNC_NEW_EMAIL, "Reset email delivered to authoritative NEW email, not stale old email");
+
+  // 4. Inactive teacher reset is rejected
+  await saveTeacherServer({
+    id: desyncTeacherId,
+    schoolId: schoolA,
+    userId: desyncUid,
+    employeeId: "TCH-999",
+    fullName: "Desync Test Teacher",
+    email: DESYNC_NEW_EMAIL,
+    phone: "03000000000",
+    status: "INACTIVE", // inactive!
+    joiningDate: "2026-08-01",
+    department: "Science",
+    designation: "Instructor",
+  });
+  const inactiveResetRes = await resetPasswordPost(
+    req(ADMIN_A, `/api/teachers/${desyncTeacherId}/reset-password`, "POST"),
+    idParams(desyncTeacherId)
+  );
+  assert(inactiveResetRes.status === 409, "Reset password for inactive teacher is rejected (409 Conflict)");
+
+  // 5. Non-existent teacher returns 404
+  const notFoundReset = await resetPasswordPost(
+    req(ADMIN_A, `/api/teachers/non-existent-teacher/reset-password`, "POST"),
+    idParams("non-existent-teacher")
+  );
+  assert(notFoundReset.status === 404, "Non-existent teacher reset returns 404 Not Found");
+
+  // 6. Non-admin (teacher) access is forbidden
+  const teacherForbiddenReset = await resetPasswordPost(
+    req(TEACHER_SESSION, `/api/teachers/${teacherId}/reset-password`, "POST"),
+    idParams(teacherId)
+  );
+  assert(teacherForbiddenReset.status === 403, "Non-admin teacher cannot trigger admin reset password (403)");
+
+  // 7. Cross-school admin reset is forbidden
+  const crossSchoolReset = await resetPasswordPost(
+    req(ADMIN_B, `/api/teachers/${teacherId}/reset-password`, "POST"),
+    idParams(teacherId)
+  );
+  assert(crossSchoolReset.status === 404, "Cross-school admin cannot reset teacher password (404)");
 
   console.log("\n=======================================================");
   console.log(`TOTAL TESTS: ${passed + failed}`);

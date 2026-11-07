@@ -889,7 +889,8 @@ export async function updateUserServer(user: UserProfile): Promise<void> {
     email: user.email.toLowerCase().trim(),
     updatedAt: new Date().toISOString(),
   };
-  invalidateUserProfileCache(merged.uid);
+  invalidateUserProfileCache(merged.uid, merged.email);
+  invalidateCache(cacheKeys.userByEmail(merged.email));
 
   for (const [key, existing] of localStore.users.entries()) {
     if (existing.uid === merged.uid) {

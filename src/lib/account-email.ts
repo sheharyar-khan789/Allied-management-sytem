@@ -1,4 +1,4 @@
-import { hasAdminCredentials } from "@/lib/firebase/admin";
+import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { getSchoolSettingsServer, savePasswordResetTokenServer } from "@/lib/firebase/server-db";
 import { UserProfile } from "@/lib/firebase/types";
 import {
@@ -42,6 +42,15 @@ export async function sendPasswordSetupLink(
   env: Env = process.env,
   deliverTo?: { email: string; name?: string }
 ): Promise<EmailDeliveryResult> {
+  let authoritativeEmail = (deliverTo?.email || user.email || "").toLowerCase().trim();
+  if (!deliverTo && hasAdminCredentials && user.uid) {
+    try {
+      const authUser = await adminAuth.getUser(user.uid);
+      if (authUser.email) {
+        authoritativeEmail = authUser.email.toLowerCase().trim();
+      }
+    } catch {}
+  }
   const base = resolveAppBaseUrl(request, env);
   const failures: string[] = base.ok ? [] : [base.reason];
   const appProviders = getEmailConfigStatus(env).providers;
@@ -56,7 +65,7 @@ export async function sendPasswordSetupLink(
       id: tokenHash,
       purpose,
       uid: user.uid,
-      email: user.email,
+      email: authoritativeEmail,
       schoolId: user.schoolId,
       expiresAt: new Date(nowMs + (purpose === "ACTIVATION" ? ACTIVATION_TOKEN_TTL_MS : RESET_TOKEN_TTL_MS)).toISOString(),
       usedAt: null,
@@ -67,7 +76,7 @@ export async function sendPasswordSetupLink(
   const sendAppEmail = async (baseUrl: string) =>
     sendPasswordResetEmail(
       {
-        to: deliverTo?.email || user.email,
+        to: authoritativeEmail,
         recipientName: deliverTo?.name || user.name || "User",
         ...(deliverTo ? { accountLabel: `the student account of ${user.name || "your child"} (sign-in: ${user.email})` } : {}),
         schoolName,
@@ -84,7 +93,7 @@ export async function sendPasswordSetupLink(
   }
 
   if (hasAdminCredentials && !deliverTo) {
-    const error = await sendViaFirebaseAuth(user.email, base.ok ? `${base.baseUrl}/login` : null, env);
+    const error = await sendViaFirebaseAuth(authoritativeEmail, base.ok ? `${base.baseUrl}/login` : null, env);
     if (!error) {
       return {
         delivered: true,
