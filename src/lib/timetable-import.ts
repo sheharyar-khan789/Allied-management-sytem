@@ -28,14 +28,63 @@ export function isSameRoom(r1?: string | null, r2?: string | null): boolean {
   return a === b;
 }
 
+const ORDINAL_WORDS: Record<string, number> = {
+  zero: 0,
+  "0th": 0,
+  first: 1,
+  "1st": 1,
+  second: 2,
+  "2nd": 2,
+  third: 3,
+  "3rd": 3,
+  fourth: 4,
+  "4th": 4,
+  fifth: 5,
+  "5th": 5,
+  sixth: 6,
+  "6th": 6,
+  seventh: 7,
+  "7th": 7,
+  eighth: 8,
+  "8th": 8,
+  ninth: 9,
+  "9th": 9,
+  tenth: 10,
+  "10th": 10,
+};
+
 /**
- * Numeric period ordering (e.g. "Period 1" -> 1, "Period 10" -> 10, "1" -> 1).
- * Non-numbered periods (e.g. "Assembly", "Break") sort gracefully after numbers.
+ * Numeric period ordering (e.g. "Period 1" -> 1, "Period 8" -> 8, "Period 10" -> 10, "1" -> 1).
+ * Supports numbers as strings, ordinal words, and prefixes ("P1", "Period 1").
+ * Pre-period events (e.g. "Assembly", "Zero Period") sort before Period 1.
+ * Non-numbered periods (e.g. "Break", "Lunch") sort gracefully after numbers.
  */
 export function periodOrder(periodName: string | undefined | null): number {
   if (!periodName) return Number.MAX_SAFE_INTEGER;
-  const match = /(\d+)/.exec(periodName);
+  const raw = String(periodName).trim();
+  const lower = raw.toLowerCase();
+
+  // Pre-period events (Assembly, Homeroom, Zero Period)
+  if (lower.includes("assembly") || lower.includes("homeroom") || lower.includes("registration") || lower.includes("zero")) {
+    return 0;
+  }
+
+  // Direct digit extraction: "Period 1", "Period 8", "1", "8", "P-1", "1st Period"
+  const match = /(\d+)/.exec(raw);
   if (match) return parseInt(match[1], 10);
+
+  // Ordinal word match: "First Period", "Eighth Period"
+  for (const [word, num] of Object.entries(ORDINAL_WORDS)) {
+    if (new RegExp(`\\b${word}\\b`, "i").test(lower)) {
+      return num;
+    }
+  }
+
+  // Inter-period events
+  if (lower.includes("break") || lower.includes("recess") || lower.includes("lunch")) {
+    return Number.MAX_SAFE_INTEGER - 500;
+  }
+
   return Number.MAX_SAFE_INTEGER - 1000;
 }
 
@@ -49,27 +98,36 @@ export function comparePeriodNames(a: string | undefined | null, b: string | und
 /**
  * Canonical sorting for timetable entries across the application:
  * 1. Day of week (Monday -> Tuesday -> Wednesday -> Thursday -> Friday -> Saturday -> Sunday)
- * 2. Start time (chronological minutes since midnight)
- * 3. Period name/number (Period 1 -> Period 2 ...)
+ * 2. Period name/number (Period 1 -> Period 2 ... -> Period 8 -> Period 10)
+ * 3. Start time (chronological tie-breaker within the same period / parallel periods)
  * 4. Class name (e.g. Class 9-A -> Class 9-B)
  * 5. Subject name
  */
 export function sortTimetableEntries<
-  T extends Pick<TimetableDoc, "dayOfWeek" | "periodName" | "startTime"> & Partial<TimetableDoc>
+  T extends {
+    dayOfWeek?: string;
+    periodName?: string;
+    startTime?: string;
+    className?: string;
+    subjectName?: string;
+    [key: string]: any;
+  }
 >(items: T[]): T[] {
   const at = (t: T) => toMinutes(t.startTime) ?? Number.MAX_SAFE_INTEGER;
   return [...items].sort((a, b) => {
     // 1. Day of week
-    const dayDiff = TIMETABLE_DAYS.indexOf(a.dayOfWeek) - TIMETABLE_DAYS.indexOf(b.dayOfWeek);
+    const aDayIdx = a.dayOfWeek ? TIMETABLE_DAYS.indexOf(a.dayOfWeek as any) : -1;
+    const bDayIdx = b.dayOfWeek ? TIMETABLE_DAYS.indexOf(b.dayOfWeek as any) : -1;
+    const dayDiff = (aDayIdx === -1 ? 999 : aDayIdx) - (bDayIdx === -1 ? 999 : bDayIdx);
     if (dayDiff !== 0) return dayDiff;
 
-    // 2. Start time
+    // 2. Period (strictly numeric ordering: Period 1 -> Period 2 -> ... -> Period 8)
+    const periodDiff = comparePeriodNames(a.periodName || "", b.periodName || "");
+    if (periodDiff !== 0) return periodDiff;
+
+    // 3. Start time
     const timeDiff = at(a) - at(b);
     if (timeDiff !== 0) return timeDiff;
-
-    // 3. Period
-    const periodDiff = comparePeriodNames(a.periodName, b.periodName);
-    if (periodDiff !== 0) return periodDiff;
 
     // 4. Class
     const classDiff = (a.className || "").localeCompare(b.className || "", undefined, { numeric: true });
@@ -93,8 +151,13 @@ export function toMinutes(value: string | undefined | null): number | null {
   if (m[3]) {
     if (h < 1 || h > 12) return null;
     h = (h % 12) + (m[3].toUpperCase() === "PM" ? 12 : 0);
-  } else if (h > 23) {
-    return null;
+  } else {
+    // In school schedules without AM/PM, hours 1 to 6 are afternoon (PM): e.g. 01:00 is 1:00 PM (13:00)
+    if (h >= 1 && h <= 6) {
+      h += 12;
+    } else if (h > 23) {
+      return null;
+    }
   }
   return h * 60 + min;
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { comparePeriodNames } from "@/lib/timetable-import";
 
 export const TIMETABLE_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -27,16 +28,10 @@ function minutes(value: string): number {
   return h * 60 + Number(m[2]);
 }
 
-/** Periods as columns (like the school's printed timetable), ordered by their earliest start. */
+/** Periods as columns (like the school's printed timetable), ordered numerically (Period 1 -> Period 8). */
 function periodColumns(entries: TimetableEntry[]): string[] {
-  const earliest = new Map<string, number>();
-  for (const e of entries) {
-    const t = minutes(e.startTime);
-    earliest.set(e.periodName, Math.min(earliest.get(e.periodName) ?? Number.MAX_SAFE_INTEGER, t));
-  }
-  return [...earliest.keys()].sort(
-    (a, b) => earliest.get(a)! - earliest.get(b)! || a.localeCompare(b, undefined, { numeric: true })
-  );
+  const unique = Array.from(new Set(entries.map((e) => e.periodName).filter(Boolean)));
+  return unique.sort(comparePeriodNames);
 }
 
 function Cell({ items, onSelect }: { items: TimetableEntry[]; onSelect?: (e: TimetableEntry) => void }) {

@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import TimetableGrid, { TimetableEntry } from "@/components/TimetableGrid";
 import TimetableImages from "@/components/TimetableImages";
+import { sortTimetableEntries } from "@/lib/timetable-import";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
@@ -67,7 +68,7 @@ export default function StudentTimetablePage() {
         </div>
       )}
 
-      {!loading && !error && entries.length > 0 && <TimetableGrid entries={entries} rows="day" highlightDay={today} />}
+      {!loading && !error && entries.length > 0 && <TimetableGrid entries={sortTimetableEntries(entries)} rows="day" highlightDay={today} />}
     </div>
   );
 }

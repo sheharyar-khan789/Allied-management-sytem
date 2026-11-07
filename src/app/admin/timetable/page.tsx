@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import TimetableGrid from "@/components/TimetableGrid";
 import TimetableImport from "@/components/TimetableImport";
 import TimetableImages from "@/components/TimetableImages";
+import { sortTimetableEntries } from "@/lib/timetable-import";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -68,11 +69,13 @@ export default function TimetableManagementPage() {
 
   const visible = useMemo(
     () =>
-      slots.filter(
-        (t) =>
-          (!filterClassId || t.classId === filterClassId) &&
-          (!filterTeacherId || t.teacherId === filterTeacherId) &&
-          (!filterDay || t.dayOfWeek === filterDay)
+      sortTimetableEntries(
+        slots.filter(
+          (t) =>
+            (!filterClassId || t.classId === filterClassId) &&
+            (!filterTeacherId || t.teacherId === filterTeacherId) &&
+            (!filterDay || t.dayOfWeek === filterDay)
+        )
       ),
     [slots, filterClassId, filterTeacherId, filterDay]
   );

@@ -57,9 +57,11 @@ export function computeSubjectResult(
 
 /** Validation of one entered mark against the schedule's maximum. null = valid. */
 export function validateObtainedMarks(value: unknown, totalMarks: number): string | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "Marks must be a number.";
-  if (value < 0) return "Marks cannot be negative.";
-  if (value > totalMarks) return `Marks cannot exceed the maximum of ${totalMarks}.`;
+  if (value === null || value === undefined || value === "") return null;
+  const num = typeof value === "number" ? value : Number(String(value).trim().replace(",", "."));
+  if (!Number.isFinite(num)) return "Marks must be a valid number.";
+  if (num < 0) return "Marks cannot be negative.";
+  if (num > totalMarks) return `Marks cannot exceed the maximum of ${totalMarks}.`;
   return null;
 }
 

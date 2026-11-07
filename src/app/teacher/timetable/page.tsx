@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import TimetableImages from "@/components/TimetableImages";
+import { sortTimetableEntries } from "@/lib/timetable-import";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -27,7 +28,7 @@ export default function TeacherTimetablePage() {
   // looked identical to that one day's data having failed to load. An explicit "No periods"
   // row makes a genuinely free day visually distinct from a fetch problem (errors are shown
   // separately, above, before this list is reached at all).
-  const days = DAYS.map((day) => ({ day, slots: timetable.filter((t) => t.dayOfWeek === day) }));
+  const days = DAYS.map((day) => ({ day, slots: sortTimetableEntries(timetable.filter((t) => t.dayOfWeek === day)) }));
 
   return (
     <div className="flex flex-col w-full gap-space-lg">

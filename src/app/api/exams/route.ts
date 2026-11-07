@@ -34,35 +34,63 @@ import { eligibleStudentsForSubject, isStudentEligibleForSubject } from "@/lib/s
 
 const EXAM_STATUSES = ["UPCOMING", "ONGOING", "COMPLETED", "PUBLISHED"] as const;
 
-const examUpdateSchema = z.union([
-  // Exam cycle metadata (ADMIN only).
-  z.object({
-    examId: idString,
-    examScheduleId: z.undefined().optional(),
-    title: z.string().trim().min(1).max(160).optional(),
-    term: z.string().trim().max(80).optional(),
-    category: z.enum(EXAM_CATEGORIES as [ExamCategory, ...ExamCategory[]]).optional().nullable(),
-    startDate: z.string().trim().max(10).optional(),
-    endDate: z.string().trim().max(10).optional(),
-    status: z.enum(EXAM_STATUSES).optional(),
-    resultSheetUrl: safeUrl.optional().nullable(),
-  }),
-  // Marks entry for one schedule (ADMIN, or the TEACHER allocated that subject).
-  // marksObtained null = "no mark recorded": an existing mark is removed, none is created.
-  z.object({
-    examScheduleId: idString,
-    studentMarks: z
-      .array(
-        z.object({
-          studentId: idString,
-          marksObtained: z.number().finite().nullable(),
-          remarks: z.string().trim().max(500).optional(),
-          cardUrl: safeUrl.optional(),
-        })
-      )
-      .max(1000),
-  }),
-]);
+const studentMarkItemSchema = z.object({
+  studentId: z.string().trim().min(1, "Student ID is required").max(128).optional(),
+  id: z.string().trim().max(128).optional(),
+  marksObtained: z
+    .union([z.number().finite(), z.string().trim(), z.null(), z.undefined()])
+    .transform((val, ctx) => {
+      if (val === null || val === undefined || val === "") return null;
+      const str = typeof val === "string" ? val.replace(",", ".").trim() : String(val);
+      const num = Number(str);
+      if (!Number.isFinite(num)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Marks must be a valid number" });
+        return z.NEVER;
+      }
+      return num;
+    })
+    .optional(),
+  marks: z.union([z.number().finite(), z.string().trim(), z.null(), z.undefined()]).optional(),
+  obtainedMarks: z.union([z.number().finite(), z.string().trim(), z.null(), z.undefined()]).optional(),
+  score: z.union([z.number().finite(), z.string().trim(), z.null(), z.undefined()]).optional(),
+  remarks: z
+    .union([z.string().max(500), z.null(), z.literal("")])
+    .optional()
+    .transform((v) => (v === undefined || v === null ? undefined : v.trim())),
+  comment: z
+    .union([z.string().max(500), z.null(), z.literal("")])
+    .optional()
+    .transform((v) => (v === undefined || v === null ? undefined : v.trim())),
+  comments: z
+    .union([z.string().max(500), z.null(), z.literal("")])
+    .optional()
+    .transform((v) => (v === undefined || v === null ? undefined : v.trim())),
+  cardUrl: z
+    .union([safeUrl, z.literal(""), z.null()])
+    .optional()
+    .transform((v) => v || undefined),
+});
+
+const marksUpdateSchema = z.object({
+  examScheduleId: z.string().trim().min(1).max(128).optional(),
+  scheduleId: z.string().trim().min(1).max(128).optional(),
+  studentMarks: z.array(studentMarkItemSchema).max(1000),
+});
+
+const examCycleUpdateSchema = z.object({
+  examId: idString,
+  examScheduleId: z.undefined().optional(),
+  scheduleId: z.undefined().optional(),
+  title: z.string().trim().min(1).max(160).optional(),
+  term: z.string().trim().max(80).optional(),
+  category: z.enum(EXAM_CATEGORIES as [ExamCategory, ...ExamCategory[]]).optional().nullable(),
+  startDate: z.string().trim().max(10).optional(),
+  endDate: z.string().trim().max(10).optional(),
+  status: z.enum(EXAM_STATUSES).optional(),
+  resultSheetUrl: safeUrl.optional().nullable(),
+});
+
+const examUpdateSchema = z.union([examCycleUpdateSchema, marksUpdateSchema]);
 
 function splitName(fullName: string) {
   const parts = (fullName || "").trim().split(/\s+/);
@@ -527,14 +555,43 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: true, exam: updated });
     }
 
-    const { examScheduleId, studentMarks } = body as {
-      examScheduleId: string;
-      studentMarks: { studentId: string; marksObtained: number | null; remarks?: string; cardUrl?: string }[];
-    };
+    const targetScheduleId = (body.examScheduleId || body.scheduleId) as string;
+    if (!targetScheduleId) {
+      return jsonError("Exam schedule ID is required.", 400);
+    }
+
+    const rawMarksList = (body.studentMarks || []) as any[];
+    const studentMarks = rawMarksList.map((sm) => {
+      const studentId = (sm.studentId || sm.id || "").trim();
+      let marksObtained = sm.marksObtained;
+      if (marksObtained === undefined) {
+        const alt = sm.marks !== undefined ? sm.marks : (sm.obtainedMarks !== undefined ? sm.obtainedMarks : sm.score);
+        if (alt !== undefined && alt !== null && alt !== "") {
+          const str = typeof alt === "string" ? alt.replace(",", ".").trim() : String(alt);
+          const num = Number(str);
+          marksObtained = Number.isFinite(num) ? num : null;
+        } else {
+          marksObtained = null;
+        }
+      }
+      const remarks = sm.remarks !== undefined ? sm.remarks : (sm.comment !== undefined ? sm.comment : sm.comments);
+      return {
+        studentId,
+        marksObtained,
+        remarks: remarks !== undefined && remarks !== null ? String(remarks) : undefined,
+        cardUrl: sm.cardUrl || undefined,
+      };
+    });
+
+    for (const sm of studentMarks) {
+      if (!sm.studentId) {
+        return jsonError("Student ID is required for each marks record.", 400);
+      }
+    }
 
     // The schedule (and therefore its real examId/classId/subjectId/totalMarks) is looked up
     // server-side by id and verified to belong to this school and to an exam of the active session.
-    const schedule = await getExamScheduleByIdServer(authUser.schoolId, examScheduleId);
+    const schedule = await getExamScheduleByIdServer(authUser.schoolId, targetScheduleId);
     const exam = schedule ? (await getExamsServer(authUser.schoolId)).find((e) => e.id === schedule.examId) : undefined;
     if (!schedule || !exam) {
       return jsonError("Exam schedule not found for this school.", 404);
@@ -684,7 +741,7 @@ export async function PUT(req: NextRequest) {
       authUser.role,
       isCorrectionAfterPublish || correctedExisting > 0 ? "CORRECT_PUBLISHED_EXAM_MARKS" : "ENTER_EXAM_MARKS",
       "EXAM_RESULT",
-      examScheduleId,
+      targetScheduleId,
       isCorrectionAfterPublish
         ? `Corrected marks for ${subjectName || schedule.subjectId} in the published exam "${exam.name}" (${written} saved, ${deleted} cleared) — already-published results were changed.`
         : correctedExisting > 0

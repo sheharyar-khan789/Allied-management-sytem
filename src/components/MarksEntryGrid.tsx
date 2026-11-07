@@ -75,7 +75,8 @@ export default function MarksEntryGrid({
   const parsed = useMemo(
     () =>
       rows.map((r) => {
-        const value = r.input.trim() === "" ? null : Number(r.input);
+        const cleanInput = r.input.trim().replace(",", ".");
+        const value = cleanInput === "" ? null : Number(cleanInput);
         const problem = value === null ? null : validateObtainedMarks(value, maxMarks);
         const preview = value !== null && !problem ? computeSubjectResult(value, maxMarks, passingMarks, gradingScale) : null;
         const marksChanged = value !== r.savedMarks;
