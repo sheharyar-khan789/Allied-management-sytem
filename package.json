@@ -44,7 +44,8 @@
     "test:subject-allocation": "tsx scripts/subject-allocation-test.ts",
     "test:documents": "tsx scripts/document-management-test.ts",
     "test:teacher-attendance": "tsx scripts/teacher-attendance-test.ts",
-    "backfill:usernames": "node scripts/backfill-teacher-usernames.mjs"
+    "backfill:usernames": "node scripts/backfill-teacher-usernames.mjs",
+    "test:teacher-email-delivery": "tsx scripts/teacher-email-delivery-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
