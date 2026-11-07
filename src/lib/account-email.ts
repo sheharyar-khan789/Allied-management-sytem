@@ -22,18 +22,12 @@ type Env = Record<string, string | undefined>;
  * Emails `user` a link to choose a password — a reset they asked for, or the activation of an
  * account an admin just created. No password ever leaves the server; the user sets their own.
  *
- * Delivery order:
- *  1. The app's own email (Resend/SMTP) carrying a single-use link to /reset-password; only the
- *     token's SHA-256 hash is stored.
- *  2. Firebase Authentication's built-in password email for the user's Firebase Auth account.
- *     This is what makes the flow work when no Resend/SMTP provider is configured — previously
- *     production silently sent nothing in that case.
- *  3. Local development only: the link is printed to the dev console.
- *
- * `deliverTo` sends the link to a different, reachable inbox than the login address (student
- * logins are generated addresses with no mailbox — see resolveResetRecipient). The token stays
- * bound to the account's own uid + login email. Firebase's built-in mailer can only write to the
- * login address itself, so it is never used when `deliverTo` is given.
+ * Accurately distinguishes between:
+ *  - PROVIDER_ACCEPTED (Resend/SMTP confirmed acceptance)
+ *  - DELIVERY_UNCONFIRMED (Firebase Auth accepted the request, but does not provide inbox delivery receipts)
+ *  - DELIVERY_FAILED (Provider rejected or delivery error)
+ *  - NOT_CONFIGURED (No email provider configured)
+ *  - DEV_CONSOLE (Development mode console output)
  */
 export async function sendPasswordSetupLink(
   user: Pick<UserProfile, "uid" | "email" | "name" | "schoolId">,
@@ -86,28 +80,43 @@ export async function sendPasswordSetupLink(
       env
     );
 
+  // 1. First priority: App-configured email provider (Resend or SMTP)
   if (base.ok && appProviders.length > 0) {
     const result = await sendAppEmail(base.baseUrl);
     if (result.delivered) return result;
     failures.push(result.message);
   }
 
+  // 2. Second priority: Firebase Authentication built-in mailer
+  // When used, we accurately flag deliveryStatus as DELIVERY_UNCONFIRMED because Firebase
+  // does not expose webhook or final delivery tracking to recipients.
   if (hasAdminCredentials && !deliverTo) {
-    const error = await sendViaFirebaseAuth(authoritativeEmail, base.ok ? `${base.baseUrl}/login` : null, env);
-    if (!error) {
+    const outcome = await sendViaFirebaseAuth(authoritativeEmail, base.ok ? `${base.baseUrl}/login` : null, env);
+    if (outcome.ok) {
       return {
         delivered: true,
+        deliveryStatus: "DELIVERY_UNCONFIRMED",
         mode: "firebase",
-        message: `${purpose === "ACTIVATION" ? "Account activation" : "Password reset"} email sent by Firebase Authentication.`,
+        message: `${purpose === "ACTIVATION" ? "Account activation" : "Password reset"} request processed. Email delivery cannot be confirmed by Firebase Authentication. Please advise the teacher to check inbox and spam folders.`,
+        detailedStatus: "Firebase Authentication accepted the password reset request. Because Firebase does not provide delivery receipts or bounce tracking, final inbox arrival cannot be confirmed.",
+        canRetry: true,
       };
     }
-    failures.push(error);
-    console.error(`[PASSWORD RESET EMAIL] ${error}`);
+    failures.push(outcome.error || "Firebase Auth failed");
+    console.error(`[PASSWORD RESET EMAIL] ${outcome.error}`);
   }
 
+  // 3. Dev-only fallback
   if (base.ok && appProviders.length === 0 && env.NODE_ENV !== "production") {
     return sendAppEmail(base.baseUrl);
   }
 
-  return { delivered: false, mode: "not-configured", message: failures.join(" | ") || "No delivery channel available." };
+  return {
+    delivered: false,
+    deliveryStatus: appProviders.length > 0 ? "DELIVERY_FAILED" : "NOT_CONFIGURED",
+    mode: appProviders.length > 0 ? appProviders[appProviders.length - 1] : "not-configured",
+    canRetry: appProviders.length > 0,
+    message: failures.join(" | ") || "No email delivery channel is available or configured.",
+    detailedStatus: "All available delivery channels failed or are not configured.",
+  };
 }

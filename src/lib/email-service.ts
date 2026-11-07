@@ -13,18 +13,71 @@ export interface SendPasswordResetOptions {
   purpose?: PasswordLinkPurpose;
   /** Set when the recipient is not the account holder (a guardian receiving a student's link). */
   accountLabel?: string;
+  correlationId?: string;
 }
 
 export type EmailProvider = "resend" | "smtp";
 
+export type DeliveryStatusCode =
+  | "RESET_REQUEST_ACCEPTED"
+  | "PROVIDER_ACCEPTED"
+  | "DELIVERY_CONFIRMED"
+  | "DELIVERY_UNCONFIRMED"
+  | "DELIVERY_FAILED"
+  | "NOT_CONFIGURED"
+  | "DEV_CONSOLE";
+
 export interface EmailDeliveryResult {
-  /** True only when a real provider accepted the message. */
+  /** True only when a provider or Firebase accepted the message. */
   delivered: boolean;
+  deliveryStatus: DeliveryStatusCode;
   mode: EmailProvider | "firebase" | "dev-console" | "not-configured";
   /** The provider's own id for the accepted message (Resend returns one), for tracing delivery. */
   providerMessageId?: string;
   /** Safe for logs/audit: never contains the reset URL, token or credentials. */
   message: string;
+  detailedStatus?: string;
+  canRetry?: boolean;
+  correlationId?: string;
+}
+
+export function maskEmail(email: string): string {
+  if (!email || !email.includes("@")) return "***";
+  const [local, domain] = email.trim().toLowerCase().split("@");
+  if (local.length <= 2) return `${local[0] || "*"}***@${domain}`;
+  return `${local.slice(0, 2)}***${local.slice(-1)}@${domain}`;
+}
+
+export interface EmailOperationLog {
+  correlationId: string;
+  teacherUid?: string;
+  schoolId?: string;
+  maskedEmail: string;
+  purpose: string;
+  mode: string;
+  status: DeliveryStatusCode;
+  attempts?: number;
+  messageId?: string;
+  error?: string;
+  timestamp?: string;
+}
+
+export function logEmailOperation(entry: EmailOperationLog): void {
+  const line = {
+    type: "email_operation",
+    timestamp: entry.timestamp || new Date().toISOString(),
+    correlationId: entry.correlationId,
+    teacherUid: entry.teacherUid,
+    schoolId: entry.schoolId,
+    recipient: entry.maskedEmail,
+    purpose: entry.purpose,
+    mode: entry.mode,
+    status: entry.status,
+    attempts: entry.attempts || 1,
+    ...(entry.messageId ? { messageId: entry.messageId } : {}),
+    ...(entry.error ? { error: entry.error } : {}),
+  };
+  console.log(`[EMAIL_OPERATIONAL_LOG] ${JSON.stringify(line)}`);
 }
 
 type Env = Record<string, string | undefined>;
@@ -148,57 +201,127 @@ export function buildPasswordResetHtml({
 </html>`;
 }
 
-/** Resend send. Returns `{ id }` on acceptance, otherwise a log-safe reason (never the API key). */
-async function sendViaResend(env: Env, msg: { to: string; subject: string; html: string; text: string }): Promise<{ id?: string } | string> {
-  try {
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY!.trim()}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ from: env.EMAIL_FROM!.trim(), to: [msg.to], subject: msg.subject, html: msg.html, text: msg.text }),
-    });
-    const data = (await res.json().catch(() => ({}))) as { id?: string; name?: string; message?: string };
-    if (res.ok) return { id: typeof data.id === "string" ? data.id : undefined };
-    // Resend's error body describes config problems (e.g. unverified sender domain); it never
-    // echoes the message body, so it is safe to log.
-    return `Resend rejected the message (HTTP ${res.status}${data.name ? `, ${data.name}` : ""}${data.message ? `: ${data.message}` : ""})`;
-  } catch (err) {
-    return `Could not reach Resend API: ${(err as Error)?.message || "network error"}`;
+/** Resend send with controlled 1x retry on transient errors (429, 5xx, network error). */
+async function sendViaResend(
+  env: Env,
+  msg: { to: string; subject: string; html: string; text: string }
+): Promise<{ id?: string; attempts: number } | { error: string; attempts: number; canRetry: boolean }> {
+  let attempts = 0;
+  const maxAttempts = 2;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.RESEND_API_KEY!.trim()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: env.EMAIL_FROM!.trim(),
+          to: [msg.to],
+          subject: msg.subject,
+          html: msg.html,
+          text: msg.text,
+        }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout));
+
+      const data = (await res.json().catch(() => ({}))) as { id?: string; name?: string; message?: string };
+      if (res.ok) {
+        return { id: typeof data.id === "string" ? data.id : undefined, attempts };
+      }
+
+      const isTransient = res.status === 429 || res.status >= 500;
+      const errorMsg = `Resend rejected the message (HTTP ${res.status}${data.name ? `, ${data.name}` : ""}${data.message ? `: ${data.message}` : ""})`;
+
+      if (!isTransient || attempts >= maxAttempts) {
+        return { error: errorMsg, attempts, canRetry: isTransient };
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    } catch (err: any) {
+      const isAbort = err?.name === "AbortError";
+      const errorMsg = isAbort
+        ? "Resend API connection timed out (10s)."
+        : `Could not reach Resend API: ${err?.message || "network error"}`;
+
+      if (attempts >= maxAttempts) {
+        return { error: errorMsg, attempts, canRetry: true };
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
   }
+
+  return { error: "Resend delivery failed after retries.", attempts, canRetry: true };
 }
 
-async function sendViaSmtp(env: Env, msg: { to: string; subject: string; html: string; text: string }): Promise<string | null> {
-  try {
-    const port = Number(env.SMTP_PORT) || 587;
-    const secure = env.SMTP_SECURE ? env.SMTP_SECURE.trim().toLowerCase() === "true" : port === 465;
-    const transport = nodemailer.createTransport({
-      host: env.SMTP_HOST!.trim(),
-      port,
-      secure,
-      auth: { user: env.SMTP_USER!.trim(), pass: env.SMTP_PASS! },
-    });
-    const from = has(env, "EMAIL_FROM") ? env.EMAIL_FROM!.trim() : env.SMTP_USER!.trim();
-    const info = await transport.sendMail({ from, to: msg.to, subject: msg.subject, html: msg.html, text: msg.text });
-    if (info.rejected && info.rejected.length > 0) return "SMTP server rejected the recipient.";
-    return null;
-  } catch (err) {
-    const e = err as { code?: string; responseCode?: number; message?: string };
-    return `SMTP delivery failed (${e.code || "error"}${e.responseCode ? ` ${e.responseCode}` : ""})`;
+async function sendViaSmtp(
+  env: Env,
+  msg: { to: string; subject: string; html: string; text: string }
+): Promise<{ success: boolean; attempts: number; error?: string; canRetry?: boolean }> {
+  let attempts = 0;
+  const maxAttempts = 2;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    try {
+      const port = Number(env.SMTP_PORT) || 587;
+      const secure = env.SMTP_SECURE ? env.SMTP_SECURE.trim().toLowerCase() === "true" : port === 465;
+      const transport = nodemailer.createTransport({
+        host: env.SMTP_HOST!.trim(),
+        port,
+        secure,
+        auth: { user: env.SMTP_USER!.trim(), pass: env.SMTP_PASS! },
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
+      });
+
+      const from = has(env, "EMAIL_FROM") ? env.EMAIL_FROM!.trim() : env.SMTP_USER!.trim();
+      const info = await transport.sendMail({
+        from,
+        to: msg.to,
+        subject: msg.subject,
+        html: msg.html,
+        text: msg.text,
+      });
+
+      if (info.rejected && info.rejected.length > 0) {
+        return { success: false, attempts, error: "SMTP server rejected the recipient address.", canRetry: false };
+      }
+      return { success: true, attempts };
+    } catch (err: any) {
+      const e = err as { code?: string; responseCode?: number; message?: string };
+      const isTransient = ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ESOCKETTIMEDOUT"].includes(e.code || "");
+      const errorMsg = `SMTP delivery failed (${e.code || "error"}${e.responseCode ? ` ${e.responseCode}` : ""}): ${e.message || "network error"}`;
+
+      if (!isTransient || attempts >= maxAttempts) {
+        return { success: false, attempts, error: errorMsg, canRetry: isTransient };
+      }
+      await new Promise((r) => setTimeout(r, 600));
+    }
   }
+
+  return { success: false, attempts, error: "SMTP connection failed after retries.", canRetry: true };
 }
 
 /**
  * Sends Firebase Authentication's own password email (accounts:sendOobCode, PASSWORD_RESET) for
- * an existing Firebase Auth account. Firebase delivers it from its built-in mailer, so it works
- * with no Resend/SMTP configured; the link opens Firebase's password action page (or this app's
- * /reset-password if the project's email template action URL points there) and `continueUrl`
- * brings the user back to the login page. Returns null on success, otherwise a log-safe reason.
+ * an existing Firebase Auth account.
+ * Note: Firebase Identity Toolkit accepts and queues the job, but does NOT provide inbox delivery confirmation.
  */
-export async function sendViaFirebaseAuth(email: string, continueUrl: string | null, env: Env = process.env): Promise<string | null> {
+export async function sendViaFirebaseAuth(
+  email: string,
+  continueUrl: string | null,
+  env: Env = process.env
+): Promise<{ ok: boolean; error?: string; canRetry?: boolean }> {
   const apiKey = (env.NEXT_PUBLIC_FIREBASE_API_KEY || env.FIREBASE_API_KEY || "").trim();
-  if (!apiKey || apiKey.includes("Dummy")) return "Firebase Web API key is not configured.";
+  if (!apiKey || apiKey.includes("Dummy")) {
+    return { ok: false, error: "Firebase Web API key is not configured.", canRetry: false };
+  }
 
   const send = async (withContinueUrl: boolean) => {
     const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(apiKey)}`, {
@@ -209,9 +332,6 @@ export async function sendViaFirebaseAuth(email: string, continueUrl: string | n
         email,
         ...(withContinueUrl && continueUrl ? { continueUrl } : {}),
       }),
-      // Bounded, like every other identitytoolkit call — see identityToolkitSignal. Without it
-      // a stalled connection here left "Send reset link" spinning with no error ever reaching
-      // the caller's catch block, since nothing had rejected the fetch Promise yet.
       signal: identityToolkitSignal(),
     });
     if (res.ok) return null;
@@ -221,14 +341,16 @@ export async function sendViaFirebaseAuth(email: string, continueUrl: string | n
 
   try {
     let error = await send(true);
-    // The app domain may not be in the project's Authorized domains yet; the email itself
-    // still works without a continue URL.
     if (error && continueUrl && /UNAUTHORIZED_DOMAIN|INVALID_CONTINUE_URI|MISSING_CONTINUE_URI/.test(error)) {
       error = await send(false);
     }
-    return error ? `Firebase Auth did not send the email (${error})` : null;
-  } catch (err) {
-    return `Could not reach Firebase Auth: ${(err as Error)?.message || "network error"}`;
+    if (error) {
+      const isTransient = /TOO_MANY_ATTEMPTS|INTERNAL_ERROR|QUOTA_EXCEEDED/.test(error);
+      return { ok: false, error: `Firebase Auth did not send the email (${error})`, canRetry: isTransient };
+    }
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: `Could not reach Firebase Auth: ${err?.message || "network error"}`, canRetry: true };
   }
 }
 
@@ -239,17 +361,15 @@ export function headerSafe(value: string): string {
 /**
  * Sends the password reset / account activation email through the configured provider(s):
  * Resend first, then SMTP. Reports `delivered: true` only when a provider actually accepted the
- * message. Never logs the link in production; with no provider configured in local development
- * the link is printed to the dev console so the flow can still be exercised.
+ * message. Never logs the link in production.
  */
 export async function sendPasswordResetEmail(
   options: SendPasswordResetOptions,
   env: Env = process.env
 ): Promise<EmailDeliveryResult> {
-  const { to, recipientName = "User", schoolName = "Allied School", resetUrl, purpose = "RESET", accountLabel } = options;
+  const { to, recipientName = "User", schoolName = "Allied School", resetUrl, purpose = "RESET", accountLabel, correlationId } = options;
   const activation = purpose === "ACTIVATION";
-  // Header values never carry CR/LF (school names are admin-entered), so no header can be injected
-  // whatever the transport does with them.
+  const corrId = correlationId || `eml_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const subject = headerSafe(activation ? `Activate your ${schoolName} account` : `Reset your ${schoolName} password`);
   const html = buildPasswordResetHtml({ recipientName, schoolName, resetUrl, purpose, accountLabel });
   const text = activation
@@ -261,23 +381,50 @@ export async function sendPasswordResetEmail(
   const failures: string[] = [];
 
   for (const provider of providers) {
-    const outcome = provider === "resend" ? await sendViaResend(env, msg) : await sendViaSmtp(env, msg);
-    if (outcome === null || typeof outcome === "object") {
-      const providerMessageId = outcome?.id;
-      return {
-        delivered: true,
-        mode: provider,
-        ...(providerMessageId ? { providerMessageId } : {}),
-        message: `${activation ? "Account activation" : "Password reset"} email accepted by ${provider}${providerMessageId ? ` (id ${providerMessageId})` : ""}.`,
-      };
+    if (provider === "resend") {
+      const outcome = await sendViaResend(env, msg);
+      if (!("error" in outcome)) {
+        const providerMessageId = outcome.id;
+        return {
+          delivered: true,
+          deliveryStatus: "PROVIDER_ACCEPTED",
+          mode: "resend",
+          correlationId: corrId,
+          ...(providerMessageId ? { providerMessageId } : {}),
+          message: `${activation ? "Account activation" : "Password reset"} email accepted by Resend${providerMessageId ? ` (id ${providerMessageId})` : ""}.`,
+          detailedStatus: "Email provider accepted message for dispatch.",
+        };
+      } else {
+        failures.push(outcome.error);
+        console.error(`[PASSWORD RESET EMAIL] ${outcome.error}`);
+      }
+    } else if (provider === "smtp") {
+      const outcome = await sendViaSmtp(env, msg);
+      if (outcome.success) {
+        return {
+          delivered: true,
+          deliveryStatus: "PROVIDER_ACCEPTED",
+          mode: "smtp",
+          correlationId: corrId,
+          message: `${activation ? "Account activation" : "Password reset"} email accepted by SMTP server.`,
+          detailedStatus: "SMTP server accepted message for dispatch.",
+        };
+      }
+      failures.push(outcome.error || "SMTP failed");
+      console.error(`[PASSWORD RESET EMAIL] ${outcome.error}`);
     }
-    const error = outcome;
-    failures.push(error);
-    console.error(`[PASSWORD RESET EMAIL] ${error}`);
   }
 
   if (providers.length > 0) {
-    return { delivered: false, mode: providers[providers.length - 1], message: failures.join(" | ") };
+    return {
+      delivered: false,
+      deliveryStatus: "DELIVERY_FAILED",
+      mode: providers[providers.length - 1],
+      canRetry: true,
+      correlationId: corrId,
+      message: failures.join(" | "),
+      detailedStatus: "All configured email providers failed to deliver the message.",
+    };
   }
 
   const configHint =
@@ -287,9 +434,24 @@ export async function sendPasswordResetEmail(
   if (env.NODE_ENV !== "production") {
     console.warn(`[PASSWORD RESET EMAIL] ${configHint}`);
     console.warn(`[PASSWORD RESET EMAIL] DEV ONLY — ${activation ? "activation" : "reset"} link for ${to}: ${resetUrl}`);
-    return { delivered: false, mode: "dev-console", message: configHint };
+    return {
+      delivered: false,
+      deliveryStatus: "DEV_CONSOLE",
+      mode: "dev-console",
+      correlationId: corrId,
+      message: configHint,
+      detailedStatus: "Development mode: link output to dev console.",
+    };
   }
 
   console.error(`[PASSWORD RESET EMAIL] NOT SENT. ${configHint}`);
-  return { delivered: false, mode: "not-configured", message: configHint };
+  return {
+    delivered: false,
+    deliveryStatus: "NOT_CONFIGURED",
+    mode: "not-configured",
+    canRetry: false,
+    correlationId: corrId,
+    message: configHint,
+    detailedStatus: "No email provider configured in production.",
+  };
 }

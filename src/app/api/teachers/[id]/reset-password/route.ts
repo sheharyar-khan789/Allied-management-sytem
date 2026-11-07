@@ -7,9 +7,9 @@ export const dynamic = "force-dynamic";
 
 /**
  * Admin: Triggers a password reset link for the teacher.
- * - Always resolves the teacher's authoritative account using UID first.
+ * - Resolves the teacher's authoritative account using UID first.
  * - Targets the current synchronized email address (never a stale or outdated email).
- * - Generates Firebase password reset link and dispatches the reset email.
+ * - Accurately distinguishes between verified email delivery (PROVIDER_ACCEPTED) and unconfirmed Firebase delivery (DELIVERY_UNCONFIRMED).
  * - Strictly isolated to the authenticated administrator's school.
  */
 export async function POST(
@@ -35,17 +35,33 @@ export async function POST(
     );
 
     if (!result.ok && result.channel !== "dev-console") {
-      return NextResponse.json({ error: result.error || "Failed to send password reset link." }, { status: result.status });
+      return NextResponse.json(
+        {
+          error: result.error || "Failed to process password reset.",
+          deliveryStatus: result.deliveryStatus,
+          canRetry: result.canRetry ?? true,
+          email: result.email,
+        },
+        { status: result.status }
+      );
     }
 
     return NextResponse.json(
       {
         success: true,
+        deliveryStatus: result.deliveryStatus,
         sent: result.sent,
         email: result.email,
         channel: result.channel,
-        resetLink: result.resetLink,
-        message: `Password reset link has been dispatched to ${result.email}.`,
+        providerMessageId: result.providerMessageId,
+        canRetry: result.canRetry,
+        message:
+          result.message ||
+          (result.deliveryStatus === "DELIVERY_UNCONFIRMED"
+            ? `Password reset request processed. Email delivery cannot be confirmed by Firebase. Please ask the teacher to check inbox and spam folders.`
+            : result.deliveryStatus === "PROVIDER_ACCEPTED"
+            ? `Password reset email accepted by ${result.channel}${result.providerMessageId ? ` (ID: ${result.providerMessageId})` : ""} for ${result.email}.`
+            : `Password reset request processed for ${result.email}.`),
       },
       { status: result.status }
     );

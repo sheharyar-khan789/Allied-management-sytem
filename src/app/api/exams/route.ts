@@ -35,13 +35,30 @@ import { eligibleStudentsForSubject, isStudentEligibleForSubject } from "@/lib/s
 const EXAM_STATUSES = ["UPCOMING", "ONGOING", "COMPLETED", "PUBLISHED"] as const;
 
 const studentMarkItemSchema = z.object({
-  studentId: z.string().trim().min(1, "Student ID is required").max(128).optional(),
-  id: z.string().trim().max(128).optional(),
+  studentId: z.union([
+    z.string().trim().min(1, "Student ID is required").max(256),
+    z.number().int().transform((n) => String(n)),
+    z.object({ id: z.string().trim().min(1).max(256) }).transform((o) => o.id),
+    z.object({ studentId: z.string().trim().min(1).max(256) }).transform((o) => o.studentId),
+    z.null().transform(() => undefined),
+  ]).optional(),
+  id: z.union([
+    z.string().trim().min(1).max(256),
+    z.number().int().transform((n) => String(n)),
+    z.object({ id: z.string().trim().min(1).max(256) }).transform((o) => o.id),
+    z.null().transform(() => undefined),
+  ]).optional(),
+  student: z.union([
+    z.string().trim().min(1).max(256),
+    z.object({ id: z.string().trim().min(1).max(256) }).transform((o) => o.id),
+    z.null().transform(() => undefined),
+  ]).optional(),
   marksObtained: z
     .union([z.number().finite(), z.string().trim(), z.null(), z.undefined()])
     .transform((val, ctx) => {
       if (val === null || val === undefined || val === "") return null;
       const str = typeof val === "string" ? val.replace(",", ".").trim() : String(val);
+      if (str === "") return null;
       const num = Number(str);
       if (!Number.isFinite(num)) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Marks must be a valid number" });
@@ -54,27 +71,35 @@ const studentMarkItemSchema = z.object({
   obtainedMarks: z.union([z.number().finite(), z.string().trim(), z.null(), z.undefined()]).optional(),
   score: z.union([z.number().finite(), z.string().trim(), z.null(), z.undefined()]).optional(),
   remarks: z
-    .union([z.string().max(500), z.null(), z.literal("")])
+    .union([z.string().max(500), z.number().transform((n) => String(n)), z.null(), z.literal(""), z.undefined()])
     .optional()
-    .transform((v) => (v === undefined || v === null ? undefined : v.trim())),
+    .transform((v) => (v === undefined || v === null ? undefined : String(v).trim())),
   comment: z
-    .union([z.string().max(500), z.null(), z.literal("")])
+    .union([z.string().max(500), z.number().transform((n) => String(n)), z.null(), z.literal(""), z.undefined()])
     .optional()
-    .transform((v) => (v === undefined || v === null ? undefined : v.trim())),
+    .transform((v) => (v === undefined || v === null ? undefined : String(v).trim())),
   comments: z
-    .union([z.string().max(500), z.null(), z.literal("")])
+    .union([z.string().max(500), z.number().transform((n) => String(n)), z.null(), z.literal(""), z.undefined()])
     .optional()
-    .transform((v) => (v === undefined || v === null ? undefined : v.trim())),
+    .transform((v) => (v === undefined || v === null ? undefined : String(v).trim())),
   cardUrl: z
-    .union([safeUrl, z.literal(""), z.null()])
+    .union([safeUrl, z.literal(""), z.null(), z.undefined()])
     .optional()
     .transform((v) => v || undefined),
 });
 
+const scheduleIdField = z.union([
+  z.string().trim().min(1, "Exam schedule ID cannot be empty").max(512),
+  z.object({ id: z.string().trim().min(1).max(512) }).transform((o) => o.id),
+  z.object({ examScheduleId: z.string().trim().min(1).max(512) }).transform((o) => o.examScheduleId),
+  z.object({ scheduleId: z.string().trim().min(1).max(512) }).transform((o) => o.scheduleId),
+]);
+
 const marksUpdateSchema = z.object({
-  examScheduleId: z.string().trim().min(1).max(128).optional(),
-  scheduleId: z.string().trim().min(1).max(128).optional(),
-  studentMarks: z.array(studentMarkItemSchema).max(1000),
+  examScheduleId: scheduleIdField.optional(),
+  scheduleId: scheduleIdField.optional(),
+  examId: z.string().trim().max(128).optional(),
+  studentMarks: z.array(studentMarkItemSchema).max(1000).default([]),
 });
 
 const examCycleUpdateSchema = z.object({
@@ -555,14 +580,24 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: true, exam: updated });
     }
 
-    const targetScheduleId = (body.examScheduleId || body.scheduleId) as string;
+    const rawSched = body.examScheduleId || body.scheduleId;
+    const targetScheduleId = (
+      typeof rawSched === "string"
+        ? rawSched
+        : (rawSched?.id || rawSched?.examScheduleId || rawSched?.scheduleId || "")
+    ).trim();
     if (!targetScheduleId) {
       return jsonError("Exam schedule ID is required.", 400);
     }
 
     const rawMarksList = (body.studentMarks || []) as any[];
     const studentMarks = rawMarksList.map((sm) => {
-      const studentId = (sm.studentId || sm.id || "").trim();
+      const studentId = (
+        sm.studentId ||
+        sm.id ||
+        (typeof sm.student === "string" ? sm.student : sm.student?.id) ||
+        ""
+      ).trim();
       let marksObtained = sm.marksObtained;
       if (marksObtained === undefined) {
         const alt = sm.marks !== undefined ? sm.marks : (sm.obtainedMarks !== undefined ? sm.obtainedMarks : sm.score);
@@ -583,9 +618,10 @@ export async function PUT(req: NextRequest) {
       };
     });
 
-    for (const sm of studentMarks) {
+    for (let i = 0; i < studentMarks.length; i++) {
+      const sm = studentMarks[i];
       if (!sm.studentId) {
-        return jsonError("Student ID is required for each marks record.", 400);
+        return jsonError(`Student ID is required for marks record #${i + 1}.`, 400);
       }
     }
 

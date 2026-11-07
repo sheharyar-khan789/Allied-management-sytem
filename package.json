@@ -29,6 +29,7 @@
     "test:timetable-import": "tsx scripts/timetable-import-phone-admin-test.ts",
     "test:timetable-audit": "tsx scripts/timetable-audit-fixes-test.ts",
     "test:timetable-ordering-marks": "tsx scripts/timetable-ordering-marks-validation-test.ts",
+    "test:marks-upload": "tsx scripts/marks-upload-validation-test.ts",
     "test:exams": "tsx scripts/exams-results-observations-test.ts",
     "test:teacher-observations": "tsx scripts/teacher-observations-test.ts",
     "test:fee-import": "tsx scripts/fee-import-test.ts",
@@ -43,7 +44,8 @@
     "test:subject-allocation": "tsx scripts/subject-allocation-test.ts",
     "test:documents": "tsx scripts/document-management-test.ts",
     "test:teacher-attendance": "tsx scripts/teacher-attendance-test.ts",
-    "backfill:usernames": "node scripts/backfill-teacher-usernames.mjs"
+    "backfill:usernames": "node scripts/backfill-teacher-usernames.mjs",
+    "test:teacher-email-delivery": "tsx scripts/teacher-email-delivery-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",

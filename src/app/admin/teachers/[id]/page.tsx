@@ -53,7 +53,13 @@ export default function TeacherProfilePage({
   const [editError, setEditError] = useState("");
   const [profileSuccess, setProfileSuccess] = useState("");
   const [resetLoading, setResetLoading] = useState(false);
-  const [resetNotice, setResetNotice] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [resetNotice, setResetNotice] = useState<{
+    message: string;
+    type: "success" | "warning" | "error";
+    deliveryStatus?: string;
+    channel?: string;
+    canRetry?: boolean;
+  } | null>(null);
   const [formData, setFormData] = useState({
     firstName: "",
     lastName: "",
