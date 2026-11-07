@@ -107,15 +107,29 @@ export default function MarksEntryGrid({
     setMessage("");
     setError("");
     try {
+      const resolvedScheduleId = (
+        typeof schedule === "string"
+          ? schedule
+          : (schedule?.id || schedule?.examScheduleId || schedule?.scheduleId || "")
+      ).trim();
+
+      if (!resolvedScheduleId) {
+        setError("Exam schedule ID is missing. Please select a valid schedule.");
+        setSaving(false);
+        return;
+      }
+
       const res = await fetch("/api/exams", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          examScheduleId: schedule.id,
+          examScheduleId: resolvedScheduleId,
+          scheduleId: resolvedScheduleId,
           studentMarks: dirty.map((p) => ({
-            studentId: p.row.studentId,
+            studentId: String(p.row.studentId || "").trim(),
+            id: String(p.row.studentId || "").trim(),
             marksObtained: p.value,
-            ...(p.value !== null ? { remarks: p.row.remarks.trim() } : {}),
+            remarks: p.row.remarks ? p.row.remarks.trim() : "",
           })),
         }),
       });

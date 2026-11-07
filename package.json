@@ -29,6 +29,7 @@
     "test:timetable-import": "tsx scripts/timetable-import-phone-admin-test.ts",
     "test:timetable-audit": "tsx scripts/timetable-audit-fixes-test.ts",
     "test:timetable-ordering-marks": "tsx scripts/timetable-ordering-marks-validation-test.ts",
+    "test:marks-upload": "tsx scripts/marks-upload-validation-test.ts",
     "test:exams": "tsx scripts/exams-results-observations-test.ts",
     "test:teacher-observations": "tsx scripts/teacher-observations-test.ts",
     "test:fee-import": "tsx scripts/fee-import-test.ts",
