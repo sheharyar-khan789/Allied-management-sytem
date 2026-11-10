@@ -1,4 +1,4 @@
-export type UserRole = "ADMIN" | "TEACHER" | "STUDENT";
+export type UserRole = "ADMIN" | "TEACHER" | "STUDENT" | "PARENT";
 export type UserStatus = "ACTIVE" | "INACTIVE" | "SUSPENDED";
 
 export interface School {
@@ -24,6 +24,7 @@ export interface UserProfile {
   status: UserStatus;
   teacherId?: string;
   studentId?: string;
+  studentIds?: string[];
   photoUrl?: string;
   createdAt: string;
   updatedAt: string;
@@ -48,6 +49,8 @@ export interface StudentDoc {
   guardianName: string;
   guardianPhone: string;
   guardianRelation: string;
+  guardianEmail?: string;
+  parentUserIds?: string[];
   bloodGroup?: string;
   cnic?: string;
   bForm?: string;
@@ -107,6 +110,25 @@ export interface SubjectDoc {
   updatedAt: string;
 }
 
+export interface TimetableDoc {
+  id: string; // schoolId_teacherId_day_period or uuid
+  schoolId: string;
+  teacherId: string;
+  teacherName?: string;
+  classId: string;
+  className: string;
+  subjectId?: string;
+  subjectName: string;
+  dayOfWeek: "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday";
+  periodName: string; // e.g. "Period 1"
+  startTime: string; // e.g. "08:00 AM"
+  endTime: string; // e.g. "08:45 AM"
+  roomNo?: string;
+  topic?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export type AttendanceStatus = "PRESENT" | "LATE" | "ABSENT" | "LEAVE";
 
 export interface AttendanceDoc {
@@ -150,6 +172,47 @@ export interface FeeChallanDoc {
   status: FeeStatus;
   createdAt: string;
   updatedAt: string;
+  // Automatic monthly generation (Phase 3) — optional so existing manually-created challans remain valid.
+  academicYear?: string;
+  previousOutstandingDues?: number;
+  annualFeeCharged?: number;
+  oneTimeChargesApplied?: boolean;
+  source?: "MANUAL" | "AUTO_MONTHLY";
+  yearlyStructureId?: string;
+  generationBatchId?: string;
+}
+
+export type VoucherRowAction = "CREATED" | "SKIPPED_EXISTS" | "ERROR";
+
+export interface VoucherGenerationRowResult {
+  studentId: string;
+  admissionNo: string;
+  studentName: string;
+  classId?: string;
+  className?: string;
+  action: VoucherRowAction;
+  errorReason?: string;
+  challanId?: string;
+  totalExpected?: number;
+}
+
+export interface VoucherGenerationBatchDoc {
+  id: string;
+  schoolId: string;
+  academicYear: string;
+  month: string;
+  year: number;
+  scope: "SCHOOL" | "CLASS" | "STUDENT";
+  classId?: string;
+  studentId?: string;
+  totalRows: number;
+  createdCount: number;
+  skippedCount: number;
+  errorCount: number;
+  rows: VoucherGenerationRowResult[];
+  generatedBy: string;
+  generatedByEmail: string;
+  createdAt: string;
 }
 
 export interface PaymentDoc {
@@ -166,6 +229,35 @@ export interface PaymentDoc {
   notes?: string;
   collectedBy: string;
   createdAt: string;
+  // Daily transaction import (Phase 4) — optional so existing counter-collection payments remain valid.
+  source?: "MANUAL" | "IMPORT" | "REVERSAL";
+  importBatchId?: string;
+  // Links every PaymentDoc produced by allocating ONE imported row (which may span several
+  // challans) back to that single source row, so the row's total is always reconcilable.
+  allocationGroupId?: string;
+  dedupKey?: string;
+  // Reversal (Phase 5) — correcting a wrongly applied payment never deletes the original;
+  // it adds a negative-amount PaymentDoc that references it instead.
+  reversesPaymentId?: string;
+  reversed?: boolean;
+}
+
+export interface AdvanceBalanceLedgerEntry {
+  type: "CREDIT" | "DEBIT";
+  amount: number;
+  reason: string;
+  refId: string;
+  date: string;
+}
+
+export interface AdvanceBalanceDoc {
+  id: string; // `${schoolId}__${academicYear}__${studentId}`
+  schoolId: string;
+  studentId: string;
+  academicYear: string;
+  balance: number;
+  ledger: AdvanceBalanceLedgerEntry[];
+  updatedAt: string;
 }
 
 export interface ExamDoc {
@@ -279,5 +371,159 @@ export interface SchoolSettingsDoc {
     grade: string;
     gpa: number;
   }[];
+  updatedAt: string;
+}
+
+export interface YearlyFeeStructureDoc {
+  id: string; // `${schoolId}__${academicYear}__${admissionNo}` (deterministic -> idempotent upserts)
+  schoolId: string;
+  academicYear: string;
+  studentId: string;
+  admissionNo: string;
+  studentName: string;
+  classId: string;
+  className?: string;
+  section?: string;
+  monthlyTuitionFee: number;
+  annualFee: number;
+  admissionFee: number;
+  otherCharges: number;
+  discount: number;
+  notes?: string;
+  source: "IMPORT" | "MANUAL";
+  importBatchId?: string;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export type ImportBatchType = "YEARLY_FEE_STRUCTURE" | "DAILY_TRANSACTIONS";
+
+export type ImportRowAction =
+  | "CREATED"
+  | "UPDATED"
+  | "UNCHANGED"
+  | "ALLOCATED"
+  | "DUPLICATE_IN_FILE"
+  | "DUPLICATE_EXISTS"
+  | "ERROR";
+
+export interface ImportBatchRowResult {
+  rowNumber: number;
+  admissionNo: string;
+  studentName?: string;
+  action: ImportRowAction;
+  errorReason?: string;
+  previousValues?: Record<string, number>;
+  newValues?: Record<string, number>;
+  details?: Record<string, any>;
+}
+
+export interface ImportBatchDoc {
+  id: string;
+  schoolId: string;
+  type: ImportBatchType;
+  academicYear: string;
+  fileName: string;
+  totalRows: number;
+  createdCount: number;
+  updatedCount: number;
+  unchangedCount: number;
+  errorCount: number;
+  rows: ImportBatchRowResult[];
+  uploadedBy: string;
+  uploadedByEmail: string;
+  createdAt: string;
+}
+
+export type OtherCollectionCategory = "REGISTRATION" | "CERTIFICATE" | "FINE" | "EVENT" | "OTHER";
+
+export interface OtherCollectionDoc {
+  id: string;
+  schoolId: string;
+  date: string;
+  category: OtherCollectionCategory;
+  description: string;
+  amount: number;
+  paymentMethod?: "CASH" | "BANK_TRANSFER" | "ONLINE" | "CHEQUE";
+  reference?: string;
+  createdBy: string;
+  createdByEmail: string;
+  createdAt: string;
+  updatedAt: string;
+  reversed?: boolean;
+  reversedReason?: string;
+  reversedBy?: string;
+  reversedAt?: string;
+}
+
+export type OtherExpenseCategory = "ELECTRICITY" | "MAINTENANCE" | "STATIONERY" | "STAFF" | "TRANSPORT" | "OTHER";
+
+export interface OtherExpenseDoc {
+  id: string;
+  schoolId: string;
+  date: string;
+  category: OtherExpenseCategory;
+  description: string;
+  amount: number;
+  paymentMethod?: "CASH" | "BANK_TRANSFER" | "ONLINE" | "CHEQUE";
+  reference?: string;
+  createdBy: string;
+  createdByEmail: string;
+  createdAt: string;
+  updatedAt: string;
+  reversed?: boolean;
+  reversedReason?: string;
+  reversedBy?: string;
+  reversedAt?: string;
+}
+
+export type FeeAdjustmentType =
+  | "MONTHLY_FEE_CHANGE"
+  | "ANNUAL_FEE_CHANGE"
+  | "ADMISSION_FEE_CHANGE"
+  | "OTHER_CHARGES_CHANGE"
+  | "DISCOUNT_CHANGE"
+  | "ADDITIONAL_CHARGE"
+  | "CONCESSION"
+  | "PREVIOUS_BALANCE_CORRECTION"
+  | "PAYMENT_REVERSAL";
+
+export interface FeeAdjustmentDoc {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  admissionNo: string;
+  studentName: string;
+  academicYear: string;
+  effectiveDate: string;
+  adjustmentType: FeeAdjustmentType;
+  // For structure-level changes (fee amounts): previousValue/newValue are the full field values.
+  // For voucher-level one-off adjustments: previousValue/newValue are the voucher's totalExpected
+  // before/after, and challanId identifies which voucher.
+  previousValue: number;
+  newValue: number;
+  challanId?: string;
+  reason: string;
+  adminUserId: string;
+  adminEmail: string;
+  createdAt: string;
+}
+
+export type AnnouncementAudience = "EVERYONE" | "TEACHERS" | "STUDENTS" | "PARENTS";
+export type AnnouncementStatus = "DRAFT" | "PUBLISHED";
+
+export interface AnnouncementDoc {
+  id: string;
+  schoolId: string;
+  title: string;
+  message: string;
+  audience: AnnouncementAudience;
+  status: AnnouncementStatus;
+  publishedAt?: string;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: string;
   updatedAt: string;
 }

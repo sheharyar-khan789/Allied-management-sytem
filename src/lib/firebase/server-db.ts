@@ -18,6 +18,17 @@ import {
   LockedRecordDoc,
   AuditLogDoc,
   SchoolSettingsDoc,
+  TimetableDoc,
+  AnnouncementDoc,
+  YearlyFeeStructureDoc,
+  ImportBatchDoc,
+  ImportBatchType,
+  VoucherGenerationBatchDoc,
+  AdvanceBalanceDoc,
+  AdvanceBalanceLedgerEntry,
+  FeeAdjustmentDoc,
+  OtherCollectionDoc,
+  OtherExpenseDoc,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -38,6 +49,15 @@ const localStore: {
   studentObservations: Map<string, StudentObservationDoc>;
   lockedRecords: Map<string, LockedRecordDoc>;
   auditLogs: Map<string, AuditLogDoc>;
+  timetables: Map<string, TimetableDoc>;
+  announcements: Map<string, AnnouncementDoc>;
+  yearlyFeeStructures: Map<string, YearlyFeeStructureDoc>;
+  importBatches: Map<string, ImportBatchDoc>;
+  voucherGenerationBatches: Map<string, VoucherGenerationBatchDoc>;
+  advanceBalances: Map<string, AdvanceBalanceDoc>;
+  feeAdjustments: Map<string, FeeAdjustmentDoc>;
+  otherCollections: Map<string, OtherCollectionDoc>;
+  otherExpenses: Map<string, OtherExpenseDoc>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -55,6 +75,15 @@ const localStore: {
   studentObservations: new Map(),
   lockedRecords: new Map(),
   auditLogs: new Map(),
+  timetables: new Map(),
+  announcements: new Map(),
+  yearlyFeeStructures: new Map(),
+  importBatches: new Map(),
+  voucherGenerationBatches: new Map(),
+  advanceBalances: new Map(),
+  feeAdjustments: new Map(),
+  otherCollections: new Map(),
+  otherExpenses: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -62,6 +91,13 @@ export function assertProductionDbReady() {
     throw new Error(
       "Critical: Cloud Firestore database connection not initialized. Server-side Firebase credentials (FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY) must be properly configured in production environment."
     );
+  }
+}
+
+export function onFirestoreError(operation: string, error: any): void {
+  console.error(`[Firestore Error] ${operation} failed:`, error);
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(`Database error during ${operation}: ${error?.message || "Operation failed"}`);
   }
 }
 
@@ -142,6 +178,18 @@ localStore.users.set("student@alliedschool.edu", {
   updatedAt: now,
 });
 
+localStore.users.set("parent@alliedschool.edu", {
+  uid: "usr-parent-1",
+  email: "parent@alliedschool.edu",
+  name: "Muhammad Khan",
+  role: "PARENT",
+  schoolId: DEFAULT_SCHOOL,
+  studentIds: ["std-1"],
+  status: "ACTIVE",
+  createdAt: now,
+  updatedAt: now,
+});
+
 // Seed classes
 const classesData: ClassDoc[] = [
   { id: "cls-10a", schoolId: DEFAULT_SCHOOL, name: "Class 10-A", section: "A", numericLevel: 10, capacity: 40, roomNo: "R-101", classTeacherId: "tch-1", classTeacherName: "Prof. Muhammad Ali", academicYear: "2024-2025", createdAt: now, updatedAt: now },
@@ -201,6 +249,8 @@ localStore.students.set("std-1", {
   guardianName: "Muhammad Khan",
   guardianPhone: "+92 300 9990001",
   guardianRelation: "Father",
+  guardianEmail: "parent@alliedschool.edu",
+  parentUserIds: ["usr-parent-1"],
   bloodGroup: "B+",
   monthlyFee: 6000,
   discount: 0,
@@ -283,7 +333,9 @@ export async function createAuditLogServer(
     try {
       const docRef = adminDb.collection("auditLogs").doc(id);
       await docRef.set(data);
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`createAuditLogServer(${id})`, e);
+    }
   }
 }
 
@@ -296,7 +348,9 @@ export async function getAuditLogsServer(schoolId: string, maxLimit = 50): Promi
         .get();
       const logs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLogDoc));
       return logs.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getAuditLogsServer(${schoolId})`, e);
+    }
   }
 
   const logs = Array.from(localStore.auditLogs.values()).filter((l) => l.schoolId === schoolId);
@@ -311,9 +365,25 @@ export async function getSchoolServer(schoolId: string): Promise<School | null> 
     try {
       const doc = await adminDb.collection("schools").doc(schoolId).get();
       if (doc.exists) return { id: doc.id, ...doc.data() } as School;
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getSchoolServer(${schoolId})`, e);
+    }
   }
   return localStore.schools.get(schoolId) || null;
+}
+
+export async function saveSchoolServer(school: School): Promise<void> {
+  localStore.schools.set(school.id, school);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("schools").doc(school.id).set({
+        ...school,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+    } catch (e) {
+      onFirestoreError(`saveSchoolServer(${school.id})`, e);
+    }
+  }
 }
 
 export async function getSchoolSettingsServer(schoolId: string): Promise<SchoolSettingsDoc | null> {
@@ -321,7 +391,9 @@ export async function getSchoolSettingsServer(schoolId: string): Promise<SchoolS
     try {
       const doc = await adminDb.collection("schoolSettings").doc(schoolId).get();
       if (doc.exists) return { id: doc.id, ...doc.data() } as SchoolSettingsDoc;
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getSchoolSettingsServer(${schoolId})`, e);
+    }
   }
   return localStore.settings.get(schoolId) || null;
 }
@@ -334,7 +406,9 @@ export async function updateSchoolSettingsServer(settings: SchoolSettingsDoc): P
         ...settings,
         updatedAt: new Date().toISOString()
       }, { merge: true });
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`updateSchoolSettingsServer(${settings.schoolId})`, e);
+    }
   }
 }
 
@@ -353,6 +427,7 @@ export async function getUserByEmailServer(email: string): Promise<UserProfile |
       }
       if (process.env.NODE_ENV === "production") return null;
     } catch (e) {
+      onFirestoreError(`getUserByEmailServer(${email})`, e);
       if (process.env.NODE_ENV === "production") throw e;
     }
   }
@@ -371,6 +446,7 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
       if (doc.exists) return { uid: doc.id, ...doc.data() } as UserProfile;
       if (process.env.NODE_ENV === "production") return null;
     } catch (e) {
+      onFirestoreError(`getUserByIdServer(${uid})`, e);
       if (process.env.NODE_ENV === "production") throw e;
     }
   }
@@ -382,11 +458,36 @@ export async function getUserByIdServer(uid: string): Promise<UserProfile | null
 }
 
 export async function createUserServer(user: UserProfile): Promise<void> {
-  localStore.users.set(user.email, user);
+  localStore.users.set(user.email.toLowerCase().trim(), user);
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("users").doc(user.uid).set(user);
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`createUserServer(${user.uid})`, e);
+    }
+  }
+}
+
+export async function updateUserServer(user: UserProfile): Promise<void> {
+  const merged: UserProfile = {
+    ...user,
+    email: user.email.toLowerCase().trim(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  for (const [key, existing] of localStore.users.entries()) {
+    if (existing.uid === merged.uid) {
+      localStore.users.delete(key);
+    }
+  }
+  localStore.users.set(merged.email, merged);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("users").doc(merged.uid).set(merged, { merge: true });
+    } catch (e) {
+      onFirestoreError(`updateUserServer(${merged.uid})`, e);
+    }
   }
 }
 
@@ -396,7 +497,9 @@ export async function createUserServer(user: UserProfile): Promise<void> {
 export async function getStudentsServer(
   schoolId: string,
   classId?: string,
-  search?: string
+  search?: string,
+  maxLimit?: number,
+  status?: string
 ): Promise<StudentDoc[]> {
   assertProductionDbReady();
   let students: StudentDoc[] = [];
@@ -404,6 +507,8 @@ export async function getStudentsServer(
     try {
       let ref = adminDb.collection("students").where("schoolId", "==", schoolId);
       if (classId && classId !== "ALL") ref = ref.where("classId", "==", classId);
+      if (status && status.toUpperCase() !== "ALL") ref = ref.where("status", "==", status);
+      if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, 250));
       const snap = await ref.get();
       students = snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentDoc));
     } catch (e) {
@@ -416,6 +521,9 @@ export async function getStudentsServer(
     if (classId && classId !== "ALL") {
       students = students.filter((s) => s.classId === classId);
     }
+    if (status && status.toUpperCase() !== "ALL") {
+      students = students.filter((s) => s.status === status);
+    }
   }
 
   if (search) {
@@ -427,7 +535,8 @@ export async function getStudentsServer(
         st.rollNo.toLowerCase().includes(s)
     );
   }
-  return students.sort((a, b) => a.fullName.localeCompare(b.fullName));
+  const sorted = students.sort((a, b) => a.fullName.localeCompare(b.fullName));
+  return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
 }
 
 export async function getStudentByIdServer(schoolId: string, studentId: string): Promise<StudentDoc | null> {
@@ -448,6 +557,30 @@ export async function getStudentByIdServer(schoolId: string, studentId: string):
   const local = localStore.students.get(studentId);
   if (local && local.schoolId === schoolId) return local;
   return null;
+}
+
+export async function getStudentsByParentUserIdServer(
+  schoolId: string,
+  parentUid: string
+): Promise<StudentDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("students")
+        .where("schoolId", "==", schoolId)
+        .where("parentUserIds", "array-contains", parentUid)
+        .get();
+      if (!snap.empty) {
+        return snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentDoc));
+      }
+    } catch (e) {
+      onFirestoreError(`getStudentsByParentUserIdServer(${parentUid})`, e);
+    }
+  }
+
+  return Array.from(localStore.students.values()).filter(
+    (st) => st.schoolId === schoolId && Array.isArray(st.parentUserIds) && st.parentUserIds.includes(parentUid)
+  );
 }
 
 export async function getStudentByUserIdServer(schoolId: string, userId: string): Promise<StudentDoc | null> {
@@ -484,7 +617,9 @@ export async function saveStudentServer(student: StudentDoc): Promise<string> {
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("students").doc(id).set(data, { merge: true });
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`saveStudentServer(${id})`, e);
+    }
   }
   return id;
 }
@@ -498,7 +633,9 @@ export async function getTeachersServer(schoolId: string): Promise<TeacherDoc[]>
       const snap = await adminDb.collection("teachers").where("schoolId", "==", schoolId).get();
       const teachers = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherDoc));
       if (teachers.length > 0) return teachers.sort((a, b) => a.fullName.localeCompare(b.fullName));
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getTeachersServer(${schoolId})`, e);
+    }
   }
 
   const local = Array.from(localStore.teachers.values()).filter((t) => t.schoolId === schoolId);
@@ -513,7 +650,9 @@ export async function getTeacherByIdServer(schoolId: string, teacherId: string):
         const data = { id: doc.id, ...doc.data() } as TeacherDoc;
         if (data.schoolId === schoolId) return data;
       }
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getTeacherByIdServer(${teacherId})`, e);
+    }
   }
 
   const local = localStore.teachers.get(teacherId);
@@ -534,7 +673,9 @@ export async function saveTeacherServer(teacher: TeacherDoc): Promise<string> {
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("teachers").doc(id).set(data, { merge: true });
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`saveTeacherServer(${id})`, e);
+    }
   }
   return id;
 }
@@ -548,7 +689,9 @@ export async function getClassesServer(schoolId: string): Promise<ClassDoc[]> {
       const snap = await adminDb.collection("classes").where("schoolId", "==", schoolId).get();
       const classes = snap.docs.map((d) => ({ id: d.id, ...d.data() } as ClassDoc));
       if (classes.length > 0) return classes.sort((a, b) => a.name.localeCompare(b.name));
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getClassesServer(${schoolId})`, e);
+    }
   }
 
   const local = Array.from(localStore.classes.values()).filter((c) => c.schoolId === schoolId);
@@ -568,7 +711,9 @@ export async function saveClassServer(classData: ClassDoc): Promise<string> {
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("classes").doc(id).set(data, { merge: true });
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`saveClassServer(${id})`, e);
+    }
   }
   return id;
 }
@@ -584,12 +729,64 @@ export async function getSubjectsServer(schoolId: string, classId?: string): Pro
       const snap = await ref.get();
       const subjects = snap.docs.map((d) => ({ id: d.id, ...d.data() } as SubjectDoc));
       if (subjects.length > 0) return subjects.sort((a, b) => a.name.localeCompare(b.name));
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getSubjectsServer(${schoolId})`, e);
+    }
   }
 
   let list = Array.from(localStore.subjects.values()).filter((s) => s.schoolId === schoolId);
   if (classId && classId !== "ALL") list = list.filter((s) => s.classId === classId);
   return list.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// ---------------------------------------------------------------------------
+// TIMETABLE & DAILY SCHEDULE
+// ---------------------------------------------------------------------------
+export async function getTimetableServer(
+  schoolId: string,
+  teacherId?: string,
+  classId?: string,
+  dayOfWeek?: string
+): Promise<TimetableDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      let ref = adminDb.collection("timetables").where("schoolId", "==", schoolId);
+      if (teacherId) ref = ref.where("teacherId", "==", teacherId);
+      if (classId) ref = ref.where("classId", "==", classId);
+      if (dayOfWeek && dayOfWeek !== "All") ref = ref.where("dayOfWeek", "==", dayOfWeek);
+      const snap = await ref.get();
+      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TimetableDoc));
+      return items.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+    } catch (e) {
+      onFirestoreError(`getTimetableServer(${schoolId})`, e);
+    }
+  }
+
+  let list = Array.from(localStore.timetables.values()).filter((t) => t.schoolId === schoolId);
+  if (teacherId) list = list.filter((t) => t.teacherId === teacherId);
+  if (classId) list = list.filter((t) => t.classId === classId);
+  if (dayOfWeek && dayOfWeek !== "All") list = list.filter((t) => t.dayOfWeek === dayOfWeek);
+  return list.sort((a, b) => (a.startTime || "").localeCompare(b.startTime || ""));
+}
+
+export async function saveTimetableEntryServer(entry: TimetableDoc): Promise<string> {
+  const id = entry.id || `tt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const data: TimetableDoc = {
+    ...entry,
+    id,
+    updatedAt: new Date().toISOString(),
+    createdAt: entry.createdAt || new Date().toISOString()
+  };
+  localStore.timetables.set(id, data);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("timetables").doc(id).set(data, { merge: true });
+    } catch (e) {
+      onFirestoreError(`saveTimetableEntryServer(${id})`, e);
+    }
+  }
+  return id;
 }
 
 // ---------------------------------------------------------------------------
@@ -609,7 +806,9 @@ export async function getAttendanceServer(
       if (studentId) ref = ref.where("studentId", "==", studentId);
       const snap = await ref.get();
       return snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceDoc));
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getAttendanceServer(${schoolId})`, e);
+    }
   }
 
   let list = Array.from(localStore.attendance.values()).filter((a) => a.schoolId === schoolId);
@@ -636,7 +835,9 @@ export async function saveAttendanceRecordServer(record: AttendanceDoc): Promise
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("attendance").doc(id).set(data, { merge: true });
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`saveAttendanceRecordServer(${id})`, e);
+    }
   }
   return id;
 }
@@ -654,7 +855,9 @@ export async function saveAttendanceBulkServer(
       if (hasAdminCredentials) {
         try {
           await adminDb.collection("attendance").doc(doc.id).set(doc, { merge: true });
-        } catch {}
+        } catch (e) {
+          onFirestoreError(`saveAttendanceBulkServer(${doc.id})`, e);
+        }
       }
       count++;
     }
@@ -681,7 +884,9 @@ export async function saveAttendanceBulkServer(
       if (hasAdminCredentials) {
         try {
           await adminDb.collection("attendance").doc(id).set(doc, { merge: true });
-        } catch {}
+        } catch (e) {
+          onFirestoreError(`saveAttendanceBulkServer(${id})`, e);
+        }
       }
       count++;
     }
@@ -697,7 +902,9 @@ export async function getFeeChallansServer(
   studentId?: string,
   month?: string,
   year?: number,
-  status?: string
+  status?: string,
+  maxLimit?: number,
+  academicYear?: string
 ): Promise<FeeChallanDoc[]> {
   if (hasAdminCredentials) {
     try {
@@ -705,25 +912,58 @@ export async function getFeeChallansServer(
       if (studentId) ref = ref.where("studentId", "==", studentId);
       if (month) ref = ref.where("month", "==", month);
       if (year) ref = ref.where("year", "==", year);
-      if (status && status !== "ALL") ref = ref.where("status", "==", status);
+      if (status && status.toUpperCase() !== "ALL") ref = ref.where("status", "==", status);
+      if (academicYear) ref = ref.where("academicYear", "==", academicYear);
+      if (maxLimit && maxLimit > 0) ref = ref.limit(Math.min(maxLimit, 250));
       const snap = await ref.get();
       return snap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeChallanDoc));
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getFeeChallansServer(${schoolId})`, e);
+    }
   }
 
   let list = Array.from(localStore.feeChallans.values()).filter((f) => f.schoolId === schoolId);
   if (studentId) list = list.filter((f) => f.studentId === studentId);
   if (month) list = list.filter((f) => f.month.toLowerCase() === month.toLowerCase());
   if (year) list = list.filter((f) => f.year === year);
-  if (status && status !== "ALL") list = list.filter((f) => f.status === status);
-  return list.sort((a, b) => b.dueDate.localeCompare(a.dueDate));
+  if (status && status.toUpperCase() !== "ALL") list = list.filter((f) => f.status === status);
+  if (academicYear) list = list.filter((f) => f.academicYear === academicYear);
+  const sorted = list.sort((a, b) => b.dueDate.localeCompare(a.dueDate));
+  return maxLimit && maxLimit > 0 ? sorted.slice(0, Math.min(maxLimit, 250)) : sorted;
 }
 
 export async function getStudentFeeChallansServer(schoolId: string, studentId: string): Promise<FeeChallanDoc[]> {
   return getFeeChallansServer(schoolId, studentId);
 }
 
+export async function getFeeChallanByIdServer(schoolId: string, challanId: string): Promise<FeeChallanDoc | null> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("feeChallans").doc(challanId).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as FeeChallanDoc;
+        if (data.schoolId === schoolId) {
+          return data;
+        }
+        return null;
+      }
+      return null;
+    } catch (e) {
+      onFirestoreError(`getFeeChallanByIdServer(${challanId})`, e);
+      return null;
+    }
+  }
+
+  const challan = localStore.feeChallans.get(challanId);
+  if (challan && challan.schoolId === schoolId) {
+    return challan;
+  }
+  return null;
+}
+
 export async function saveFeeChallanServer(challan: FeeChallanDoc): Promise<string> {
+  assertProductionDbReady();
   const id = challan.id || `ch-${Date.now()}`;
   const data: FeeChallanDoc = {
     ...challan,
@@ -736,7 +976,9 @@ export async function saveFeeChallanServer(challan: FeeChallanDoc): Promise<stri
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("feeChallans").doc(id).set(data, { merge: true });
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`saveFeeChallanServer(${id})`, e);
+    }
   }
   return id;
 }
@@ -750,66 +992,106 @@ export async function recordFeePaymentServer(
   arg6?: any,
   arg7?: any
 ): Promise<PaymentDoc> {
+  assertProductionDbReady();
+  let payment: PaymentDoc;
+  let schoolId: string;
+  let challanId: string;
+  let amount: number;
+
   if (typeof arg1 === "object" && arg1 !== null && arg1.challanId) {
-    const payment = arg1 as PaymentDoc;
-    localStore.payments.set(payment.id, payment);
-
-    const challan = localStore.feeChallans.get(payment.challanId);
-    if (challan) {
-      challan.paidAmount = (challan.paidAmount || 0) + payment.amount;
-      challan.balanceAmount = Math.max(0, challan.totalExpected - challan.paidAmount);
-      if (challan.balanceAmount === 0) {
-        challan.status = "PAID";
-      } else if (challan.paidAmount > 0) {
-        challan.status = "PARTIAL";
-      }
-      challan.updatedAt = new Date().toISOString();
-      localStore.feeChallans.set(payment.challanId, challan);
-    }
-
-    if (hasAdminCredentials) {
-      try {
-        await adminDb.collection("payments").doc(payment.id).set(payment);
-        if (challan) {
-          await adminDb.collection("feeChallans").doc(payment.challanId).set(challan, { merge: true });
-        }
-      } catch {}
-    }
-    return payment;
+    payment = arg1 as PaymentDoc;
+    schoolId = payment.schoolId;
+    challanId = payment.challanId;
+    amount = Number(payment.amount);
+  } else {
+    schoolId = arg1;
+    challanId = arg2;
+    amount = Number(arg3);
+    const paymentMode = arg4 || "CASH";
+    const transactionRef = arg5;
+    const notes = arg6;
+    const collectedBy = arg7 || "Cashier";
+    const paymentId = `pmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    payment = {
+      id: paymentId,
+      schoolId,
+      challanId,
+      studentId: "placeholder",
+      receiptNo: `REC-${Date.now().toString().slice(-6)}`,
+      amount,
+      paymentDate: new Date().toISOString().split("T")[0],
+      paymentMode,
+      transactionRef,
+      notes,
+      collectedBy,
+      createdAt: new Date().toISOString(),
+    };
   }
 
-  const schoolId = arg1;
-  const challanId = arg2;
-  const amount = arg3;
-  const paymentMode = arg4 || "CASH";
-  const transactionRef = arg5;
-  const notes = arg6;
-  const collectedBy = arg7 || "Cashier";
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.runTransaction(async (transaction) => {
+        const challanRef = adminDb.collection("feeChallans").doc(challanId);
+        const challanSnap = await transaction.get(challanRef);
 
+        if (!challanSnap.exists) {
+          throw new Error("Fee challan record not found.");
+        }
+
+        const challanData = challanSnap.data() as FeeChallanDoc;
+        if (challanData.schoolId !== schoolId) {
+          throw new Error("Unauthorized: Target challan belongs to a different institution.");
+        }
+
+        // Derive actual student identity from target challan (P0-2)
+        payment.studentId = challanData.studentId;
+        payment.studentName = challanData.studentName;
+
+        const newPaid = (challanData.paidAmount || 0) + amount;
+        const newBalance = Math.max(0, (challanData.totalExpected || 0) - newPaid);
+        let newStatus: FeeStatus = "PARTIAL";
+        if (newBalance === 0) {
+          newStatus = "PAID";
+        } else if (newPaid <= 0) {
+          newStatus = "PENDING";
+        }
+
+        const updatedChallan: Partial<FeeChallanDoc> = {
+          paidAmount: newPaid,
+          balanceAmount: newBalance,
+          status: newStatus,
+          updatedAt: new Date().toISOString(),
+        };
+
+        const paymentRef = adminDb.collection("payments").doc(payment.id);
+        transaction.set(paymentRef, payment);
+        transaction.set(challanRef, updatedChallan, { merge: true });
+
+        localStore.payments.set(payment.id, payment);
+        localStore.feeChallans.set(challanId, { ...challanData, ...updatedChallan });
+      });
+
+      return payment;
+    } catch (e: any) {
+      onFirestoreError(`recordFeePaymentServer(${challanId})`, e);
+      throw e;
+    }
+  }
+
+  // Non-production fallback
   const challan = localStore.feeChallans.get(challanId);
-  if (!challan) throw new Error("Challan not found");
+  if (!challan) throw new Error("Fee challan not found.");
+  if (challan.schoolId !== schoolId) {
+    throw new Error("Unauthorized: Target challan belongs to a different institution.");
+  }
 
-  const paymentId = `pmt-${Date.now()}`;
-  const payment: PaymentDoc = {
-    id: paymentId,
-    schoolId,
-    challanId,
-    studentId: challan.studentId,
-    studentName: challan.studentName,
-    receiptNo: `REC-${Date.now().toString().slice(-6)}`,
-    amount,
-    paymentDate: new Date().toISOString(),
-    paymentMode,
-    transactionRef,
-    notes,
-    collectedBy,
-    createdAt: new Date().toISOString()
-  };
-  localStore.payments.set(paymentId, payment);
+  payment.studentId = challan.studentId;
+  payment.studentName = challan.studentName;
+  localStore.payments.set(payment.id, payment);
 
-  // Update challan paid amount and balance
-  challan.paidAmount = (challan.paidAmount || 0) + amount;
-  challan.balanceAmount = Math.max(0, challan.totalExpected - challan.paidAmount);
+  const newPaid = (challan.paidAmount || 0) + amount;
+  challan.paidAmount = newPaid;
+  challan.balanceAmount = Math.max(0, challan.totalExpected - newPaid);
   if (challan.balanceAmount === 0) {
     challan.status = "PAID";
   } else if (challan.paidAmount > 0) {
@@ -818,26 +1100,750 @@ export async function recordFeePaymentServer(
   challan.updatedAt = new Date().toISOString();
   localStore.feeChallans.set(challanId, challan);
 
-  if (hasAdminCredentials) {
-    try {
-      await adminDb.collection("payments").doc(paymentId).set(payment);
-      await adminDb.collection("feeChallans").doc(challanId).set(challan, { merge: true });
-    } catch {}
-  }
-
   return payment;
 }
 
 export const recordPaymentServer = recordFeePaymentServer;
 
-export async function getPaymentsServer(schoolId: string): Promise<PaymentDoc[]> {
+export async function getPaymentsServer(schoolId: string, studentId?: string): Promise<PaymentDoc[]> {
   if (hasAdminCredentials) {
     try {
-      const snap = await adminDb.collection("payments").where("schoolId", "==", schoolId).get();
+      let ref = adminDb.collection("payments").where("schoolId", "==", schoolId);
+      if (studentId) ref = ref.where("studentId", "==", studentId);
+      const snap = await ref.get();
       return snap.docs.map((d) => ({ id: d.id, ...d.data() } as PaymentDoc));
     } catch {}
   }
-  return Array.from(localStore.payments.values()).filter((p) => p.schoolId === schoolId);
+  let list = Array.from(localStore.payments.values()).filter((p) => p.schoolId === schoolId);
+  if (studentId) list = list.filter((p) => p.studentId === studentId);
+  return list.sort((a, b) => (b.paymentDate || "").localeCompare(a.paymentDate || ""));
+}
+
+export async function getPaymentsByStudentServer(schoolId: string, studentId: string): Promise<PaymentDoc[]> {
+  return getPaymentsServer(schoolId, studentId);
+}
+
+// ---------------------------------------------------------------------------
+// YEARLY FEE STRUCTURE
+// ---------------------------------------------------------------------------
+export function yearlyFeeStructureId(schoolId: string, academicYear: string, admissionNo: string): string {
+  return `${schoolId}__${academicYear}__${admissionNo.trim().toUpperCase()}`;
+}
+
+export async function getYearlyFeeStructuresServer(
+  schoolId: string,
+  academicYear: string
+): Promise<YearlyFeeStructureDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("yearlyFeeStructures")
+        .where("schoolId", "==", schoolId)
+        .where("academicYear", "==", academicYear)
+        .get();
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as YearlyFeeStructureDoc));
+    } catch (e) {
+      onFirestoreError(`getYearlyFeeStructuresServer(${schoolId})`, e);
+    }
+  }
+  return Array.from(localStore.yearlyFeeStructures.values()).filter(
+    (f) => f.schoolId === schoolId && f.academicYear === academicYear
+  );
+}
+
+export async function getYearlyFeeStructureServer(
+  schoolId: string,
+  academicYear: string,
+  admissionNo: string
+): Promise<YearlyFeeStructureDoc | null> {
+  const id = yearlyFeeStructureId(schoolId, academicYear, admissionNo);
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("yearlyFeeStructures").doc(id).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as YearlyFeeStructureDoc;
+        if (data.schoolId === schoolId) return data;
+      }
+      return null;
+    } catch (e) {
+      onFirestoreError(`getYearlyFeeStructureServer(${id})`, e);
+      return null;
+    }
+  }
+  const local = localStore.yearlyFeeStructures.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+export async function saveYearlyFeeStructureServer(doc: YearlyFeeStructureDoc): Promise<string> {
+  assertProductionDbReady();
+  localStore.yearlyFeeStructures.set(doc.id, doc);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("yearlyFeeStructures").doc(doc.id).set(doc, { merge: true });
+    } catch (e) {
+      onFirestoreError(`saveYearlyFeeStructureServer(${doc.id})`, e);
+    }
+  }
+  return doc.id;
+}
+
+// Writes many yearly fee structure docs idempotently in Firestore batches of <=400 writes,
+// safely within Firestore's 500-operation batch limit.
+export async function commitYearlyFeeStructureDocsServer(docs: YearlyFeeStructureDoc[]): Promise<void> {
+  assertProductionDbReady();
+  docs.forEach((d) => localStore.yearlyFeeStructures.set(d.id, d));
+
+  if (!hasAdminCredentials) return;
+  try {
+    const chunkSize = 400;
+    for (let i = 0; i < docs.length; i += chunkSize) {
+      const chunk = docs.slice(i, i + chunkSize);
+      const batch = adminDb.batch();
+      chunk.forEach((d) => {
+        batch.set(adminDb.collection("yearlyFeeStructures").doc(d.id), d, { merge: true });
+      });
+      await batch.commit();
+    }
+  } catch (e) {
+    onFirestoreError("commitYearlyFeeStructureDocsServer", e);
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// IMPORT BATCHES (audit trail for yearly fee structure / daily transaction imports)
+// ---------------------------------------------------------------------------
+export async function saveImportBatchServer(doc: ImportBatchDoc): Promise<string> {
+  assertProductionDbReady();
+  localStore.importBatches.set(doc.id, doc);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("importBatches").doc(doc.id).set(doc);
+    } catch (e) {
+      onFirestoreError(`saveImportBatchServer(${doc.id})`, e);
+    }
+  }
+  return doc.id;
+}
+
+export async function getImportBatchesServer(
+  schoolId: string,
+  type: ImportBatchType,
+  academicYear?: string
+): Promise<ImportBatchDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      let ref = adminDb.collection("importBatches").where("schoolId", "==", schoolId).where("type", "==", type);
+      if (academicYear) ref = ref.where("academicYear", "==", academicYear);
+      const snap = await ref.get();
+      return snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as ImportBatchDoc))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    } catch (e) {
+      onFirestoreError(`getImportBatchesServer(${schoolId})`, e);
+    }
+  }
+  let list = Array.from(localStore.importBatches.values()).filter((b) => b.schoolId === schoolId && b.type === type);
+  if (academicYear) list = list.filter((b) => b.academicYear === academicYear);
+  return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function getImportBatchByIdServer(schoolId: string, id: string): Promise<ImportBatchDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("importBatches").doc(id).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as ImportBatchDoc;
+        if (data.schoolId === schoolId) return data;
+      }
+      return null;
+    } catch (e) {
+      onFirestoreError(`getImportBatchByIdServer(${id})`, e);
+      return null;
+    }
+  }
+  const local = localStore.importBatches.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+// ---------------------------------------------------------------------------
+// MONTHLY VOUCHER GENERATION (Phase 3)
+// ---------------------------------------------------------------------------
+// Writes many generated FeeChallanDocs idempotently in Firestore batches of <=400 writes.
+export async function commitFeeChallanDocsServer(docs: FeeChallanDoc[]): Promise<void> {
+  assertProductionDbReady();
+  docs.forEach((d) => localStore.feeChallans.set(d.id, d));
+
+  if (!hasAdminCredentials) return;
+  try {
+    const chunkSize = 400;
+    for (let i = 0; i < docs.length; i += chunkSize) {
+      const chunk = docs.slice(i, i + chunkSize);
+      const batch = adminDb.batch();
+      chunk.forEach((d) => {
+        batch.set(adminDb.collection("feeChallans").doc(d.id), d, { merge: true });
+      });
+      await batch.commit();
+    }
+  } catch (e) {
+    onFirestoreError("commitFeeChallanDocsServer", e);
+    throw e;
+  }
+}
+
+export async function saveVoucherGenerationBatchServer(doc: VoucherGenerationBatchDoc): Promise<string> {
+  assertProductionDbReady();
+  localStore.voucherGenerationBatches.set(doc.id, doc);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("voucherGenerationBatches").doc(doc.id).set(doc);
+    } catch (e) {
+      onFirestoreError(`saveVoucherGenerationBatchServer(${doc.id})`, e);
+    }
+  }
+  return doc.id;
+}
+
+export async function getVoucherGenerationBatchesServer(
+  schoolId: string,
+  academicYear?: string
+): Promise<VoucherGenerationBatchDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      let ref = adminDb.collection("voucherGenerationBatches").where("schoolId", "==", schoolId);
+      if (academicYear) ref = ref.where("academicYear", "==", academicYear);
+      const snap = await ref.get();
+      return snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as VoucherGenerationBatchDoc))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    } catch (e) {
+      onFirestoreError(`getVoucherGenerationBatchesServer(${schoolId})`, e);
+    }
+  }
+  let list = Array.from(localStore.voucherGenerationBatches.values()).filter((b) => b.schoolId === schoolId);
+  if (academicYear) list = list.filter((b) => b.academicYear === academicYear);
+  return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function getVoucherGenerationBatchByIdServer(
+  schoolId: string,
+  id: string
+): Promise<VoucherGenerationBatchDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("voucherGenerationBatches").doc(id).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as VoucherGenerationBatchDoc;
+        if (data.schoolId === schoolId) return data;
+      }
+      return null;
+    } catch (e) {
+      onFirestoreError(`getVoucherGenerationBatchByIdServer(${id})`, e);
+      return null;
+    }
+  }
+  const local = localStore.voucherGenerationBatches.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+// ---------------------------------------------------------------------------
+// ADVANCE BALANCES (Phase 4) — money a student has paid beyond their current dues,
+// held per academic year and consumed automatically as future vouchers are generated.
+// ---------------------------------------------------------------------------
+export function advanceBalanceId(schoolId: string, studentId: string, academicYear: string): string {
+  return `${schoolId}__${academicYear}__${studentId}`;
+}
+
+export async function getAdvanceBalanceServer(
+  schoolId: string,
+  studentId: string,
+  academicYear: string
+): Promise<AdvanceBalanceDoc | null> {
+  const id = advanceBalanceId(schoolId, studentId, academicYear);
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("advanceBalances").doc(id).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as AdvanceBalanceDoc;
+        if (data.schoolId === schoolId) return data;
+      }
+      return null;
+    } catch (e) {
+      onFirestoreError(`getAdvanceBalanceServer(${id})`, e);
+      return null;
+    }
+  }
+  const local = localStore.advanceBalances.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+// School-wide view used by the centralized financial summary (Phase 7) — unconsumed
+// advance balances are real cash already collected, so they must be counted as part of
+// total student fee collections even before a future voucher consumes them.
+export async function getAdvanceBalancesForSchoolServer(
+  schoolId: string,
+  academicYear: string
+): Promise<AdvanceBalanceDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("advanceBalances")
+        .where("schoolId", "==", schoolId)
+        .where("academicYear", "==", academicYear)
+        .get();
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as AdvanceBalanceDoc));
+    } catch (e) {
+      onFirestoreError(`getAdvanceBalancesForSchoolServer(${schoolId})`, e);
+    }
+  }
+  return Array.from(localStore.advanceBalances.values()).filter((a) => a.schoolId === schoolId && a.academicYear === academicYear);
+}
+
+// Atomic read-modify-write so concurrent payments/generations never clobber each other's
+// credit/debit. `delta` is signed: positive credits the balance, negative debits it.
+// Debits are clamped so the balance never goes negative (never invent credit from thin air).
+export async function adjustAdvanceBalanceServer(
+  schoolId: string,
+  studentId: string,
+  academicYear: string,
+  delta: number,
+  reason: string,
+  refId: string
+): Promise<AdvanceBalanceDoc> {
+  assertProductionDbReady();
+  const id = advanceBalanceId(schoolId, studentId, academicYear);
+  const nowIso = new Date().toISOString();
+  const entry: AdvanceBalanceLedgerEntry = {
+    type: delta >= 0 ? "CREDIT" : "DEBIT",
+    amount: Math.abs(delta),
+    reason,
+    refId,
+    date: nowIso,
+  };
+
+  if (hasAdminCredentials) {
+    try {
+      const result = await adminDb.runTransaction(async (transaction) => {
+        const ref = adminDb.collection("advanceBalances").doc(id);
+        const snap = await transaction.get(ref);
+        const existing = snap.exists ? (snap.data() as AdvanceBalanceDoc) : null;
+        const currentBalance = existing?.balance || 0;
+        const newBalance = Math.max(0, currentBalance + delta);
+        const ledger = [...(existing?.ledger || []), entry].slice(-200);
+        const updated: AdvanceBalanceDoc = {
+          id,
+          schoolId,
+          studentId,
+          academicYear,
+          balance: newBalance,
+          ledger,
+          updatedAt: nowIso,
+        };
+        transaction.set(ref, updated);
+        return updated;
+      });
+      localStore.advanceBalances.set(id, result);
+      return result;
+    } catch (e) {
+      onFirestoreError(`adjustAdvanceBalanceServer(${id})`, e);
+      throw e;
+    }
+  }
+
+  const existing = localStore.advanceBalances.get(id);
+  const currentBalance = existing?.balance || 0;
+  const updated: AdvanceBalanceDoc = {
+    id,
+    schoolId,
+    studentId,
+    academicYear,
+    balance: Math.max(0, currentBalance + delta),
+    ledger: [...(existing?.ledger || []), entry].slice(-200),
+    updatedAt: nowIso,
+  };
+  localStore.advanceBalances.set(id, updated);
+  return updated;
+}
+
+// ---------------------------------------------------------------------------
+// FEE ADJUSTMENTS (Phase 5) — immutable audit trail of every manual change to a
+// student's fee structure or an individual voucher. Never mutated once written.
+// ---------------------------------------------------------------------------
+export async function saveFeeAdjustmentServer(doc: FeeAdjustmentDoc): Promise<string> {
+  assertProductionDbReady();
+  localStore.feeAdjustments.set(doc.id, doc);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("feeAdjustments").doc(doc.id).set(doc);
+    } catch (e) {
+      onFirestoreError(`saveFeeAdjustmentServer(${doc.id})`, e);
+    }
+  }
+  return doc.id;
+}
+
+export async function getFeeAdjustmentsServer(
+  schoolId: string,
+  studentId?: string,
+  academicYear?: string
+): Promise<FeeAdjustmentDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      let ref = adminDb.collection("feeAdjustments").where("schoolId", "==", schoolId);
+      if (studentId) ref = ref.where("studentId", "==", studentId);
+      if (academicYear) ref = ref.where("academicYear", "==", academicYear);
+      const snap = await ref.get();
+      return snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as FeeAdjustmentDoc))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    } catch (e) {
+      onFirestoreError(`getFeeAdjustmentsServer(${schoolId})`, e);
+    }
+  }
+  let list = Array.from(localStore.feeAdjustments.values()).filter((a) => a.schoolId === schoolId);
+  if (studentId) list = list.filter((a) => a.studentId === studentId);
+  if (academicYear) list = list.filter((a) => a.academicYear === academicYear);
+  return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+// Applies a signed delta to a single voucher's totalExpected/balanceAmount (never to
+// paidAmount or any already-recorded payment) — used for one-off additional charges,
+// concessions, and previous-balance corrections against an existing voucher.
+export async function applyChallanBalanceAdjustmentServer(
+  schoolId: string,
+  challanId: string,
+  delta: number
+): Promise<FeeChallanDoc> {
+  assertProductionDbReady();
+
+  if (hasAdminCredentials) {
+    try {
+      return await adminDb.runTransaction(async (transaction) => {
+        const ref = adminDb.collection("feeChallans").doc(challanId);
+        const snap = await transaction.get(ref);
+        if (!snap.exists) throw new Error("Fee challan record not found.");
+        const challan = snap.data() as FeeChallanDoc;
+        if (challan.schoolId !== schoolId) {
+          throw new Error("Unauthorized: Target challan belongs to a different institution.");
+        }
+
+        const newTotal = Math.max(0, (challan.totalExpected || 0) + delta);
+        const newBalance = Math.max(0, newTotal - (challan.paidAmount || 0));
+        let newStatus: FeeStatus = "PARTIAL";
+        if (newBalance === 0) newStatus = "PAID";
+        else if ((challan.paidAmount || 0) <= 0) newStatus = "PENDING";
+
+        const updated: FeeChallanDoc = {
+          ...challan,
+          id: challanId,
+          totalExpected: newTotal,
+          balanceAmount: newBalance,
+          status: newStatus,
+          updatedAt: new Date().toISOString(),
+        };
+        transaction.set(ref, updated, { merge: true });
+        localStore.feeChallans.set(challanId, updated);
+        return updated;
+      });
+    } catch (e: any) {
+      onFirestoreError(`applyChallanBalanceAdjustmentServer(${challanId})`, e);
+      throw e;
+    }
+  }
+
+  const challan = localStore.feeChallans.get(challanId);
+  if (!challan) throw new Error("Fee challan record not found.");
+  if (challan.schoolId !== schoolId) {
+    throw new Error("Unauthorized: Target challan belongs to a different institution.");
+  }
+  const newTotal = Math.max(0, (challan.totalExpected || 0) + delta);
+  const newBalance = Math.max(0, newTotal - (challan.paidAmount || 0));
+  challan.totalExpected = newTotal;
+  challan.balanceAmount = newBalance;
+  challan.status = newBalance === 0 ? "PAID" : (challan.paidAmount || 0) > 0 ? "PARTIAL" : "PENDING";
+  challan.updatedAt = new Date().toISOString();
+  localStore.feeChallans.set(challanId, challan);
+  return challan;
+}
+
+// Reverses a payment without deleting it: writes a new negative-amount PaymentDoc linked
+// via reversesPaymentId, marks the original reversed=true (idempotency guard — a payment
+// can only be reversed once), and restores the challan's paidAmount/balanceAmount/status.
+export async function reversePaymentServer(
+  schoolId: string,
+  paymentId: string,
+  reason: string,
+  reversedBy: string
+): Promise<PaymentDoc> {
+  assertProductionDbReady();
+
+  if (hasAdminCredentials) {
+    try {
+      return await adminDb.runTransaction(async (transaction) => {
+        const paymentRef = adminDb.collection("payments").doc(paymentId);
+        const paymentSnap = await transaction.get(paymentRef);
+        if (!paymentSnap.exists) throw new Error("Payment record not found.");
+        const original = paymentSnap.data() as PaymentDoc;
+        if (original.schoolId !== schoolId) throw new Error("Unauthorized: payment belongs to a different institution.");
+        if (original.reversed) throw new Error("This payment has already been reversed.");
+        if (original.amount < 0) throw new Error("Cannot reverse a reversal entry.");
+
+        const challanRef = adminDb.collection("feeChallans").doc(original.challanId);
+        const challanSnap = await transaction.get(challanRef);
+        if (!challanSnap.exists) throw new Error("Related fee challan not found.");
+        const challan = challanSnap.data() as FeeChallanDoc;
+
+        const newPaid = Math.max(0, (challan.paidAmount || 0) - original.amount);
+        const newBalance = Math.max(0, (challan.totalExpected || 0) - newPaid);
+        let newStatus: FeeStatus = "PARTIAL";
+        if (newBalance === 0 && newPaid > 0) newStatus = "PAID";
+        else if (newPaid <= 0) newStatus = "PENDING";
+
+        const nowIso = new Date().toISOString();
+        const reversalId = `rev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const reversal: PaymentDoc = {
+          id: reversalId,
+          schoolId,
+          challanId: original.challanId,
+          studentId: original.studentId,
+          studentName: original.studentName,
+          receiptNo: `REV-${original.receiptNo}`,
+          amount: -original.amount,
+          paymentDate: nowIso.split("T")[0],
+          paymentMode: original.paymentMode,
+          notes: reason,
+          collectedBy: reversedBy,
+          createdAt: nowIso,
+          source: "REVERSAL",
+          reversesPaymentId: original.id,
+        };
+
+        transaction.set(adminDb.collection("payments").doc(reversalId), reversal);
+        transaction.set(paymentRef, { reversed: true }, { merge: true });
+        transaction.set(challanRef, { paidAmount: newPaid, balanceAmount: newBalance, status: newStatus, updatedAt: nowIso }, { merge: true });
+
+        localStore.payments.set(reversalId, reversal);
+        localStore.payments.set(original.id, { ...original, reversed: true });
+        localStore.feeChallans.set(original.challanId, { ...challan, paidAmount: newPaid, balanceAmount: newBalance, status: newStatus, updatedAt: nowIso });
+
+        return reversal;
+      });
+    } catch (e: any) {
+      onFirestoreError(`reversePaymentServer(${paymentId})`, e);
+      throw e;
+    }
+  }
+
+  const original = localStore.payments.get(paymentId);
+  if (!original) throw new Error("Payment record not found.");
+  if (original.schoolId !== schoolId) throw new Error("Unauthorized: payment belongs to a different institution.");
+  if (original.reversed) throw new Error("This payment has already been reversed.");
+  if (original.amount < 0) throw new Error("Cannot reverse a reversal entry.");
+
+  const challan = localStore.feeChallans.get(original.challanId);
+  if (!challan) throw new Error("Related fee challan not found.");
+
+  const newPaid = Math.max(0, (challan.paidAmount || 0) - original.amount);
+  const newBalance = Math.max(0, (challan.totalExpected || 0) - newPaid);
+  const nowIso = new Date().toISOString();
+  const reversalId = `rev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const reversal: PaymentDoc = {
+    id: reversalId,
+    schoolId,
+    challanId: original.challanId,
+    studentId: original.studentId,
+    studentName: original.studentName,
+    receiptNo: `REV-${original.receiptNo}`,
+    amount: -original.amount,
+    paymentDate: nowIso.split("T")[0],
+    paymentMode: original.paymentMode,
+    notes: reason,
+    collectedBy: reversedBy,
+    createdAt: nowIso,
+    source: "REVERSAL",
+    reversesPaymentId: original.id,
+  };
+
+  original.reversed = true;
+  challan.paidAmount = newPaid;
+  challan.balanceAmount = newBalance;
+  challan.status = newBalance === 0 && newPaid > 0 ? "PAID" : newPaid <= 0 ? "PENDING" : "PARTIAL";
+  challan.updatedAt = nowIso;
+
+  localStore.payments.set(paymentId, original);
+  localStore.payments.set(reversalId, reversal);
+  localStore.feeChallans.set(original.challanId, challan);
+
+  return reversal;
+}
+
+// ---------------------------------------------------------------------------
+// OTHER COLLECTIONS (Phase 6) — non-tuition school income (registration, certificates,
+// fines, events, etc). Contributes to total income but must never be confused with
+// student fee payments in reports.
+// ---------------------------------------------------------------------------
+export async function saveOtherCollectionServer(doc: OtherCollectionDoc): Promise<string> {
+  assertProductionDbReady();
+  localStore.otherCollections.set(doc.id, doc);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("otherCollections").doc(doc.id).set(doc);
+    } catch (e) {
+      onFirestoreError(`saveOtherCollectionServer(${doc.id})`, e);
+    }
+  }
+  return doc.id;
+}
+
+export async function getOtherCollectionsServer(
+  schoolId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  category?: string
+): Promise<OtherCollectionDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb.collection("otherCollections").where("schoolId", "==", schoolId).get();
+      let list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as OtherCollectionDoc));
+      if (dateFrom) list = list.filter((c) => c.date >= dateFrom);
+      if (dateTo) list = list.filter((c) => c.date <= dateTo);
+      if (category && category !== "ALL") list = list.filter((c) => c.category === category);
+      return list.sort((a, b) => b.date.localeCompare(a.date));
+    } catch (e) {
+      onFirestoreError(`getOtherCollectionsServer(${schoolId})`, e);
+    }
+  }
+  let list = Array.from(localStore.otherCollections.values()).filter((c) => c.schoolId === schoolId);
+  if (dateFrom) list = list.filter((c) => c.date >= dateFrom);
+  if (dateTo) list = list.filter((c) => c.date <= dateTo);
+  if (category && category !== "ALL") list = list.filter((c) => c.category === category);
+  return list.sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export async function getOtherCollectionByIdServer(schoolId: string, id: string): Promise<OtherCollectionDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("otherCollections").doc(id).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as OtherCollectionDoc;
+        if (data.schoolId === schoolId) return data;
+      }
+      return null;
+    } catch (e) {
+      onFirestoreError(`getOtherCollectionByIdServer(${id})`, e);
+      return null;
+    }
+  }
+  const local = localStore.otherCollections.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+// Marks the record reversed=true rather than deleting it — a reversed entry stays visible
+// in history but is excluded from income totals (see getOtherCollectionsServer callers).
+export async function reverseOtherCollectionServer(
+  schoolId: string,
+  id: string,
+  reason: string,
+  reversedBy: string
+): Promise<OtherCollectionDoc> {
+  assertProductionDbReady();
+  const existing = await getOtherCollectionByIdServer(schoolId, id);
+  if (!existing) throw new Error("Other collection record not found.");
+  if (existing.reversed) throw new Error("This record has already been reversed.");
+
+  const updated: OtherCollectionDoc = {
+    ...existing,
+    reversed: true,
+    reversedReason: reason,
+    reversedBy,
+    reversedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  await saveOtherCollectionServer(updated);
+  return updated;
+}
+
+// ---------------------------------------------------------------------------
+// OTHER EXPENSES (Phase 6) — operational spending (utilities, maintenance, staff, etc).
+// Deducted from income when computing net balance; never a student-fee record.
+// ---------------------------------------------------------------------------
+export async function saveOtherExpenseServer(doc: OtherExpenseDoc): Promise<string> {
+  assertProductionDbReady();
+  localStore.otherExpenses.set(doc.id, doc);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("otherExpenses").doc(doc.id).set(doc);
+    } catch (e) {
+      onFirestoreError(`saveOtherExpenseServer(${doc.id})`, e);
+    }
+  }
+  return doc.id;
+}
+
+export async function getOtherExpensesServer(
+  schoolId: string,
+  dateFrom?: string,
+  dateTo?: string,
+  category?: string
+): Promise<OtherExpenseDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb.collection("otherExpenses").where("schoolId", "==", schoolId).get();
+      let list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as OtherExpenseDoc));
+      if (dateFrom) list = list.filter((c) => c.date >= dateFrom);
+      if (dateTo) list = list.filter((c) => c.date <= dateTo);
+      if (category && category !== "ALL") list = list.filter((c) => c.category === category);
+      return list.sort((a, b) => b.date.localeCompare(a.date));
+    } catch (e) {
+      onFirestoreError(`getOtherExpensesServer(${schoolId})`, e);
+    }
+  }
+  let list = Array.from(localStore.otherExpenses.values()).filter((c) => c.schoolId === schoolId);
+  if (dateFrom) list = list.filter((c) => c.date >= dateFrom);
+  if (dateTo) list = list.filter((c) => c.date <= dateTo);
+  if (category && category !== "ALL") list = list.filter((c) => c.category === category);
+  return list.sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export async function getOtherExpenseByIdServer(schoolId: string, id: string): Promise<OtherExpenseDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("otherExpenses").doc(id).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as OtherExpenseDoc;
+        if (data.schoolId === schoolId) return data;
+      }
+      return null;
+    } catch (e) {
+      onFirestoreError(`getOtherExpenseByIdServer(${id})`, e);
+      return null;
+    }
+  }
+  const local = localStore.otherExpenses.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+export async function reverseOtherExpenseServer(
+  schoolId: string,
+  id: string,
+  reason: string,
+  reversedBy: string
+): Promise<OtherExpenseDoc> {
+  assertProductionDbReady();
+  const existing = await getOtherExpenseByIdServer(schoolId, id);
+  if (!existing) throw new Error("Other expense record not found.");
+  if (existing.reversed) throw new Error("This record has already been reversed.");
+
+  const updated: OtherExpenseDoc = {
+    ...existing,
+    reversed: true,
+    reversedReason: reason,
+    reversedBy,
+    reversedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  await saveOtherExpenseServer(updated);
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -952,7 +1958,9 @@ export async function saveExamResultServer(result: ExamResultDoc): Promise<strin
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("examResults").doc(id).set(data, { merge: true });
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`saveExamResultServer(${id})`, e);
+    }
   }
   return id;
 }
@@ -971,7 +1979,9 @@ export async function saveExamResultsBulkServer(
       if (hasAdminCredentials) {
         try {
           await adminDb.collection("examResults").doc(doc.id).set(doc, { merge: true });
-        } catch {}
+        } catch (e) {
+          onFirestoreError(`saveExamResultsBulkServer(${doc.id})`, e);
+        }
       }
       count++;
     }
@@ -1016,7 +2026,9 @@ export async function saveExamResultsBulkServer(
       if (hasAdminCredentials) {
         try {
           await adminDb.collection("examResults").doc(id).set(doc, { merge: true });
-        } catch {}
+        } catch (e) {
+          onFirestoreError(`saveExamResultsBulkServer(${id})`, e);
+        }
       }
       count++;
     }
@@ -1038,7 +2050,9 @@ export async function getStudentObservationsServer(
         .where("studentId", "==", studentId)
         .get();
       return snap.docs.map((d) => ({ id: d.id, ...d.data() } as StudentObservationDoc));
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getStudentObservationsServer(${studentId})`, e);
+    }
   }
 
   return Array.from(localStore.studentObservations.values()).filter(
@@ -1058,7 +2072,9 @@ export async function saveStudentObservationServer(obs: StudentObservationDoc): 
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("studentObservations").doc(id).set(data);
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`saveStudentObservationServer(${id})`, e);
+    }
   }
   return id;
 }
@@ -1070,7 +2086,9 @@ export async function getLockedRecordsServer(schoolId: string, studentId?: strin
       if (studentId) ref = ref.where("studentId", "==", studentId);
       const snap = await ref.get();
       return snap.docs.map((d) => ({ id: d.id, ...d.data() } as LockedRecordDoc));
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`getLockedRecordsServer(${schoolId})`, e);
+    }
   }
 
   let list = Array.from(localStore.lockedRecords.values()).filter((l) => l.schoolId === schoolId);
@@ -1090,7 +2108,9 @@ export async function createLockedRecordServer(rec: LockedRecordDoc): Promise<st
   if (hasAdminCredentials) {
     try {
       await adminDb.collection("lockedRecords").doc(id).set(data);
-    } catch {}
+    } catch (e) {
+      onFirestoreError(`createLockedRecordServer(${id})`, e);
+    }
   }
   return id;
 }
@@ -1128,4 +2148,85 @@ export async function getDashboardStatsServer(schoolId: string) {
     outstandingFees,
     collectionRate,
   };
+}
+
+// ---------------------------------------------------------------------------
+// ANNOUNCEMENTS
+// ---------------------------------------------------------------------------
+export async function getAnnouncementsServer(schoolId: string): Promise<AnnouncementDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb.collection("announcements").where("schoolId", "==", schoolId).get();
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as AnnouncementDoc));
+      return list.sort((a, b) => (b.publishedAt || b.createdAt || "").localeCompare(a.publishedAt || a.createdAt || ""));
+    } catch (e) {
+      onFirestoreError(`getAnnouncementsServer(${schoolId})`, e);
+    }
+  }
+
+  return Array.from(localStore.announcements.values())
+    .filter((a) => a.schoolId === schoolId)
+    .sort((a, b) => (b.publishedAt || b.createdAt || "").localeCompare(a.publishedAt || a.createdAt || ""));
+}
+
+export async function getAnnouncementByIdServer(
+  schoolId: string,
+  announcementId: string
+): Promise<AnnouncementDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb.collection("announcements").doc(announcementId).get();
+      if (snap.exists) {
+        const data = { id: snap.id, ...snap.data() } as AnnouncementDoc;
+        if (data.schoolId === schoolId) return data;
+        return null;
+      }
+    } catch (e) {
+      onFirestoreError(`getAnnouncementByIdServer(${announcementId})`, e);
+    }
+  }
+
+  const local = localStore.announcements.get(announcementId);
+  if (local && local.schoolId === schoolId) return local;
+  return null;
+}
+
+export async function saveAnnouncementServer(announcement: AnnouncementDoc): Promise<string> {
+  const id = announcement.id || `ann-${Date.now()}`;
+  const data: AnnouncementDoc = {
+    ...announcement,
+    id,
+    updatedAt: new Date().toISOString(),
+    createdAt: announcement.createdAt || new Date().toISOString(),
+  };
+  if (!data.publishedAt) {
+    delete (data as { publishedAt?: string }).publishedAt;
+  }
+  localStore.announcements.set(id, data);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("announcements").doc(id).set(data);
+    } catch (e) {
+      onFirestoreError(`saveAnnouncementServer(${id})`, e);
+    }
+  }
+  return id;
+}
+
+export async function deleteAnnouncementServer(schoolId: string, announcementId: string): Promise<boolean> {
+  const existing = await getAnnouncementByIdServer(schoolId, announcementId);
+  if (!existing) return false;
+
+  localStore.announcements.delete(announcementId);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("announcements").doc(announcementId).delete();
+    } catch (e) {
+      onFirestoreError(`deleteAnnouncementServer(${announcementId})`, e);
+      return false;
+    }
+  }
+  return true;
 }

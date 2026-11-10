@@ -31,6 +31,7 @@ export default function TeacherNav({
     { label: "Roll Call Register", href: "/teacher/attendance", icon: "how_to_reg" },
     { label: "Rapid Gradebook", href: "/teacher/gradebook", icon: "edit_note" },
     { label: "Students & Notes", href: "/teacher/students", icon: "assignment_ind" },
+    { label: "Announcements", href: "/teacher/announcements", icon: "campaign" },
   ];
 
   return (
@@ -56,13 +57,6 @@ export default function TeacherNav({
           </div>
 
           <div className="flex items-center gap-3">
-            <Link
-              href="/admin"
-              className="px-2.5 py-1 rounded-lg bg-surface-container-high text-on-surface font-label-sm text-[11px] font-semibold hover:bg-surface-container transition-all flex items-center gap-1"
-            >
-              <span className="material-symbols-outlined text-[15px] text-secondary">swap_horiz</span>
-              <span className="hidden sm:inline">Portal Switch</span>
-            </Link>
             <button
               onClick={handleLogout}
               className="p-1.5 rounded-lg hover:bg-error-container text-on-surface-variant hover:text-error transition-colors flex items-center gap-1 text-xs"

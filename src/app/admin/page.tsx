@@ -120,9 +120,9 @@ export default function AdminDashboardPage() {
           </div>
           <div className="mt-3 pt-2 border-t border-surface-container-low flex items-center justify-between text-xs">
             <span className="inline-flex items-center gap-0.5 text-[11px] font-bold text-on-tertiary-container bg-tertiary-container/10 px-1.5 py-0.5 rounded">
-              <span className="material-symbols-outlined text-[12px]">arrow_upward</span> +3 enrolled
+              Active Roster
             </span>
-            <span className="text-on-surface-variant text-[11px] font-medium">100% Active</span>
+            <span className="text-on-surface-variant text-[11px] font-medium">{stats.totalStudents > 0 ? "Enrolled" : "No students yet"}</span>
           </div>
         </div>
 
@@ -145,7 +145,7 @@ export default function AdminDashboardPage() {
             <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-on-surface bg-surface-container-high px-1.5 py-0.5 rounded">
               <span className="material-symbols-outlined text-[12px]">verified</span> Faculty
             </span>
-            <span className="text-on-tertiary-container text-[11px] font-bold">{stats.totalTeachers} Active</span>
+            <span className="text-on-tertiary-container text-[11px] font-bold">{stats.totalTeachers > 0 ? `${stats.totalTeachers} Active` : "None added"}</span>
           </div>
         </div>
 
@@ -165,8 +165,8 @@ export default function AdminDashboardPage() {
             </div>
           </div>
           <div className="mt-3 pt-2 border-t border-surface-container-low flex items-center justify-between text-xs">
-            <span className="text-on-surface-variant text-[11px] font-medium">Class 1-10 (A-B)</span>
-            <span className="text-secondary text-[11px] font-semibold">20 Cohorts</span>
+            <span className="text-on-surface-variant text-[11px] font-medium">Class Cohorts</span>
+            <span className="text-secondary text-[11px] font-semibold">{stats.totalClasses > 0 ? `${stats.totalClasses} Cohorts` : "None configured"}</span>
           </div>
         </div>
 
@@ -222,7 +222,7 @@ export default function AdminDashboardPage() {
                 Attendance
               </span>
               <span className="font-headline-xl text-2xl sm:text-3xl text-on-surface mt-1 font-bold leading-none">
-                {stats.attendancePercentage}%
+                {stats.attendancePercentage > 0 ? `${stats.attendancePercentage}%` : "No data"}
               </span>
             </div>
             <div className="w-9 h-9 rounded-lg bg-surface-container flex items-center justify-center text-on-tertiary-container">
@@ -230,8 +230,8 @@ export default function AdminDashboardPage() {
             </div>
           </div>
           <div className="mt-3 pt-2 border-t border-surface-container-low flex items-center justify-between text-xs">
-            <span className="text-on-tertiary-container font-bold text-[11px]">Above Benchmark</span>
-            <span className="text-on-surface-variant text-[11px]">Daily avg</span>
+            <span className="text-on-tertiary-container font-bold text-[11px]">{stats.attendancePercentage > 0 ? "Daily Average" : "No logs"}</span>
+            <span className="text-on-surface-variant text-[11px]">{stats.attendancePercentage > 0 ? "Verified" : "Pending entry"}</span>
           </div>
         </div>
       </div>
@@ -275,6 +275,13 @@ export default function AdminDashboardPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-container-low">
+              {snapshots.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-on-surface-variant text-xs italic">
+                    No class cohorts found. Add classes in Academic Setup to see ledger snapshots.
+                  </td>
+                </tr>
+              )}
               {snapshots.slice(0, 8).map((snap: any) => (
                 <tr key={snap.id} className="hover:bg-surface-container-low/40 transition-colors">
                   <td className="py-3 px-4 font-bold text-on-surface flex items-center gap-2">
@@ -386,6 +393,9 @@ export default function AdminDashboardPage() {
           </div>
 
           <div className="space-y-3 flex-1 overflow-y-auto max-h-64">
+            {auditLogs.length === 0 && (
+              <p className="text-xs text-on-surface-variant italic text-center py-6">No administrative activities recorded yet.</p>
+            )}
             {auditLogs.slice(0, 5).map((log: any) => (
               <div key={log.id} className="flex items-start gap-2.5 text-xs pb-2.5 border-b border-surface-container-low last:border-0">
                 <div className="w-6 h-6 rounded-full bg-surface-container flex items-center justify-center shrink-0 text-secondary">
@@ -419,17 +429,20 @@ export default function AdminDashboardPage() {
           </div>
 
           <div className="space-y-3 flex-1 overflow-y-auto max-h-64">
+            {recentPayments.length === 0 && (
+              <p className="text-xs text-on-surface-variant italic text-center py-6">No fee payments recorded yet.</p>
+            )}
             {recentPayments.slice(0, 5).map((pay: any) => (
               <div key={pay.id} className="flex items-center justify-between text-xs pb-2.5 border-b border-surface-container-low last:border-0">
                 <div className="flex flex-col min-w-0">
                   <span className="font-bold text-on-surface truncate">
-                    {pay.challan?.student?.firstName} {pay.challan?.student?.lastName}
+                    {pay.studentName || pay.studentId || "Student"}
                   </span>
                   <span className="text-[10px] text-on-surface-variant font-mono">
-                    {pay.receiptNumber || pay.challan?.challanNumber}
+                    {pay.receiptNo || pay.id}
                   </span>
                 </div>
-                <div className="flex flex-col items-end">
+                <div className="flex items-center gap-2">
                   <span className="font-bold text-on-tertiary-container">{formatCurrency(pay.amount)}</span>
                   <span className="text-[10px] text-on-surface-variant">{formatDate(pay.paymentDate)}</span>
                 </div>

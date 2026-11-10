@@ -4,8 +4,13 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Allied School Management System",
   description: "Comprehensive SaaS School Management & Academic Operations Platform",
+  openGraph: {
+    title: "Allied School Management System",
+    description: "Secure school operations, academics, attendance, fees, and parent communication.",
+    type: "website",
+  },
   icons: {
-    icon: "/favicon.ico",
+    icon: "/images/logo.png",
   },
 };
 

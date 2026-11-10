@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getStudentsServer,
@@ -7,7 +7,8 @@ import {
   getFeeChallansServer,
   getPaymentsServer,
   getAuditLogsServer,
-  getSchoolSettingsServer
+  getSchoolSettingsServer,
+  getAttendanceServer
 } from "@/lib/firebase/server-db";
 
 export async function GET(req: NextRequest) {
@@ -22,7 +23,8 @@ export async function GET(req: NextRequest) {
       challans,
       payments,
       auditLogs,
-      settings
+      settings,
+      attendanceRecords
     ] = await Promise.all([
       getStudentsServer(schoolId),
       getTeachersServer(schoolId),
@@ -30,11 +32,19 @@ export async function GET(req: NextRequest) {
       getFeeChallansServer(schoolId),
       getPaymentsServer(schoolId),
       getAuditLogsServer(schoolId, 8),
-      getSchoolSettingsServer(schoolId)
+      getSchoolSettingsServer(schoolId),
+      getAttendanceServer(schoolId)
     ]);
 
     const activeStudents = students.filter((s) => s.status === "ACTIVE");
     const activeTeachers = teachers.filter((t) => t.status === "ACTIVE");
+
+    // Real Attendance calculations
+    const totalAttRecords = attendanceRecords.length;
+    const presentAttRecords = attendanceRecords.filter((a) => a.status === "PRESENT" || a.status === "LATE").length;
+    const attendancePercentage = totalAttRecords > 0
+      ? Number(((presentAttRecords / totalAttRecords) * 100).toFixed(1))
+      : 0;
 
     // Fee calculations
     const totalExpected = challans.reduce((sum, c) => sum + (c.totalExpected || 0), 0);
@@ -70,7 +80,7 @@ export async function GET(req: NextRequest) {
         totalStudents: activeStudents.length,
         totalTeachers: activeTeachers.length,
         totalClasses: classes.length,
-        attendancePercentage: 92.5,
+        attendancePercentage,
         totalExpectedFee: totalExpected,
         totalCollectedFee: totalCollected,
         totalOutstandingFee: totalOutstanding,

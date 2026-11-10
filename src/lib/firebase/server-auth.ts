@@ -34,6 +34,7 @@ export interface AuthenticatedUser {
   name: string;
   teacherId?: string;
   studentId?: string;
+  studentIds?: string[];
 }
 
 export async function createSessionCookieServer(payload: AuthenticatedUser): Promise<string> {

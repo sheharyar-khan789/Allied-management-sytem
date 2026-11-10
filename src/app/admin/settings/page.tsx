@@ -137,6 +137,7 @@ export default function SettingsPage() {
                 name="contactEmail"
                 value={settings.contactEmail}
                 onChange={handleChange}
+                placeholder="e.g. admin@school.edu.pk"
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40"
               />
             </div>
@@ -148,6 +149,7 @@ export default function SettingsPage() {
                 name="contactPhone"
                 value={settings.contactPhone}
                 onChange={handleChange}
+                placeholder="e.g. +92 51 0000000"
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40"
               />
             </div>
@@ -159,6 +161,7 @@ export default function SettingsPage() {
                 name="address"
                 value={settings.address}
                 onChange={handleChange}
+                placeholder="Enter physical campus location"
                 className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-on-surface border border-outline-variant/40"
               />
             </div>

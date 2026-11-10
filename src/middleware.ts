@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
+import { dashboardPathForRole } from "@/lib/role-home";
 
 function getJwtSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -14,7 +15,6 @@ function getJwtSecret(): Uint8Array {
     return new TextEncoder().encode(secret.trim());
   }
 
-  // Non-production local development fallback only
   if (!secret || secret.trim().length === 0) {
     return new TextEncoder().encode("allied-school-dev-only-local-secret-key-32-chars-min");
   }
@@ -27,7 +27,7 @@ const SECRET_KEY = getJwtSecret();
 interface SessionPayload {
   uid: string;
   email: string;
-  role: "ADMIN" | "TEACHER" | "STUDENT";
+  role: "ADMIN" | "TEACHER" | "STUDENT" | "PARENT";
   schoolId: string;
   name: string;
 }
@@ -35,7 +35,6 @@ interface SessionPayload {
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Ignore static assets, images, API routes, and public files
   if (
     pathname.startsWith("/_next") ||
     pathname.startsWith("/images") ||
@@ -57,52 +56,42 @@ export async function middleware(req: NextRequest) {
     }
   }
 
-  // If on login page
   if (pathname === "/login") {
     if (session && session.uid && session.role) {
-      if (session.role === "ADMIN") {
-        return NextResponse.redirect(new URL("/admin", req.url));
-      } else if (session.role === "TEACHER") {
-        return NextResponse.redirect(new URL("/teacher", req.url));
-      } else if (session.role === "STUDENT") {
-        return NextResponse.redirect(new URL("/student", req.url));
-      }
+      return NextResponse.redirect(new URL(dashboardPathForRole(session.role), req.url));
     }
     return NextResponse.next();
   }
 
-  // Protected Admin Routes
+  const requireRole = (allowed: SessionPayload["role"][]) => {
+    if (!session || !session.uid) {
+      return NextResponse.redirect(new URL("/login", req.url));
+    }
+    if (!allowed.includes(session.role)) {
+      return NextResponse.redirect(new URL(dashboardPathForRole(session.role), req.url));
+    }
+    return NextResponse.next();
+  };
+
   if (pathname.startsWith("/admin")) {
-    if (!session || !session.uid) {
-      return NextResponse.redirect(new URL("/login", req.url));
-    }
-    if (session.role !== "ADMIN") {
-      const target = session.role === "TEACHER" ? "/teacher" : "/student";
-      return NextResponse.redirect(new URL(target, req.url));
-    }
-    return NextResponse.next();
+    return requireRole(["ADMIN"]);
   }
 
-  // Protected Teacher Routes
   if (pathname.startsWith("/teacher")) {
-    if (!session || !session.uid) {
-      return NextResponse.redirect(new URL("/login", req.url));
-    }
-    if (session.role !== "TEACHER") {
-      const target = session.role === "ADMIN" ? "/admin" : "/student";
-      return NextResponse.redirect(new URL(target, req.url));
-    }
-    return NextResponse.next();
+    return requireRole(["TEACHER"]);
   }
 
-  // Protected Student Routes
   if (pathname.startsWith("/student")) {
+    return requireRole(["STUDENT"]);
+  }
+
+  if (pathname.startsWith("/parent")) {
+    return requireRole(["PARENT"]);
+  }
+
+  if (pathname.startsWith("/print")) {
     if (!session || !session.uid) {
       return NextResponse.redirect(new URL("/login", req.url));
-    }
-    if (session.role !== "STUDENT") {
-      const target = session.role === "ADMIN" ? "/admin" : "/teacher";
-      return NextResponse.redirect(new URL(target, req.url));
     }
     return NextResponse.next();
   }
@@ -115,7 +104,9 @@ export const config = {
     "/admin/:path*",
     "/teacher/:path*",
     "/student/:path*",
+    "/parent/:path*",
+    "/print/:path*",
     "/login",
-    "/"
+    "/",
   ],
 };

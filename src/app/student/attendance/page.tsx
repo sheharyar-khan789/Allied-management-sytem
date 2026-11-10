@@ -44,6 +44,15 @@ export default function StudentAttendancePage() {
         <p className="font-body-md text-xs text-on-surface-variant mt-0.5">
           Daily attendance standing, excused leaves, and punctuality summary.
         </p>
+        {student?.id && (
+          <a
+            href={`/print/attendance/${student.id}`}
+            className="inline-flex items-center gap-1.5 mt-3 px-3 py-2 rounded-lg bg-surface-container text-xs font-semibold"
+          >
+            <span className="material-symbols-outlined text-[16px]">print</span>
+            Print attendance report
+          </a>
+        )}
       </div>
 
       {/* Overview Cards */}

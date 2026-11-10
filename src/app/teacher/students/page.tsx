@@ -113,6 +113,10 @@ export default function TeacherStudentsPage() {
             <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
             <p className="text-xs text-on-surface-variant">Loading student roster...</p>
           </div>
+        ) : students.length === 0 ? (
+          <div className="col-span-full p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">
+            No students found for this class filter.
+          </div>
         ) : (
           students.map((st) => (
             <div
@@ -148,7 +152,11 @@ export default function TeacherStudentsPage() {
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-surface-container-low flex items-center justify-between">
+              <div className="pt-2 border-t border-surface-container-low space-y-2">
+                <div className="flex gap-2 text-[11px] font-semibold">
+                  <a href={`/print/attendance/${st.id}`} className="flex-1 text-center py-1.5 rounded-lg bg-surface-container">Attendance</a>
+                  <a href={`/print/report-card/${st.id}`} className="flex-1 text-center py-1.5 rounded-lg bg-surface-container">Report card</a>
+                </div>
                 <button
                   type="button"
                   onClick={() => {

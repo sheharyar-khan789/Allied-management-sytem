@@ -4,11 +4,13 @@ import {
   getTeachersServer,
   saveTeacherServer,
   createUserServer,
+  getUserByEmailServer,
   createAuditLogServer,
   getClassesServer,
   getSubjectsServer
 } from "@/lib/firebase/server-db";
 import { TeacherDoc } from "@/lib/firebase/types";
+import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 
 export async function GET(req: NextRequest) {
   try {
@@ -95,7 +97,49 @@ export async function POST(req: NextRequest) {
     const employeeId = `TCH-${count}`;
     const fullName = `${firstName.trim()} ${lastName.trim()}`;
     const teacherId = `tch-${count}`;
-    const userUid = `user_tch_${count}`;
+    const teacherEmail = email.trim().toLowerCase();
+    let userUid = `user_tch_${count}`;
+    let createdAuthUid: string | null = null;
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(teacherEmail)) {
+      return NextResponse.json({ error: "Please enter a valid teacher email address." }, { status: 400 });
+    }
+
+    const existingUser = await getUserByEmailServer(teacherEmail);
+    if (existingUser) {
+      return NextResponse.json({ error: "A user with this teacher email already exists." }, { status: 409 });
+    }
+
+    if (hasAdminCredentials) {
+      try {
+        const teacherAuthUser = await adminAuth.createUser({
+          email: teacherEmail,
+          emailVerified: true,
+          password: `Teacher@${Date.now().toString().slice(-4)}#2024`,
+          displayName: fullName,
+          disabled: false,
+        });
+        userUid = teacherAuthUser.uid;
+        createdAuthUid = teacherAuthUser.uid;
+
+        await adminAuth.setCustomUserClaims(teacherAuthUser.uid, {
+          role: "TEACHER",
+          schoolId: authUser.schoolId,
+          teacherId: teacherId,
+        });
+      } catch (authErr: any) {
+        console.error("Firebase Auth creation error for teacher:", authErr);
+        const duplicateEmail = authErr?.code === "auth/email-already-exists";
+        return NextResponse.json(
+          {
+            error: duplicateEmail
+              ? "A user with this teacher email already exists."
+              : "Failed to provision authentication account for teacher.",
+          },
+          { status: duplicateEmail ? 409 : 400 }
+        );
+      }
+    }
 
     const teacherDoc: TeacherDoc = {
       id: teacherId,
@@ -103,7 +147,7 @@ export async function POST(req: NextRequest) {
       userId: userUid,
       employeeId,
       fullName,
-      email,
+      email: teacherEmail,
       phone,
       designation: designation || "Subject Educator",
       department: specialization || "Academic Faculty",
@@ -117,20 +161,32 @@ export async function POST(req: NextRequest) {
       updatedAt: new Date().toISOString(),
     };
 
-    await saveTeacherServer(teacherDoc);
+    try {
+      await saveTeacherServer(teacherDoc);
 
-    // Create User account in Firestore
-    await createUserServer({
-      uid: userUid,
-      name: fullName,
-      email,
-      role: "TEACHER",
-      schoolId: authUser.schoolId,
-      teacherId: teacherId,
-      status: "ACTIVE",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+      // Create User account in Firestore
+      await createUserServer({
+        uid: userUid,
+        name: fullName,
+        email: teacherEmail,
+        role: "TEACHER",
+        schoolId: authUser.schoolId,
+        teacherId: teacherId,
+        status: "ACTIVE",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (dbErr: any) {
+      // Rollback Auth user if created
+      if (createdAuthUid && hasAdminCredentials) {
+        try {
+          await adminAuth.deleteUser(createdAuthUid);
+        } catch (delErr) {
+          console.error("Rollback teacher user failed:", delErr);
+        }
+      }
+      throw dbErr;
+    }
 
     await createAuditLogServer(
       authUser.schoolId,

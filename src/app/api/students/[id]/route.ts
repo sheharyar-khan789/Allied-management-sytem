@@ -9,18 +9,20 @@ import {
   getStudentObservationsServer,
   createAuditLogServer,
   getClassesServer,
-  getSubjectsServer
+  getSubjectsServer,
+  getExamsServer
 } from "@/lib/firebase/server-db";
+import { assertParentOwnsStudent } from "@/lib/parent-access";
+import { linkGuardianEmailToStudent } from "@/lib/link-parent";
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUser = await requireAuth(req);
+    const authUser = await requireAuth(req, ["ADMIN", "TEACHER", "STUDENT", "PARENT"]);
     const { id } = await params;
 
-    // Student privacy guard
     if (authUser.role === "STUDENT") {
       if (!authUser.studentId || authUser.studentId !== id) {
         return NextResponse.json(
@@ -30,21 +32,27 @@ export async function GET(
       }
     }
 
+    if (authUser.role === "PARENT") {
+      await assertParentOwnsStudent(authUser, id);
+    }
+
     const student = await getStudentByIdServer(authUser.schoolId, id);
     if (!student) {
       return NextResponse.json({ error: "Student record not found." }, { status: 404 });
     }
 
-    const [attendances, challans, examResults, observations, classes, subjects] = await Promise.all([
+    const [attendances, challans, examResults, observations, classes, subjects, exams] = await Promise.all([
       getStudentAttendanceServer(authUser.schoolId, id),
       getStudentFeeChallansServer(authUser.schoolId, id),
       getExamResultsServer(authUser.schoolId, undefined, undefined, id),
       getStudentObservationsServer(authUser.schoolId, id),
       getClassesServer(authUser.schoolId),
-      getSubjectsServer(authUser.schoolId, student.classId)
+      getSubjectsServer(authUser.schoolId, student.classId),
+      getExamsServer(authUser.schoolId)
     ]);
 
     const targetClass = classes.find((c) => c.id === student.classId);
+    const examNameById = new Map(exams.map((e) => [e.id, e.name]));
 
     // Attendance stats
     const totalAtt = attendances.length;
@@ -84,7 +92,7 @@ export async function GET(
       guardianName: student.guardianName,
       guardianRelation: student.guardianRelation,
       guardianPhone: student.guardianPhone,
-      guardianEmail: "",
+      guardianEmail: student.guardianEmail || "",
       guardianOccupation: "Not Specified",
       classId: student.classId,
       status: student.status,
@@ -130,8 +138,8 @@ export async function GET(
         remarks: r.remarks || "",
         examSchedule: {
           examDate: r.createdAt.split("T")[0],
-          exam: { name: "Mid-Term Examination 2024-25" },
-          subject: { name: r.subjectName || "Subject", code: "SUB" }
+          exam: { name: examNameById.get(r.examId) || "" },
+          subject: { name: r.subjectName || "", code: "" }
         }
       })),
       observations: observations.map((o) => ({
@@ -205,12 +213,22 @@ export async function PUT(
       guardianName: body.guardianName || existing.guardianName,
       guardianRelation: body.guardianRelation || existing.guardianRelation,
       guardianPhone: body.guardianPhone || existing.guardianPhone,
+      guardianEmail: body.guardianEmail !== undefined ? String(body.guardianEmail).trim().toLowerCase() : existing.guardianEmail,
       classId: body.classId || existing.classId,
       status: body.status || existing.status,
       updatedAt: new Date().toISOString()
     };
 
     await saveStudentServer(updated);
+
+    if (updated.guardianEmail) {
+      await linkGuardianEmailToStudent({
+        schoolId: authUser.schoolId,
+        student: updated,
+        guardianEmail: updated.guardianEmail,
+        guardianName: updated.guardianName,
+      });
+    }
 
     await createAuditLogServer(
       authUser.schoolId,

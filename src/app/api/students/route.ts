@@ -4,11 +4,14 @@ import {
   getStudentsServer,
   saveStudentServer,
   createUserServer,
+  getUserByEmailServer,
   saveFeeChallanServer,
   createAuditLogServer,
   getClassesServer
 } from "@/lib/firebase/server-db";
 import { StudentDoc, FeeChallanDoc } from "@/lib/firebase/types";
+import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
+import { linkGuardianEmailToStudent } from "@/lib/link-parent";
 
 export async function GET(req: NextRequest) {
   try {
@@ -16,12 +19,12 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const search = searchParams.get("search") || "";
     const classId = searchParams.get("classId") || undefined;
+    const status = searchParams.get("status") || undefined;
 
     const limitParam = searchParams.get("limit");
     const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
 
-    const rawStudents = await getStudentsServer(authUser.schoolId, classId, search);
-    const students = parsedLimit && parsedLimit > 0 ? rawStudents.slice(0, parsedLimit) : rawStudents;
+    const students = await getStudentsServer(authUser.schoolId, classId, search, parsedLimit, status);
 
     const mapped = students.map((st) => ({
       id: st.id,
@@ -40,7 +43,7 @@ export async function GET(req: NextRequest) {
       guardianName: st.guardianName,
       guardianRelation: st.guardianRelation,
       guardianPhone: st.guardianPhone,
-      guardianEmail: "",
+      guardianEmail: st.guardianEmail || "",
       guardianOccupation: "Not Specified",
       status: st.status,
       classId: st.classId,
@@ -92,7 +95,49 @@ export async function POST(req: NextRequest) {
     const admissionNo = `STD-2024-${count.toString().padStart(3, "0")}`;
     const fullName = `${firstName.trim()} ${lastName.trim()}`;
     const studentId = `std-${count}`;
-    const userUid = `user_std_${count}`;
+    const studentEmail = body.email?.trim().toLowerCase() || `student.${count}@alliedschool.edu`;
+    let userUid = `user_std_${count}`;
+    let createdAuthUid: string | null = null;
+
+    if (body.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(studentEmail)) {
+      return NextResponse.json({ error: "Please enter a valid student email address." }, { status: 400 });
+    }
+
+    const existingUser = await getUserByEmailServer(studentEmail);
+    if (existingUser) {
+      return NextResponse.json({ error: "A user with this student email already exists." }, { status: 409 });
+    }
+
+    if (hasAdminCredentials) {
+      try {
+        const studentAuthUser = await adminAuth.createUser({
+          email: studentEmail,
+          emailVerified: true,
+          password: `Student@${Date.now().toString().slice(-4)}#2024`,
+          displayName: fullName,
+          disabled: false,
+        });
+        userUid = studentAuthUser.uid;
+        createdAuthUid = studentAuthUser.uid;
+
+        await adminAuth.setCustomUserClaims(studentAuthUser.uid, {
+          role: "STUDENT",
+          schoolId: authUser.schoolId,
+          studentId: studentId,
+        });
+      } catch (authErr: any) {
+        console.error("Firebase Auth creation error for student:", authErr);
+        const duplicateEmail = authErr?.code === "auth/email-already-exists";
+        return NextResponse.json(
+          {
+            error: duplicateEmail
+              ? "A user with this student email already exists."
+              : "Failed to provision authentication account for student.",
+          },
+          { status: duplicateEmail ? 409 : 400 }
+        );
+      }
+    }
 
     // Look up class name
     const classes = await getClassesServer(authUser.schoolId);
@@ -118,6 +163,8 @@ export async function POST(req: NextRequest) {
       guardianName,
       guardianPhone,
       guardianRelation: guardianRelation || "Father",
+      guardianEmail: body.guardianEmail || "",
+      parentUserIds: [],
       bloodGroup: bloodGroup || "B+",
       monthlyFee: 6000,
       discount: 0,
@@ -125,20 +172,32 @@ export async function POST(req: NextRequest) {
       updatedAt: new Date().toISOString(),
     };
 
-    await saveStudentServer(studentDoc);
+    try {
+      await saveStudentServer(studentDoc);
 
-    // Create User record in Firestore
-    await createUserServer({
-      uid: userUid,
-      name: fullName,
-      email: `student.${count}@alliedschool.edu`,
-      role: "STUDENT",
-      schoolId: authUser.schoolId,
-      studentId: studentId,
-      status: "ACTIVE",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+      // Create User record in Firestore
+      await createUserServer({
+        uid: userUid,
+        name: fullName,
+        email: studentEmail,
+        role: "STUDENT",
+        schoolId: authUser.schoolId,
+        studentId: studentId,
+        status: "ACTIVE",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (dbErr: any) {
+      // Rollback auth user if created
+      if (createdAuthUid && hasAdminCredentials) {
+        try {
+          await adminAuth.deleteUser(createdAuthUid);
+        } catch (delErr) {
+          console.error("Rollback student user failed:", delErr);
+        }
+      }
+      throw dbErr;
+    }
 
     // Create Initial Fee Challan
     const challanDoc: FeeChallanDoc = {
@@ -167,6 +226,15 @@ export async function POST(req: NextRequest) {
       updatedAt: new Date().toISOString(),
     };
     await saveFeeChallanServer(challanDoc);
+
+    if (body.guardianEmail) {
+      await linkGuardianEmailToStudent({
+        schoolId: authUser.schoolId,
+        student: studentDoc,
+        guardianEmail: body.guardianEmail,
+        guardianName,
+      });
+    }
 
     await createAuditLogServer(
       authUser.schoolId,

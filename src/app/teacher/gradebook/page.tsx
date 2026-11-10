@@ -137,17 +137,21 @@ export default function TeacherGradebookPage() {
         <label className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">
           Select Subject & Class Schedule
         </label>
-        <select
-          value={selectedScheduleId}
-          onChange={(e) => handleScheduleChange(e.target.value)}
-          className="w-full sm:w-auto h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
-        >
-          {schedules.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.subject?.name} — {s.class?.name}-{s.class?.section} (Max: {s.maxMarks})
-            </option>
-          ))}
-        </select>
+        {schedules.length === 0 ? (
+          <p className="text-xs text-on-surface-variant italic">No examination schedules assigned or found.</p>
+        ) : (
+          <select
+            value={selectedScheduleId}
+            onChange={(e) => handleScheduleChange(e.target.value)}
+            className="w-full sm:w-auto h-9 px-3 rounded-lg bg-surface-container-low text-xs font-bold text-on-surface border border-outline-variant/40"
+          >
+            {schedules.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.subject?.name} — {s.class?.name}-{s.class?.section} (Max: {s.maxMarks})
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* Grade entry cards */}
@@ -156,6 +160,14 @@ export default function TeacherGradebookPage() {
           <div className="p-12 flex flex-col items-center justify-center space-y-3 bg-surface-container-lowest rounded-xl">
             <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
             <p className="text-xs text-on-surface-variant">Loading student grade cards...</p>
+          </div>
+        ) : schedules.length === 0 ? (
+          <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">
+            No active exam schedules or subject rosters available.
+          </div>
+        ) : studentMarks.length === 0 ? (
+          <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">
+            No students enrolled for this exam schedule.
           </div>
         ) : (
           studentMarks.map((sm) => (

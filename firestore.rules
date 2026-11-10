@@ -33,6 +33,39 @@ service cloud.firestore {
       return isAuthenticated() && getUserRole() == 'STUDENT';
     }
 
+    function isParent() {
+      return isAuthenticated() && getUserRole() == 'PARENT';
+    }
+
+    function studentData(studentId) {
+      return get(/databases/$(database)/documents/students/$(studentId)).data;
+    }
+
+    function isParentOfStudentResource() {
+      return isParent()
+        && getUserSchoolId() == resource.data.schoolId
+        && (
+          (resource.data.parentUserIds is list && request.auth.uid in resource.data.parentUserIds)
+          || (
+            resource.data.guardianEmail is string
+            && resource.data.guardianEmail.lower() == getUserData().email.lower()
+          )
+        );
+    }
+
+    function isParentOfStudentId(studentId) {
+      return isParent()
+        && exists(/databases/$(database)/documents/students/$(studentId))
+        && getUserSchoolId() == studentData(studentId).schoolId
+        && (
+          (studentData(studentId).parentUserIds is list && request.auth.uid in studentData(studentId).parentUserIds)
+          || (
+            studentData(studentId).guardianEmail is string
+            && studentData(studentId).guardianEmail.lower() == getUserData().email.lower()
+          )
+        );
+    }
+
     function isSameSchool(schoolId) {
       return isAuthenticated() && (getUserSchoolId() == schoolId || isAdmin());
     }
@@ -73,7 +106,8 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
         (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
-        (isStudent() && (resource.data.userId == request.auth.uid || resource.data.id == getUserData().studentId))
+        (isStudent() && (resource.data.userId == request.auth.uid || resource.data.id == getUserData().studentId)) ||
+        isParentOfStudentResource()
       );
       allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
     }
@@ -103,13 +137,22 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------
+    // Timetables Collection
+    // -------------------------------------------------------------
+    match /timetables/{entryId} {
+      allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
     // Attendance Collection
     // -------------------------------------------------------------
     match /attendance/{attendanceId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
         (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
-        (isStudent() && resource.data.studentId == getUserData().studentId)
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
       );
       allow create, update: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == request.resource.data.schoolId) ||
@@ -124,7 +167,8 @@ service cloud.firestore {
     match /feeChallans/{challanId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isStudent() && resource.data.studentId == getUserData().studentId)
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
       );
       allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
     }
@@ -135,9 +179,82 @@ service cloud.firestore {
     match /payments/{paymentId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isStudent() && resource.data.studentId == getUserData().studentId)
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
       );
       allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Yearly Fee Structure Collection
+    // -------------------------------------------------------------
+    match /yearlyFeeStructures/{structureId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
+      );
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Import Batches Collection (fee structure / transaction import audit trail)
+    // -------------------------------------------------------------
+    match /importBatches/{batchId} {
+      allow read: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+      allow create: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+      allow update, delete: if false; // Immutable, like auditLogs
+    }
+
+    // -------------------------------------------------------------
+    // Other Collections / Other Expenses (non-tuition income & operational spending)
+    // -------------------------------------------------------------
+    match /otherCollections/{recordId} {
+      allow read: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+      allow create: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+      allow update: if isAdmin() && getUserSchoolId() == resource.data.schoolId; // reversal only, never truly deleted
+      allow delete: if false;
+    }
+
+    match /otherExpenses/{recordId} {
+      allow read: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+      allow create: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+      allow update: if isAdmin() && getUserSchoolId() == resource.data.schoolId; // reversal only, never truly deleted
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Fee Adjustments Collection (immutable audit trail of manual fee changes)
+    // -------------------------------------------------------------
+    match /feeAdjustments/{adjustmentId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
+      );
+      allow create: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+      allow update, delete: if false; // Immutable, like auditLogs
+    }
+
+    // -------------------------------------------------------------
+    // Advance Balances Collection (unapplied student credit)
+    // -------------------------------------------------------------
+    match /advanceBalances/{balanceId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
+      );
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+    }
+
+    // -------------------------------------------------------------
+    // Voucher Generation Batches Collection (monthly generation audit trail)
+    // -------------------------------------------------------------
+    match /voucherGenerationBatches/{batchId} {
+      allow read: if isAdmin() && getUserSchoolId() == resource.data.schoolId;
+      allow create: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
+      allow update, delete: if false; // Immutable, like auditLogs
     }
 
     // -------------------------------------------------------------
@@ -163,7 +280,8 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
         (isTeacher() && getUserSchoolId() == resource.data.schoolId) ||
-        (isStudent() && resource.data.studentId == getUserData().studentId)
+        (isStudent() && resource.data.studentId == getUserData().studentId) ||
+        isParentOfStudentId(resource.data.studentId)
       );
       allow create, update: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == request.resource.data.schoolId) ||
@@ -215,6 +333,24 @@ service cloud.firestore {
       allow read: if isAuthenticated() && getUserSchoolId() == resource.data.schoolId;
       allow create, update: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
       allow delete: if false;
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if isAuthenticated()
+        && getUserSchoolId() == resource.data.schoolId
+        && (
+          isAdmin()
+          || (
+            resource.data.status == 'PUBLISHED'
+            && (
+              resource.data.audience == 'EVERYONE'
+              || (resource.data.audience == 'TEACHERS' && isTeacher())
+              || (resource.data.audience == 'STUDENTS' && isStudent())
+              || (resource.data.audience == 'PARENTS' && isParent())
+            )
+          )
+        );
+      allow create, update, delete: if isAdmin() && getUserSchoolId() == request.resource.data.schoolId;
     }
   }
 }

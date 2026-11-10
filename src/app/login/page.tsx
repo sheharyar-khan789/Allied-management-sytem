@@ -9,9 +9,9 @@ export default function LoginPage() {
   const { login, signup, sendPasswordReset } = useAuth();
 
   const [mode, setMode] = useState<"login" | "signup">("login");
-  const [role, setRole] = useState<"admin" | "teacher" | "student">("admin");
-  const [identifier, setIdentifier] = useState("admin@alliedschool.edu");
-  const [password, setPassword] = useState("AdminSecure2025#");
+  const [role, setRole] = useState<"admin" | "teacher" | "student" | "parent">("admin");
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -30,20 +30,10 @@ export default function LoginPage() {
   const [resetLoading, setResetLoading] = useState(false);
   const [resetMessage, setResetMessage] = useState("");
 
-  const handleRoleChange = (selectedRole: "admin" | "teacher" | "student") => {
+  const handleRoleChange = (selectedRole: "admin" | "teacher" | "student" | "parent") => {
     setRole(selectedRole);
     setError("");
     setSuccessMessage("");
-    if (selectedRole === "admin") {
-      setIdentifier("admin@alliedschool.edu");
-      setPassword("AdminSecure2025#");
-    } else if (selectedRole === "teacher") {
-      setIdentifier("teacher@alliedschool.edu");
-      setPassword("TeacherSecure2025#");
-    } else if (selectedRole === "student") {
-      setIdentifier("student@alliedschool.edu");
-      setPassword("StudentSecure2025#");
-    }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -96,7 +86,7 @@ export default function LoginPage() {
         throw new Error(data?.error || "Login failed. Please verify credentials.");
       }
 
-      router.push(data.redirectUrl || (role === "admin" ? "/admin" : role === "teacher" ? "/teacher" : "/student"));
+      router.push(data.redirectUrl || "/");
       router.refresh();
     } catch (err: any) {
       setError(err.message || "Authentication failed.");
@@ -183,7 +173,7 @@ export default function LoginPage() {
               </h1>
               <p className="font-body-md text-sm text-on-surface-variant font-medium">
                 {mode === "login"
-                  ? "Allied School Management System — Firebase Production"
+                  ? "Allied School Management System"
                   : "Create Initial School Administrator & Campus Profile"}
               </p>
             </div>
@@ -238,7 +228,7 @@ export default function LoginPage() {
                 <label className="block font-label-sm text-[11px] text-on-surface-variant uppercase tracking-wider mb-2 font-semibold text-center sm:text-left">
                   Select Portal Role
                 </label>
-                <div className="grid grid-cols-3 gap-1 p-1 bg-surface-container-low rounded-lg border border-surface-container-high/40">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 bg-surface-container-low rounded-lg border border-surface-container-high/40">
                   <button
                     type="button"
                     onClick={() => handleRoleChange("admin")}
@@ -249,7 +239,7 @@ export default function LoginPage() {
                     }`}
                   >
                     <span className="material-symbols-outlined text-[18px]">shield_person</span>
-                    <span className="truncate">Admin / Principal</span>
+                    <span className="truncate">Admin</span>
                   </button>
 
                   <button
@@ -262,7 +252,7 @@ export default function LoginPage() {
                     }`}
                   >
                     <span className="material-symbols-outlined text-[18px]">school</span>
-                    <span className="truncate">Teacher / Staff</span>
+                    <span className="truncate">Teacher</span>
                   </button>
 
                   <button
@@ -275,7 +265,20 @@ export default function LoginPage() {
                     }`}
                   >
                     <span className="material-symbols-outlined text-[18px]">person</span>
-                    <span className="truncate">Student / Parent</span>
+                    <span className="truncate">Student</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleRoleChange("parent")}
+                    className={`flex items-center justify-center gap-1.5 py-2 px-2 text-center font-label-md text-xs font-semibold rounded transition-all ${
+                      role === "parent"
+                        ? "bg-surface-container-lowest text-secondary shadow-sm"
+                        : "text-on-surface-variant hover:text-on-surface"
+                    }`}
+                  >
+                    <span className="material-symbols-outlined text-[18px]">family_restroom</span>
+                    <span className="truncate">Parent</span>
                   </button>
                 </div>
               </div>
@@ -291,9 +294,11 @@ export default function LoginPage() {
                     </label>
                     <span className="font-label-sm text-[11px] text-secondary bg-surface-container-low px-2 py-0.5 rounded-full font-medium">
                       {role === "admin"
-                        ? "Superadmin Scope"
+                        ? "Admin Scope"
                         : role === "teacher"
                         ? "Faculty Scope"
+                        : role === "parent"
+                        ? "Guardian Scope"
                         : "Student Scope"}
                     </span>
                   </div>
@@ -388,22 +393,6 @@ export default function LoginPage() {
                 </div>
               </form>
 
-              {/* Quick Demo Credential Helper Banner */}
-              <div className="mt-space-md p-3 bg-surface-container-low rounded-lg flex items-center justify-between gap-2 border border-surface-container-high/40">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="material-symbols-outlined text-secondary text-[20px] shrink-0">info</span>
-                  <div className="font-body-sm text-xs text-on-surface truncate">
-                    <span className="font-semibold text-primary capitalize">{role}:</span> {identifier}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleRoleChange(role)}
-                  className="shrink-0 px-2.5 py-1 font-label-sm text-xs font-semibold bg-surface-container-lowest hover:bg-surface-container-high text-secondary rounded shadow-sm transition-colors border border-surface-container-high"
-                >
-                  Auto Fill
-                </button>
-              </div>
             </>
           ) : (
             /* ---------------- SIGNUP / REGISTER SCHOOL MODE ---------------- */

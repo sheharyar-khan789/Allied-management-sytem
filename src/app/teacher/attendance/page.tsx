@@ -17,8 +17,7 @@ export default function TeacherAttendanceRegisterPage() {
       .then((json) => {
         if (json.success && json.classes.length > 0) {
           setClasses(json.classes);
-          const class5A = json.classes.find((c: any) => c.displayName === "Class 5-A");
-          setSelectedClassId(class5A ? class5A.id : json.classes[0].id);
+          setSelectedClassId(json.classes[0].id);
         }
       })
       .catch(console.error);
@@ -193,6 +192,14 @@ export default function TeacherAttendanceRegisterPage() {
           <div className="p-12 flex flex-col items-center justify-center space-y-3 bg-surface-container-lowest rounded-xl">
             <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
             <p className="text-xs text-on-surface-variant">Loading roster...</p>
+          </div>
+        ) : classes.length === 0 ? (
+          <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">
+            No classes assigned or available to take attendance.
+          </div>
+        ) : roster.length === 0 ? (
+          <div className="p-12 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 text-on-surface-variant text-xs">
+            No students enrolled in this class cohort yet.
           </div>
         ) : (
           roster.map((st) => (

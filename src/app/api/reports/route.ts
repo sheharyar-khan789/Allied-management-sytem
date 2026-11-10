@@ -1,11 +1,12 @@
-﻿import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getStudentsServer,
   getTeachersServer,
   getClassesServer,
   getFeeChallansServer,
-  getExamResultsServer
+  getExamResultsServer,
+  getAttendanceServer
 } from "@/lib/firebase/server-db";
 
 export async function GET(req: NextRequest) {
@@ -13,26 +14,35 @@ export async function GET(req: NextRequest) {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     const schoolId = authUser.schoolId;
 
-    const [classes, students, teachers, challans, examResults] = await Promise.all([
+    const [classes, students, teachers, challans, examResults, attendanceRecords] = await Promise.all([
       getClassesServer(schoolId),
       getStudentsServer(schoolId),
       getTeachersServer(schoolId),
       getFeeChallansServer(schoolId),
-      getExamResultsServer(schoolId)
+      getExamResultsServer(schoolId),
+      getAttendanceServer(schoolId)
     ]);
 
-    // 1. Attendance Report by Class
+    // 1. Real Attendance Report by Class
     const attendanceByClass = classes.map((cls) => {
       const clsStudents = students.filter((s) => s.classId === cls.id);
+      const clsAtt = attendanceRecords.filter((a) => a.classId === cls.id);
+      const totalDays = clsAtt.length;
+      const present = clsAtt.filter((a) => a.status === "PRESENT").length;
+      const late = clsAtt.filter((a) => a.status === "LATE").length;
+      const leave = clsAtt.filter((a) => a.status === "LEAVE").length;
+      const absent = clsAtt.filter((a) => a.status === "ABSENT").length;
+      const attendanceRate = totalDays > 0 ? Number((((present + late) / totalDays) * 100).toFixed(1)) : 0;
+
       return {
         classId: cls.id,
         className: `${cls.name}-${cls.section}`,
         studentCount: clsStudents.length,
-        attendanceRate: 94.5,
-        present: Math.round(clsStudents.length * 0.94),
-        late: 1,
-        leave: 0,
-        absent: 0,
+        attendanceRate,
+        present,
+        late,
+        leave,
+        absent,
       };
     });
 
@@ -42,7 +52,7 @@ export async function GET(req: NextRequest) {
       const expected = clsChallans.reduce((s, f) => s + (f.totalExpected || 0), 0);
       const collected = clsChallans.reduce((s, f) => s + (f.paidAmount || 0), 0);
       const outstanding = Math.max(0, expected - collected);
-      const collectionRate = expected > 0 ? ((collected / expected) * 100).toFixed(1) : "100.0";
+      const collectionRate = expected > 0 ? ((collected / expected) * 100).toFixed(1) : "0.0";
 
       return {
         classId: cls.id,
@@ -68,7 +78,7 @@ export async function GET(req: NextRequest) {
 
     const totalResults = examResults.length;
     const passedResults = examResults.filter((r) => r.grade !== "F").length;
-    const passPercentage = totalResults > 0 ? ((passedResults / totalResults) * 100).toFixed(1) : "98.5";
+    const passPercentage = totalResults > 0 ? ((passedResults / totalResults) * 100).toFixed(1) : "0.0";
 
     const femaleStudents = students.filter((s) => s.gender === "FEMALE").length;
     const maleStudents = students.filter((s) => s.gender === "MALE").length;

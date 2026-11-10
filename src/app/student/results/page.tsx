@@ -42,17 +42,19 @@ export default function StudentResultsReportCardPage() {
             Official Academic Report Card
           </h1>
           <p className="font-body-md text-xs text-on-surface-variant mt-0.5">
-            Verified institutional grade transcript for Term 1 Examination 2024-2025.
+            Recorded examination results for this student. Rankings are not calculated.
           </p>
         </div>
 
-        <button
-          onClick={() => window.print()}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-semibold text-xs hover:bg-secondary/90 shadow-sm transition-all"
-        >
-          <span className="material-symbols-outlined text-[18px]">print</span>
-          <span>Print Official Report Card</span>
-        </button>
+        {student?.id && (
+          <a
+            href={`/print/report-card/${student.id}`}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary font-semibold text-xs hover:bg-secondary/90 shadow-sm transition-all"
+          >
+            <span className="material-symbols-outlined text-[18px]">print</span>
+            <span>Print Official Report Card</span>
+          </a>
+        )}
       </div>
 
       {/* Printable Report Card Sheet */}
@@ -64,18 +66,20 @@ export default function StudentResultsReportCardPage() {
               <span className="material-symbols-outlined text-[24px]">school</span>
             </div>
             <h2 className="font-headline-xl text-2xl sm:text-3xl font-bold text-on-surface tracking-tight">
-              {data?.school?.name || "ALLIED SCHOOL"}
+              {data?.school?.name || "School information not configured"}
             </h2>
           </div>
           <p className="text-xs font-semibold text-secondary uppercase tracking-wider">
-            {data?.school?.campusName || data?.school?.address || "Official Academic Report"}
+            {data?.school?.campusName || data?.school?.address || "School information not configured"}
           </p>
-          <p className="text-xs text-on-surface-variant italic font-medium">
-            “Better Education, Brighter Future”
-          </p>
+          {data?.school?.academicYear ? (
+            <p className="text-xs text-on-surface-variant italic font-medium">
+              Academic year {data.school.academicYear}
+            </p>
+          ) : null}
           <div className="pt-2">
             <span className="px-4 py-1 rounded bg-surface-container font-headline-md text-xs font-bold text-on-surface uppercase tracking-wide">
-              Official Progress Report — Mid-Term Examination 2024-2025
+              Student Report Card
             </span>
           </div>
         </div>
@@ -131,14 +135,16 @@ export default function StudentResultsReportCardPage() {
                       {r.examSchedule?.subject?.name || "Subject"}
                     </td>
                     <td className="py-3 px-3 font-mono text-on-surface-variant">
-                      {r.examSchedule?.subject?.code || "SUB"}
-                    </td>
-                    <td className="py-3 px-3 text-center">{r.maxMarks}</td>
-                    <td className="py-3 px-3 text-center font-bold text-on-surface">{r.marksObtained}</td>
-                    <td className="py-3 px-3 text-center font-semibold">{pct}%</td>
-                    <td className="py-3 px-3 text-center font-bold text-secondary">{r.grade}</td>
-                    <td className="py-3 px-3 text-center font-bold">{r.gpa.toFixed(1)}</td>
-                    <td className="py-3 px-3 text-on-surface-variant text-xs">{r.remarks || "Excellent"}</td>
+                    {r.examSchedule?.subject?.code || "—"}
+                  </td>
+                  <td className="py-3 px-3 text-center">{r.maxMarks}</td>
+                  <td className="py-3 px-3 text-center font-bold text-on-surface">{r.marksObtained}</td>
+                  <td className="py-3 px-3 text-center font-semibold">{Number.isFinite(pct) ? `${pct}%` : "—"}</td>
+                  <td className="py-3 px-3 text-center font-bold text-secondary">{r.grade || "—"}</td>
+                  <td className="py-3 px-3 text-center font-bold">
+                    {typeof r.gpa === "number" ? r.gpa.toFixed(1) : "—"}
+                  </td>
+                  <td className="py-3 px-3 text-on-surface-variant text-xs">{r.remarks || "—"}</td>
                   </tr>
                 );
               })}
@@ -149,12 +155,12 @@ export default function StudentResultsReportCardPage() {
                 <td className="py-3 px-3 text-center">{stats.totalMarks}</td>
                 <td className="py-3 px-3 text-center text-secondary font-bold">{stats.obtainedMarks}</td>
                 <td className="py-3 px-3 text-center">{stats.percentage}%</td>
-                <td className="py-3 px-3 text-center text-secondary font-bold">
-                  {stats.gpa >= 3.5 ? "A+" : stats.gpa >= 3.0 ? "A" : stats.gpa >= 2.0 ? "B" : stats.gpa > 0 ? "C" : "—"}
+                <td className="py-3 px-3 text-center text-secondary font-bold">—</td>
+                <td className="py-3 px-3 text-center">
+                  {typeof stats.gpa === "number" && stats.gpa > 0 ? stats.gpa.toFixed(2) : "—"}
                 </td>
-                <td className="py-3 px-3 text-center">{typeof stats.gpa === "number" ? stats.gpa.toFixed(2) : "0.00"}</td>
                 <td className="py-3 px-3 text-on-tertiary-container">
-                  {stats.gpa > 0 ? "Academic Standing Certified" : "No Records"}
+                  {stats.totalMarks > 0 ? "From recorded results" : "No records"}
                 </td>
               </tr>
             </tfoot>
@@ -180,7 +186,7 @@ export default function StudentResultsReportCardPage() {
 
             <div className="text-center">
               <div className="w-40 border-b border-outline-variant pb-1 font-semibold text-on-surface text-center">
-                {data?.school?.principalName || "Authorized School Representative"}
+                {data?.school?.principalName || "School information not configured"}
               </div>
               <span className="text-[10px] text-on-surface-variant uppercase mt-1 block">Principal / Head</span>
             </div>

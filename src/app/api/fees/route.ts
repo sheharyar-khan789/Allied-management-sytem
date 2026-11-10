@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getFeeChallansServer,
+  getFeeChallanByIdServer,
   saveFeeChallanServer,
   recordPaymentServer,
   createAuditLogServer,
@@ -15,6 +16,7 @@ export async function GET(req: NextRequest) {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     const { searchParams } = new URL(req.url);
     const classId = searchParams.get("classId") || undefined;
+    const studentId = searchParams.get("studentId") || undefined;
     const status = searchParams.get("status") || undefined;
     const month = searchParams.get("month") || undefined;
     const search = searchParams.get("search")?.toLowerCase() || "";
@@ -22,11 +24,14 @@ export async function GET(req: NextRequest) {
     const parsedLimit = limitParam ? parseInt(limitParam, 10) : undefined;
 
     const [challans, classes] = await Promise.all([
-      getFeeChallansServer(authUser.schoolId, classId, month),
+      getFeeChallansServer(authUser.schoolId, studentId, month, undefined, status, parsedLimit),
       getClassesServer(authUser.schoolId)
     ]);
 
     let filtered = challans;
+    if (classId && classId !== "all" && classId !== "ALL") {
+      filtered = filtered.filter((c) => c.classId === classId);
+    }
     if (status && status !== "ALL" && status !== "all") {
       filtered = filtered.filter((c) => c.status.toUpperCase() === status.toUpperCase());
     }
@@ -49,11 +54,11 @@ export async function GET(req: NextRequest) {
       id: c.id,
       challanNumber: c.challanNo,
       studentId: c.studentId,
-      studentName: c.studentName || "Student",
-      admissionNumber: c.admissionNo || "STD-2024",
-      rollNumber: "01",
+      studentName: c.studentName || "",
+      admissionNumber: c.admissionNo || "",
+      rollNumber: "",
       classId: c.classId,
-      className: c.className || "Class",
+      className: c.className || "",
       month: c.month,
       year: c.year,
       dueDate: c.dueDate,
@@ -67,9 +72,9 @@ export async function GET(req: NextRequest) {
       balance: Math.max(0, c.totalExpected - c.paidAmount),
       status: c.status,
       paymentDate: c.updatedAt,
-      paymentMethod: "Cash Desk",
-      receiptNumber: `REC-${c.id}`,
-      notes: "School Fee Invoicing",
+      paymentMethod: c.paidAmount > 0 ? "Cash Desk" : "",
+      receiptNumber: c.paidAmount > 0 ? `REC-${c.id}` : "",
+      notes: "",
     }));
 
     return NextResponse.json({
@@ -188,12 +193,29 @@ export async function PUT(req: NextRequest) {
       );
     }
 
+    // P0-1 & P0-2: Verify target challan exists and belongs strictly to the authenticated tenant
+    const targetChallan = await getFeeChallanByIdServer(authUser.schoolId, challanId);
+    if (!targetChallan) {
+      return NextResponse.json(
+        { error: "Challan not found or belongs to another institution." },
+        { status: 404 }
+      );
+    }
+
+    if (targetChallan.schoolId !== authUser.schoolId) {
+      return NextResponse.json(
+        { error: "Access denied. Cannot process payments across institutions." },
+        { status: 403 }
+      );
+    }
+
     const receiptNo = `RCT-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
     const paymentDoc: PaymentDoc = {
       id: `pay-${Date.now()}`,
       schoolId: authUser.schoolId,
       challanId,
-      studentId: "std",
+      studentId: targetChallan.studentId,
+      studentName: targetChallan.studentName,
       receiptNo,
       amount: Number(amount),
       paymentDate: new Date().toISOString().split("T")[0],
@@ -213,7 +235,7 @@ export async function PUT(req: NextRequest) {
       "COLLECT_FEE_PAYMENT",
       "FEE",
       challanId,
-      `Collected payment of Rs. ${amount} (Receipt: ${receiptNo}).`
+      `Collected payment of Rs. ${amount} for ${targetChallan.studentName} (Receipt: ${receiptNo}).`
     );
 
     return NextResponse.json({ success: true, receiptNumber: receiptNo });

@@ -137,8 +137,10 @@ export default function StudentFeesPage() {
                       {ch.status}
                     </span>
                   </td>
-                  <td className="py-3 px-4 text-right font-mono text-[11px] text-on-surface-variant">
-                    {ch.receiptNumber || "Pending"}
+                  <td className="py-3 px-4 text-right">
+                    <a href={`/print/challan/${ch.id}`} className="text-secondary font-semibold">
+                      Print challan
+                    </a>
                   </td>
                 </tr>
               ))}

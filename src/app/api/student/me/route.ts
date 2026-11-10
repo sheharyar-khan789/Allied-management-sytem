@@ -8,12 +8,14 @@ import {
   getStudentAttendanceServer,
   getStudentFeeChallansServer,
   getExamResultsServer,
+  getExamsServer,
   getStudentObservationsServer,
   getClassesServer,
   getSubjectsServer,
   getSchoolServer,
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
+import { schoolPrintIdentity } from "@/lib/school-display";
 
 export async function GET(req: NextRequest) {
   try {
@@ -54,16 +56,20 @@ export async function GET(req: NextRequest) {
     const resolvedStudentId = student.id;
 
     // 3. Fetch related academic and financial datasets strictly for this student
-    const [attendances, challans, examResults, observations, classes, subjects, school, settings] = await Promise.all([
+    const [attendances, challans, examResultsRaw, exams, observations, classes, subjects, school, settings] = await Promise.all([
       getStudentAttendanceServer(authUser.schoolId, resolvedStudentId),
       getStudentFeeChallansServer(authUser.schoolId, resolvedStudentId),
       getExamResultsServer(authUser.schoolId, undefined, undefined, resolvedStudentId),
+      getExamsServer(authUser.schoolId),
       getStudentObservationsServer(authUser.schoolId, resolvedStudentId),
       getClassesServer(authUser.schoolId),
       getSubjectsServer(authUser.schoolId, student.classId),
       getSchoolServer(authUser.schoolId),
       getSchoolSettingsServer(authUser.schoolId)
     ]);
+    const publishedExamIds = new Set(exams.filter((e) => e.status === "PUBLISHED").map((e) => e.id));
+    const examResults = examResultsRaw.filter((r) => publishedExamIds.has(r.examId));
+    const examNameById = new Map(exams.map((e) => [e.id, e.name]));
 
     const targetClass = classes.find((c) => c.id === student.classId);
 
@@ -84,9 +90,11 @@ export async function GET(req: NextRequest) {
     const totalMaxMarks = examResults.reduce((s, r) => s + (r.totalMarks || 100), 0);
     const totalObtainedMarks = examResults.reduce((s, r) => s + (r.obtainedMarks || 0), 0);
     const examPct = totalMaxMarks > 0 ? parseFloat(((totalObtainedMarks / totalMaxMarks) * 100).toFixed(1)) : 0.0;
-    const avgGpa = examResults.length > 0
-      ? parseFloat((examResults.reduce((s, r) => s + (r.gpa || 0), 0) / examResults.length).toFixed(2))
-      : 0.0;
+    const gpaValues = examResults.filter((r) => typeof r.gpa === "number");
+    const avgGpa =
+      gpaValues.length > 0
+        ? parseFloat((gpaValues.reduce((s, r) => s + (r.gpa || 0), 0) / gpaValues.length).toFixed(2))
+        : null;
 
     const formattedStudent = {
       id: student.id,
@@ -150,8 +158,8 @@ export async function GET(req: NextRequest) {
         remarks: r.remarks || "",
         examSchedule: {
           examDate: r.createdAt ? r.createdAt.split("T")[0] : "",
-          exam: { name: "Term Examination" },
-          subject: { name: r.subjectName || "Subject", code: "SUB" }
+          exam: { name: examNameById.get(r.examId) || "" },
+          subject: { name: r.subjectName || "", code: "" }
         }
       })),
       observations: observations.map((o) => ({
@@ -189,12 +197,7 @@ export async function GET(req: NextRequest) {
           obtainedMarks: totalObtainedMarks
         }
       },
-      school: {
-        name: settings?.schoolName || school?.name || "Allied School",
-        campusName: settings?.campusName || "",
-        address: settings?.address || school?.address || "",
-        principalName: settings?.principalName || school?.principalName || "Authorized School Representative"
-      }
+      school: schoolPrintIdentity(school, settings)
     });
   } catch (error: any) {
     if (error instanceof Response) return error;

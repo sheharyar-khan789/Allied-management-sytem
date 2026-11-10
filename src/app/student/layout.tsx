@@ -13,6 +13,7 @@ export default async function StudentLayout({
   let studentName = session?.name || "Student";
   let admissionNo = "";
   let className = "";
+  let rollNo = "";
 
   if (session?.studentId && session?.schoolId) {
     const st = await getStudentByIdServer(session.schoolId, session.studentId);
@@ -20,12 +21,13 @@ export default async function StudentLayout({
       studentName = st.fullName;
       admissionNo = st.admissionNo;
       className = st.className || "";
+      rollNo = st.rollNo || "";
     }
   }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      <StudentNav studentName={studentName} admissionNo={admissionNo} className={className} />
+      <StudentNav studentName={studentName} admissionNo={admissionNo} className={className} rollNo={rollNo} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full">
         {children}
       </main>

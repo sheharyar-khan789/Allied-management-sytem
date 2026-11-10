@@ -86,70 +86,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     pass: string,
     schoolName: string
   ): Promise<void> => {
-    // 1. Create Firebase Auth user
+    // 1. Create Firebase Auth user on client
     const cred = await createUserWithEmailAndPassword(auth, email, pass);
-    const uid = cred.user.uid;
+    const idToken = await cred.user.getIdToken();
 
-    // 2. Generate slug-based schoolId
-    const schoolSlug = schoolName
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    const schoolId = `${schoolSlug || "allied-school"}-${Date.now().toString().slice(-4)}`;
-
-    const now = new Date().toISOString();
-
-    // 3. Create School document
-    await setDoc(doc(db, "schools", schoolId), {
-      id: schoolId,
-      name: schoolName,
-      code: schoolSlug.toUpperCase().slice(0, 6) || "SCH001",
-      academicYear: "2024-2025",
-      principalName: fullName,
-      email: email,
-      createdAt: now,
-      updatedAt: now,
+    // 2. Call server-side atomic registration endpoint (eliminates Firestore rules race conditions)
+    const res = await fetch("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fullName,
+        email,
+        password: pass,
+        schoolName,
+        idToken,
+      }),
     });
 
-    // 4. Create School Settings
-    await setDoc(doc(db, "schoolSettings", schoolId), {
-      id: schoolId,
-      schoolId: schoolId,
-      schoolName: schoolName,
-      campusName: "Main Campus",
-      motto: "Excellence in Education",
-      address: "Campus Avenue, City Centre",
-      phone: "+92 300 1234567",
-      email: email,
-      principalName: fullName,
-      academicYear: "2024-2025",
-      gradingScale: [
-        { minPercentage: 90, grade: "A+", gpa: 4.0 },
-        { minPercentage: 80, grade: "A", gpa: 3.7 },
-        { minPercentage: 70, grade: "B+", gpa: 3.3 },
-        { minPercentage: 60, grade: "B", gpa: 3.0 },
-        { minPercentage: 50, grade: "C", gpa: 2.5 },
-        { minPercentage: 40, grade: "D", gpa: 2.0 },
-        { minPercentage: 0, grade: "F", gpa: 0.0 },
-      ],
-      updatedAt: now,
-    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "School registration failed.");
+    }
 
-    // 5. Create Admin User Profile
-    const profileData: UserProfile = {
-      uid,
-      name: fullName,
-      email,
-      role: "ADMIN",
-      schoolId,
-      status: "ACTIVE",
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    await setDoc(doc(db, "users", uid), profileData);
-    setProfile(profileData);
+    setProfile(data.user);
     document.cookie = "session_user=; path=/; max-age=0";
   };
 

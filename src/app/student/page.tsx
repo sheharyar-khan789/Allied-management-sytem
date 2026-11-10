@@ -28,6 +28,19 @@ export default function StudentDashboardPage() {
   }
 
   const student = data?.student;
+
+  if (!student) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] text-center p-8 bg-surface-container-lowest rounded-xl border border-surface-container-high/40">
+        <span className="material-symbols-outlined text-4xl text-on-surface-variant mb-2">person_off</span>
+        <h2 className="text-lg font-bold text-on-surface">No Student Profile Linked</h2>
+        <p className="text-xs text-on-surface-variant mt-1 max-w-sm">
+          Your account is not currently linked to an active student record. Please contact the campus administrator.
+        </p>
+      </div>
+    );
+  }
+
   const stats = data?.stats || {
     attendance: { percentage: 0, present: 0, absent: 0 },
     fees: { expected: 0, paid: 0, outstanding: 0 },
@@ -156,27 +169,33 @@ export default function StudentDashboardPage() {
             </div>
 
             <div className="space-y-2.5 mt-3">
-              {student?.examResults?.slice(0, 4).map((r: any) => (
-                <div
-                  key={r.id}
-                  className="p-2.5 rounded-lg bg-surface-container-low/60 border border-surface-container-high/30 flex items-center justify-between text-xs"
-                >
-                  <div>
-                    <span className="font-bold text-on-surface">{r.examSchedule?.subject?.name}</span>
-                    <span className="text-[10px] text-on-surface-variant block font-mono">
-                      Code: {r.examSchedule?.subject?.code}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-on-surface">
-                      {r.marksObtained} / {r.maxMarks}
-                    </span>
-                    <span className="px-2 py-0.5 rounded bg-tertiary-container/10 text-on-tertiary-container font-bold text-[11px]">
-                      {r.grade}
-                    </span>
-                  </div>
+              {(!student?.examResults || student.examResults.length === 0) ? (
+                <div className="text-center py-6 text-on-surface-variant text-xs">
+                  No exam results published yet.
                 </div>
-              ))}
+              ) : (
+                student.examResults.slice(0, 4).map((r: any) => (
+                  <div
+                    key={r.id}
+                    className="p-2.5 rounded-lg bg-surface-container-low/60 border border-surface-container-high/30 flex items-center justify-between text-xs"
+                  >
+                    <div>
+                      <span className="font-bold text-on-surface">{r.examSchedule?.subject?.name}</span>
+                      <span className="text-[10px] text-on-surface-variant block font-mono">
+                        Code: {r.examSchedule?.subject?.code}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-on-surface">
+                        {r.marksObtained} / {r.maxMarks}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-tertiary-container/10 text-on-tertiary-container font-bold text-[11px]">
+                        {r.grade}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -192,21 +211,27 @@ export default function StudentDashboardPage() {
             </div>
 
             <div className="space-y-2.5 mt-3">
-              {student?.observations?.slice(0, 2).map((obs: any) => (
-                <div
-                  key={obs.id}
-                  className="p-3 rounded-lg bg-surface-container-low/60 border border-surface-container-high/30 space-y-1 text-xs"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-secondary">{obs.title}</span>
-                    <span className="text-[10px] text-on-surface-variant">{formatDate(obs.date)}</span>
-                  </div>
-                  <p className="text-[11px] text-on-surface-variant leading-relaxed">{obs.content}</p>
-                  <span className="text-[10px] text-on-surface-variant italic block pt-1">
-                    — {obs.teacher?.firstName} {obs.teacher?.lastName}
-                  </span>
+              {(!student?.observations || student.observations.length === 0) ? (
+                <div className="text-center py-6 text-on-surface-variant text-xs">
+                  No observations or commendations recorded yet.
                 </div>
-              ))}
+              ) : (
+                student.observations.slice(0, 2).map((obs: any) => (
+                  <div
+                    key={obs.id}
+                    className="p-3 rounded-lg bg-surface-container-low/60 border border-surface-container-high/30 space-y-1 text-xs"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-secondary">{obs.title}</span>
+                      <span className="text-[10px] text-on-surface-variant">{formatDate(obs.date)}</span>
+                    </div>
+                    <p className="text-[11px] text-on-surface-variant leading-relaxed">{obs.content}</p>
+                    <span className="text-[10px] text-on-surface-variant italic block pt-1">
+                      — {obs.teacher?.firstName} {obs.teacher?.lastName}
+                    </span>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

@@ -1,58 +1,23 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 
 export default function TeacherSchedulePage() {
-  const [selectedDay, setSelectedDay] = useState("Today");
+  const [timetable, setTimetable] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const timetable = [
-    {
-      period: "Period 1",
-      time: "08:00 AM - 08:45 AM",
-      subject: "Mathematics",
-      class: "Class 5-A",
-      room: "Room 105",
-      status: "COMPLETED",
-      topic: "Fractions & Decimal Conversion",
-    },
-    {
-      period: "Period 2",
-      time: "08:50 AM - 09:35 AM",
-      subject: "General Science",
-      class: "Class 5-B",
-      room: "Science Lab 1",
-      status: "COMPLETED",
-      topic: "Plant Cell Structure & Photosynthesis",
-    },
-    {
-      period: "Period 3",
-      time: "09:40 AM - 10:25 AM",
-      subject: "Mathematics",
-      class: "Class 6-A",
-      room: "Room 107",
-      status: "ACTIVE",
-      topic: "Algebraic Expressions & Linear Equations",
-    },
-    {
-      period: "Period 4",
-      time: "10:55 AM - 11:40 AM",
-      subject: "General Science",
-      class: "Class 6-B",
-      room: "Room 108",
-      status: "UPCOMING",
-      topic: "Energy Transformation & Heat",
-    },
-    {
-      period: "Period 5",
-      time: "11:45 AM - 12:30 PM",
-      subject: "Mathematics Remedial",
-      class: "Class 5-A (Selected Group)",
-      room: "Room 105",
-      status: "UPCOMING",
-      topic: "Geometry Practice & Angle Measurement",
-    },
-  ];
+  useEffect(() => {
+    fetch("/api/timetable")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && Array.isArray(data.timetable)) {
+          setTimetable(data.timetable);
+        }
+      })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <div className="flex flex-col w-full gap-space-lg">
@@ -92,69 +57,72 @@ export default function TeacherSchedulePage() {
 
       {/* Timetable Cards */}
       <div className="space-y-3">
-        {timetable.map((t, idx) => (
-          <div
-            key={idx}
-            className={`p-4 rounded-xl bg-surface-container-lowest shadow-sm border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-              t.status === "ACTIVE"
-                ? "border-secondary ring-1 ring-secondary/20 shadow-md"
-                : "border-surface-container-high/40"
-            }`}
-          >
-            <div className="flex items-start sm:items-center gap-3.5">
-              <div
-                className={`w-12 h-12 rounded-xl flex flex-col items-center justify-center font-bold shrink-0 ${
-                  t.status === "ACTIVE"
-                    ? "bg-secondary text-white"
-                    : t.status === "COMPLETED"
-                    ? "bg-tertiary-container/10 text-on-tertiary-container"
-                    : "bg-surface-container text-on-surface-variant"
-                }`}
-              >
-                <span className="text-xs font-mono">{t.period.split(" ")[1]}</span>
-                <span className="text-[9px] uppercase font-semibold">Period</span>
-              </div>
-
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-sm text-on-surface">{t.subject}</h3>
-                  <span className="px-2 py-0.5 rounded bg-surface-container text-[11px] font-bold text-primary">
-                    {t.class}
-                  </span>
-                  <span className="text-[11px] text-on-surface-variant font-mono">({t.room})</span>
-                </div>
-                <p className="text-xs text-on-surface-variant mt-0.5 font-medium">
-                  Topic: <span className="text-on-surface font-semibold">{t.topic}</span>
-                </p>
-                <span className="text-[10px] text-on-surface-variant font-mono block sm:inline mt-1 sm:mt-0">
-                  {t.time}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 self-end sm:self-auto">
-              <span
-                className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                  t.status === "ACTIVE"
-                    ? "bg-secondary/10 text-secondary animate-pulse"
-                    : t.status === "COMPLETED"
-                    ? "bg-tertiary-container/10 text-on-tertiary-container"
-                    : "bg-surface-container text-on-surface-variant"
-                }`}
-              >
-                {t.status}
-              </span>
-
-              <Link
-                href="/teacher/attendance"
-                className="px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-semibold text-xs flex items-center gap-1"
-              >
-                <span className="material-symbols-outlined text-[16px]">how_to_reg</span>
-                <span>Roll Call</span>
-              </Link>
-            </div>
+        {loading && (
+          <div className="flex flex-col items-center justify-center p-8 bg-surface-container-lowest rounded-xl border border-surface-container-high/40 space-y-2">
+            <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
+            <p className="text-xs text-on-surface-variant">Loading schedule...</p>
           </div>
-        ))}
+        )}
+
+        {!loading && timetable.length === 0 && (
+          <div className="p-8 text-center bg-surface-container-lowest rounded-xl border border-surface-container-high/40 space-y-2">
+            <span className="material-symbols-outlined text-3xl text-on-surface-variant">calendar_clock</span>
+            <p className="font-semibold text-sm text-on-surface">No timetable configured</p>
+            <p className="text-xs text-on-surface-variant">
+              No periods or classroom allocations have been assigned to your faculty schedule yet.
+            </p>
+          </div>
+        )}
+
+        {!loading && timetable.map((t, idx) => {
+          const periodDisplay = t.periodName || t.period || `P${idx + 1}`;
+          const subjectDisplay = t.subjectName || t.subject || "Subject";
+          const classDisplay = t.className || t.class || "Class";
+          const roomDisplay = t.roomNo || t.room || "-";
+          const timeDisplay = t.startTime && t.endTime ? `${t.startTime} - ${t.endTime}` : (t.time || "Scheduled");
+
+          return (
+            <div
+              key={t.id || idx}
+              className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+            >
+              <div className="flex items-start sm:items-center gap-3.5">
+                <div className="w-12 h-12 rounded-xl flex flex-col items-center justify-center font-bold shrink-0 bg-surface-container text-secondary">
+                  <span className="text-xs font-mono">{periodDisplay.replace(/[^0-9]/g, "") || String(idx + 1)}</span>
+                  <span className="text-[9px] uppercase font-semibold">Period</span>
+                </div>
+
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-bold text-sm text-on-surface">{subjectDisplay}</h3>
+                    <span className="px-2 py-0.5 rounded bg-surface-container text-[11px] font-bold text-primary">
+                      {classDisplay}
+                    </span>
+                    <span className="text-[11px] text-on-surface-variant font-mono">({roomDisplay})</span>
+                  </div>
+                  {t.topic && (
+                    <p className="text-xs text-on-surface-variant mt-0.5 font-medium">
+                      Topic: <span className="text-on-surface font-semibold">{t.topic}</span>
+                    </p>
+                  )}
+                  <span className="text-[10px] text-on-surface-variant font-mono block sm:inline mt-1 sm:mt-0">
+                    {timeDisplay}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-end sm:self-auto">
+                <Link
+                  href="/teacher/attendance"
+                  className="px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-semibold text-xs flex items-center gap-1"
+                >
+                  <span className="material-symbols-outlined text-[16px]">how_to_reg</span>
+                  <span>Roll Call</span>
+                </Link>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -162,13 +162,20 @@ export default function StudentDossierPage({
             <span className="material-symbols-outlined text-[18px] text-secondary">edit_note</span>
             <span>Add Observation</span>
           </button>
-          <button
-            onClick={() => window.print()}
-            className="px-3.5 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold flex items-center gap-1.5 hover:bg-secondary/90 shadow-sm transition-all"
+          <Link
+            href={`/print/attendance/${id}`}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold"
           >
             <span className="material-symbols-outlined text-[18px]">print</span>
-            <span>Print Transcript</span>
-          </button>
+            Attendance report
+          </Link>
+          <Link
+            href={`/print/report-card/${id}`}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 shadow-sm"
+          >
+            <span className="material-symbols-outlined text-[18px]">print</span>
+            Report card
+          </Link>
         </div>
       </div>
 
@@ -415,7 +422,10 @@ export default function StudentDossierPage({
                         {ch.status}
                       </span>
                     </td>
-                    <td className="py-2.5 px-4 text-right">
+                    <td className="py-2.5 px-4 text-right whitespace-nowrap space-x-2">
+                      <Link href={`/print/challan/${ch.id}`} className="text-secondary font-semibold">
+                        Print
+                      </Link>
                       {ch.status !== "PAID" && (
                         <button
                           onClick={() => {
@@ -446,18 +456,19 @@ export default function StudentDossierPage({
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-secondary text-[24px]">school</span>
                 <h2 className="font-headline-lg text-lg sm:text-xl font-bold text-on-surface uppercase tracking-tight">
-                  Allied School Official Academic Transcript
+                  Examination results
                 </h2>
               </div>
               <p className="text-xs text-on-surface-variant font-medium mt-0.5">
-                Session 2024-2025 • Mid-Term Examination Evaluation
+                Recorded marks for this student. Print the report card for a printable copy.
               </p>
             </div>
-            <div className="text-right">
-              <span className="px-3 py-1 rounded bg-secondary text-on-secondary text-xs font-bold">
-                Overall Grade: A+ (GPA: {stats.academics.gpa.toFixed(2)})
-              </span>
-            </div>
+            <Link
+              href={`/print/report-card/${id}`}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-secondary text-on-secondary text-xs font-bold"
+            >
+              Print report card
+            </Link>
           </div>
 
           {/* Subject-wise Marks Table */}
@@ -494,8 +505,8 @@ export default function StudentDossierPage({
                           {r.grade}
                         </span>
                       </td>
-                      <td className="py-3 px-4 font-bold">{r.gpa.toFixed(1)}</td>
-                      <td className="py-3 px-4 text-on-surface-variant text-xs">{r.remarks || "Good"}</td>
+                      <td className="py-3 px-4 font-bold">{typeof r.gpa === "number" ? r.gpa.toFixed(1) : "—"}</td>
+                      <td className="py-3 px-4 text-on-surface-variant text-xs">{r.remarks || "—"}</td>
                     </tr>
                   );
                 })}
@@ -507,9 +518,9 @@ export default function StudentDossierPage({
                   <td className="py-3 px-4">{stats.academics.totalMarks}</td>
                   <td className="py-3 px-4 text-secondary">{stats.academics.obtainedMarks}</td>
                   <td className="py-3 px-4">{stats.academics.percentage}%</td>
-                  <td className="py-3 px-4 text-secondary">A+</td>
-                  <td className="py-3 px-4">{stats.academics.gpa.toFixed(2)}</td>
-                  <td className="py-3 px-4 text-on-tertiary-container">High Distinction</td>
+                  <td className="py-3 px-4">—</td>
+                  <td className="py-3 px-4">{typeof stats.academics.gpa === "number" ? stats.academics.gpa.toFixed(2) : "—"}</td>
+                  <td className="py-3 px-4"></td>
                 </tr>
               </tfoot>
             </table>

@@ -3,7 +3,8 @@ import { requireAuth } from "@/lib/firebase/server-auth";
 import {
   getSchoolSettingsServer,
   updateSchoolSettingsServer,
-  createAuditLogServer
+  createAuditLogServer,
+  getSchoolServer
 } from "@/lib/firebase/server-db";
 import { SchoolSettingsDoc } from "@/lib/firebase/types";
 
@@ -11,19 +12,20 @@ export async function GET(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN", "TEACHER"]);
     let settings = await getSchoolSettingsServer(authUser.schoolId);
+    const school = await getSchoolServer(authUser.schoolId);
 
     if (!settings) {
       settings = {
         id: authUser.schoolId,
         schoolId: authUser.schoolId,
-        schoolName: "Allied School",
-        campusName: "Main Campus Islamabad",
-        motto: "Excellence in Education, Character in Life",
-        address: "Campus Avenue, Sector F-8/4, Islamabad",
-        phone: "+92 51 2854321",
-        email: authUser.email,
-        principalName: "Principal",
-        academicYear: "2024-2025",
+        schoolName: school?.name || "Allied School",
+        campusName: "Main Campus",
+        motto: "Excellence in Education",
+        address: school?.address || "",
+        phone: school?.phone || "",
+        email: school?.email || authUser.email,
+        principalName: school?.principalName || "Principal",
+        academicYear: school?.academicYear || "2024-2025",
         gradingScale: [
           { minPercentage: 90, grade: "A+", gpa: 4.0 },
           { minPercentage: 80, grade: "A", gpa: 3.7 },
@@ -39,17 +41,17 @@ export async function GET(req: NextRequest) {
     }
 
     const sessions = [
-      { id: "sess-2024", name: "2024-2025", isCurrent: true, startDate: "2024-08-01", endDate: "2025-06-30" }
+      { id: "sess-2024", name: settings.academicYear || "2024-2025", isCurrent: true, startDate: "2024-08-01", endDate: "2025-06-30" }
     ];
 
     const formatted = {
       id: settings.id,
-      schoolName: settings.schoolName,
-      campusName: settings.campusName,
-      tagline: settings.motto,
-      contactEmail: settings.email,
-      contactPhone: settings.phone,
-      address: settings.address,
+      schoolName: settings.schoolName || school?.name || "Allied School",
+      campusName: settings.campusName || "",
+      tagline: settings.motto || "",
+      contactEmail: settings.email || school?.email || authUser.email,
+      contactPhone: settings.phone || school?.phone || "",
+      address: settings.address || school?.address || "",
       currencySymbol: "Rs.",
       gradingSystem: "Standard 4.0 / Percentage",
       currentSessionId: "sess-2024"
@@ -72,18 +74,19 @@ export async function PUT(req: NextRequest) {
     const body = await req.json();
 
     const current = await getSchoolSettingsServer(authUser.schoolId);
+    const school = await getSchoolServer(authUser.schoolId);
 
     const updated: SchoolSettingsDoc = {
       id: authUser.schoolId,
       schoolId: authUser.schoolId,
-      schoolName: body.schoolName || current?.schoolName || "Allied School",
-      campusName: body.campusName || current?.campusName || "Main Campus",
-      motto: body.tagline || current?.motto || "Excellence in Education",
-      address: body.address || current?.address || "Islamabad",
-      phone: body.contactPhone || current?.phone || "+92 51 0000000",
+      schoolName: body.schoolName || current?.schoolName || school?.name || "Allied School",
+      campusName: body.campusName ?? current?.campusName ?? "",
+      motto: body.tagline ?? current?.motto ?? "",
+      address: body.address ?? current?.address ?? school?.address ?? "",
+      phone: body.contactPhone ?? current?.phone ?? school?.phone ?? "",
       email: body.contactEmail || current?.email || authUser.email,
-      principalName: current?.principalName || "Principal",
-      academicYear: "2024-2025",
+      principalName: current?.principalName || school?.principalName || "Principal",
+      academicYear: current?.academicYear || school?.academicYear || "2024-2025",
       gradingScale: current?.gradingScale || [],
       updatedAt: new Date().toISOString(),
     };

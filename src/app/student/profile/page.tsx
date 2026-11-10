@@ -26,6 +26,18 @@ export default function StudentProfilePage() {
     );
   }
 
+  if (!student) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] text-center p-8 bg-surface-container-lowest rounded-xl border border-surface-container-high/40 max-w-lg mx-auto">
+        <span className="material-symbols-outlined text-4xl text-on-surface-variant mb-2">person_off</span>
+        <h2 className="text-lg font-bold text-on-surface">No Profile Linked</h2>
+        <p className="text-xs text-on-surface-variant mt-1">
+          Your account is not currently linked to an active student record. Please contact the school administration.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col w-full max-w-4xl mx-auto gap-space-lg">
       {/* Profile Card */}

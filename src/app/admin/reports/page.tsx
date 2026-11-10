@@ -83,16 +83,16 @@ export default function ReportsAnalyticsPage() {
           <span className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">
             Academic Cohorts
           </span>
-          <div className="text-2xl font-bold text-secondary mt-1">{summary.totalClasses}</div>
-          <span className="text-[10px] text-on-surface-variant">Class 1 to 10 (A & B)</span>
+          <div className="text-2xl font-bold text-secondary mt-1">{summary.totalClasses || 0}</div>
+          <span className="text-[10px] text-on-surface-variant">{summary.totalClasses > 0 ? `${summary.totalClasses} Active Cohorts` : "No classes added"}</span>
         </div>
 
         <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40">
           <span className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant">
             Faculty Strength
           </span>
-          <div className="text-2xl font-bold text-on-surface mt-1">{summary.totalTeachers}</div>
-          <span className="text-[10px] text-on-surface-variant">100% Active Educators</span>
+          <div className="text-2xl font-bold text-on-surface mt-1">{summary.totalTeachers || 0}</div>
+          <span className="text-[10px] text-on-surface-variant">{summary.totalTeachers > 0 ? "Active Faculty" : "No teachers added"}</span>
         </div>
       </div>
 
@@ -156,6 +156,13 @@ export default function ReportsAnalyticsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container-low">
+                {attendanceByClass.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="py-8 text-center text-on-surface-variant text-xs italic">
+                      No class attendance records available. Mark attendance to generate reports.
+                    </td>
+                  </tr>
+                )}
                 {attendanceByClass.map((c: any) => (
                   <tr key={c.classId} className="hover:bg-surface-container-low/40">
                     <td className="py-3 px-4 font-bold text-on-surface">{c.className}</td>
@@ -203,6 +210,13 @@ export default function ReportsAnalyticsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container-low">
+                {feeByClass.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="py-8 text-center text-on-surface-variant text-xs italic">
+                      No fee records found for the current academic session.
+                    </td>
+                  </tr>
+                )}
                 {feeByClass.map((f: any) => (
                   <tr key={f.classId} className="hover:bg-surface-container-low/40">
                     <td className="py-3 px-4 font-bold text-on-surface">{f.className}</td>

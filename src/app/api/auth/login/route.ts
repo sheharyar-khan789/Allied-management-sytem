@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserByEmailServer, createAuditLogServer } from "@/lib/firebase/server-db";
 import { createSessionCookieServer, AuthenticatedUser } from "@/lib/firebase/server-auth";
+import { dashboardPathForRole } from "@/lib/role-home";
 import { adminAuth, hasAdminCredentials } from "@/lib/firebase/admin";
 import { checkAuthRateLimit, recordAuthFailure, resetAuthRateLimit } from "@/lib/rate-limiter";
 
@@ -93,6 +94,7 @@ export async function POST(req: NextRequest) {
               "admin@alliedschool.edu": "AdminSecure2025#",
               "teacher@alliedschool.edu": "TeacherSecure2025#",
               "student@alliedschool.edu": "StudentSecure2025#",
+              "parent@alliedschool.edu": "ParentSecure2025#",
             };
 
             if (process.env.NODE_ENV !== "production" && msg === "EMAIL_NOT_FOUND" && devCredentials[identifier]) {
@@ -124,6 +126,7 @@ export async function POST(req: NextRequest) {
           "admin@alliedschool.edu": "AdminSecure2025#",
           "teacher@alliedschool.edu": "TeacherSecure2025#",
           "student@alliedschool.edu": "StudentSecure2025#",
+          "parent@alliedschool.edu": "ParentSecure2025#",
         };
 
         if (devCredentials[identifier] && devCredentials[identifier] === password) {
@@ -152,13 +155,22 @@ export async function POST(req: NextRequest) {
       try {
         const fbUserRecord = await adminAuth.getUserByEmail(identifier);
         if (fbUserRecord) {
-          const role = (fbUserRecord.customClaims?.role as any) || (identifier.includes("admin") ? "ADMIN" : identifier.includes("teacher") ? "TEACHER" : "STUDENT");
+          const claimedRole = fbUserRecord.customClaims?.role as AuthenticatedUser["role"] | undefined;
+          const role =
+            claimedRole ||
+            (identifier.includes("admin")
+              ? "ADMIN"
+              : identifier.includes("teacher")
+              ? "TEACHER"
+              : identifier.includes("parent")
+              ? "PARENT"
+              : "STUDENT");
           user = {
             uid: fbUserRecord.uid,
             email: fbUserRecord.email || identifier,
             name: fbUserRecord.displayName || identifier.split("@")[0],
             role,
-            schoolId: "allied-school-main",
+            schoolId: fbUserRecord.customClaims?.schoolId || "",
             status: "ACTIVE",
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -185,14 +197,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (!user.schoolId) {
+      return NextResponse.json(
+        { error: "User account is not linked to a school." },
+        { status: 403, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
     const sessionData: AuthenticatedUser = {
       uid: user.uid,
       email: user.email,
       role: user.role,
-      schoolId: user.schoolId || "allied-school-main",
+      schoolId: user.schoolId,
       name: user.name,
       teacherId: user.teacherId,
       studentId: user.studentId,
+      studentIds: user.studentIds,
     };
 
     const token = await createSessionCookieServer(sessionData);
@@ -212,9 +232,7 @@ export async function POST(req: NextRequest) {
       console.warn("Audit log creation during login skipped:", auditErr);
     }
 
-    let redirectUrl = "/admin";
-    if (user.role === "TEACHER") redirectUrl = "/teacher";
-    else if (user.role === "STUDENT") redirectUrl = "/student";
+    const redirectUrl = dashboardPathForRole(user.role);
 
     const response = NextResponse.json({
       success: true,
