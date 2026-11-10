@@ -136,6 +136,9 @@ export type ScheduleImportRowStatus = "VALID" | "WARNING" | "INVALID" | "DUPLICA
 export interface NormalizedImportSchedule {
   classId: string;
   className: string;
+  /** Empty string when the subject doesn't exist yet for this class/session — the commit step
+   *  (POST/PATCH /api/exams) creates a real, permanent, unregistered SubjectDoc for it using
+   *  `subjectName`, exactly like an Admin creating one by hand, just without a teacher yet. */
   subjectId: string;
   subjectName: string;
   examDate: string;
@@ -212,10 +215,14 @@ export function validateScheduleImportRows(
     const subjectLabel = (input.subjectName || "").trim();
     if (!subjectLabel) errors.push("Subject Name is required.");
     let subject: Pick<SubjectDoc, "id" | "classId" | "name"> | undefined;
+    // An unmatched subject is NOT an error: the school may run a special test, a temporary
+    // examination, or an additional subject that was never registered in Subject Allocation, and
+    // teacher assignment is never a precondition for scheduling an exam. It becomes a WARNING —
+    // the row still imports, and the commit step creates a real (unregistered) subject for it.
     if (subjectLabel && cls) {
       const subjMatches = ctx.subjects.filter((s) => s.classId === cls.id && slug(s.name) === slug(subjectLabel));
       if (subjMatches.length === 0) {
-        errors.push(`No subject "${subjectLabel}" found for class ${cls.name}-${cls.section}.`);
+        warnings.push(`Subject "${subjectLabel}" is not registered for class ${cls.name}-${cls.section}. It will be saved as an unregistered exam subject — assign a teacher or link it to a real subject later.`);
       } else {
         subject = subjMatches[0];
       }
@@ -249,11 +256,14 @@ export function validateScheduleImportRows(
       errors.push(`Passing Marks (${passingMarks}) cannot exceed Total Marks (${totalMarks}).`);
     }
 
+    // Duplicate-in-file detection keys on the real subject id when registered, or the
+    // normalized subject name when not — either way, two rows scheduling "the same" subject for
+    // the same class in one file are caught, not just two rows sharing a real subjectId.
     let isDuplicate = false;
-    if (cls && subject) {
-      const key = `${cls.id}|${subject.id}`;
+    if (cls && subjectLabel) {
+      const key = `${cls.id}|${subject ? subject.id : `name:${slug(subjectLabel)}`}`;
       if (seenInFile.has(key)) {
-        errors.push(`Another row already schedules ${subject.name} for ${cls.name}-${cls.section} in this file.`);
+        errors.push(`Another row already schedules ${subject?.name || subjectLabel} for ${cls.name}-${cls.section} in this file.`);
         isDuplicate = true;
       } else {
         seenInFile.add(key);
@@ -264,12 +274,12 @@ export function validateScheduleImportRows(
       errors.length > 0 ? (isDuplicate ? "DUPLICATE" : "INVALID") : warnings.length > 0 ? "WARNING" : "VALID";
 
     const schedule: NormalizedImportSchedule | null =
-      (status === "VALID" || status === "WARNING") && cls && subject && examDate && startTime && endTime && totalMarks !== null && passingMarks !== null
+      (status === "VALID" || status === "WARNING") && cls && subjectLabel && examDate && startTime && endTime && totalMarks !== null && passingMarks !== null
         ? {
             classId: cls.id,
             className: `${cls.name}-${cls.section}`,
-            subjectId: subject.id,
-            subjectName: subject.name,
+            subjectId: subject?.id || "",
+            subjectName: subject?.name || subjectLabel,
             examDate,
             startTime,
             endTime,

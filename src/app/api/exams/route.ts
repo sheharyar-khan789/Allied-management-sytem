@@ -13,10 +13,11 @@ import {
   createAuditLogServer,
   getClassesServer,
   getSubjectsServer,
+  saveSubjectServer,
   getStudentsServer,
   getSchoolSettingsServer
 } from "@/lib/firebase/server-db";
-import { ExamCategory, ExamDoc, ExamResultDoc, ExamScheduleDoc } from "@/lib/firebase/types";
+import { ClassDoc, ExamCategory, ExamDoc, ExamResultDoc, ExamScheduleDoc, SubjectDoc } from "@/lib/firebase/types";
 import { assertTeacherOwnsClass, requireTeacherAllocation } from "@/lib/academic-access";
 import { validateDateString } from "@/lib/date-utils";
 import { z } from "zod";
@@ -294,6 +295,55 @@ export async function GET(req: NextRequest) {
   }
 }
 
+const subjectSlug = (v: string) => String(v).toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * Resolves a schedule's subject by id (the normal, fully-backward-compatible path), falling
+ * back to matching by name, and finally — only when neither resolves — creating a real,
+ * permanent SubjectDoc flagged `unregisteredFromImport`. Uses the exact same deterministic id
+ * convention as POST /api/subjects (`sb-{schoolId}-{classId}-{name}`), so a subject the exam
+ * import creates and one an Admin later creates "for real" through Subject Allocation are the
+ * same document — never a duplicate. Mutates `subjects` in place so a second row in the same
+ * request batch that names the same new subject reuses it instead of creating it twice.
+ */
+async function resolveOrCreateSubjectForSchedule(
+  schoolId: string,
+  targetClass: Pick<ClassDoc, "id" | "name" | "section">,
+  subjects: SubjectDoc[],
+  subjectId: string | undefined,
+  subjectName: string | undefined,
+  now: string
+): Promise<SubjectDoc | null> {
+  if (subjectId) {
+    const existing = subjects.find((s) => s.id === subjectId && s.classId === targetClass.id);
+    if (existing) return existing;
+  }
+  const name = (subjectName || "").trim();
+  if (!name) return null;
+
+  const byName = subjects.find((s) => s.classId === targetClass.id && subjectSlug(s.name) === subjectSlug(name));
+  if (byName) return byName;
+
+  const generatedId = `sb-${subjectSlug(schoolId)}-${subjectSlug(targetClass.id)}-${subjectSlug(name)}`;
+  const created: SubjectDoc = {
+    id: generatedId,
+    schoolId,
+    classId: targetClass.id,
+    className: `${targetClass.name}-${targetClass.section}`,
+    name,
+    code: `${name.slice(0, 3).toUpperCase()}-${targetClass.name.replace(/[^0-9]/g, "") || "01"}`,
+    teacherId: null,
+    teacherName: "Unassigned",
+    credits: 3,
+    unregisteredFromImport: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await saveSubjectServer(created);
+  subjects.push(created);
+  return created;
+}
+
 /** Validated max/passing marks of a schedule; an error string when they are invalid. */
 function resolveScheduleMarks(totalMarks: unknown, passingMarks: unknown): { total: number; passing: number } | string {
   const total = totalMarks === undefined || totalMarks === "" ? 100 : Number(totalMarks);
@@ -361,20 +411,24 @@ export async function POST(req: NextRequest) {
         getSubjectsServer(authUser.schoolId),
       ]);
       for (const s of schedules) {
-        if (!s?.classId || !s?.subjectId || !s?.examDate || !s?.startTime || !s?.endTime) continue;
+        // subjectId OR subjectName is enough — a row with no matching subject yet (unregistered,
+        // no teacher assigned) is still accepted; only a genuinely missing subject reference
+        // (neither an id nor a name) is skipped.
+        if (!s?.classId || (!s?.subjectId && !s?.subjectName) || !s?.examDate || !s?.startTime || !s?.endTime) continue;
         const scheduleDate = validateDateString(s.examDate);
         if (!scheduleDate) continue;
         const marks = resolveScheduleMarks(s.totalMarks, s.passingMarks);
         if (typeof marks === "string") continue;
-        const classOk = classes.some((c) => c.id === s.classId);
-        const subject = subjects.find((sub) => sub.id === s.subjectId && sub.classId === s.classId);
-        if (!classOk || !subject) continue; // never trust client-supplied class/subject ownership blindly
+        const targetClass = classes.find((c) => c.id === s.classId);
+        if (!targetClass) continue; // never trust client-supplied class ownership blindly
+        const subject = await resolveOrCreateSubjectForSchedule(authUser.schoolId, targetClass, subjects, s.subjectId, s.subjectName, now);
+        if (!subject) continue;
         const scheduleDoc: ExamScheduleDoc = {
-          id: `sch-${examId}-${s.classId}-${s.subjectId}`,
+          id: `sch-${examId}-${s.classId}-${subject.id}`,
           schoolId: authUser.schoolId,
           examId,
           classId: s.classId,
-          subjectId: s.subjectId,
+          subjectId: subject.id,
           subjectName: subject.name,
           examDate: scheduleDate,
           startTime: s.startTime,

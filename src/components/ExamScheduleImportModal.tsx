@@ -133,7 +133,10 @@ export default function ExamScheduleImportModal({
           endDate: details.endDate,
           schedules: rows.map((r) => ({
             classId: r.schedule!.classId,
-            subjectId: r.schedule!.subjectId,
+            // Empty for an unregistered subject — subjectName is sent instead so the server
+            // creates a real subject for it (or reuses one if it matches by name after all).
+            subjectId: r.schedule!.subjectId || undefined,
+            subjectName: r.schedule!.subjectName,
             examDate: r.schedule!.examDate,
             startTime: r.schedule!.startTime,
             endTime: r.schedule!.endTime,
@@ -240,8 +243,10 @@ export default function ExamScheduleImportModal({
               Step 2 of 3 — upload a <strong>.csv</strong> or <strong>.xlsx</strong> file (max 2 MB, up to 1000 rows) with one row
               per class/subject. The first row must contain column headers. Required columns: Class, Subject Name, Exam Date,
               Total Marks, Passing Marks. Starting Time defaults to 09:00 and Ending Time to 11:00 when left blank — type a
-              value (e.g. 11:30) to override either. Classes and subjects are matched by name; an unmatched or ambiguous name
-              is reported, never guessed. Nothing is created until you confirm the preview.
+              value (e.g. 11:30) to override either. Classes are matched by name; an unmatched or ambiguous class name
+              is reported, never guessed. A subject not yet registered in Subject Allocation is saved as an unregistered
+              exam subject (no teacher required) — assign a teacher or link it to a real subject afterward. Nothing is
+              created until you confirm the preview.
             </p>
             <button
               type="button"

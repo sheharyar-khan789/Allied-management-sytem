@@ -112,7 +112,16 @@ async function run() {
     assert(rows[0].status === "VALID" && rows[0].schedule.startTime === "09:00" && rows[0].schedule.endTime === "11:00", "Preview: blank times default to 09:00-11:00");
     assert(rows[1].status === "VALID" && rows[1].schedule.startTime === "11:00" && rows[1].schedule.endTime === "13:00", "Preview: explicit AM/PM times are honoured and normalised to 24h");
     assert(rows[2].status === "INVALID" && rows[2].errors.some((e: string) => /no class found/i.test(e)), "Preview: unknown class reported, never guessed");
-    assert(rows[3].status === "INVALID" && rows[3].errors.some((e: string) => /no subject/i.test(e)), "Preview: unknown subject for that class reported");
+    // Changed behavior: an unregistered subject is a WARNING, not a hard error — the row still
+    // imports, and commit creates a real (unregistered) subject for it. See exam-unregistered-subject-test.ts.
+    assert(
+      rows[3].status === "WARNING" &&
+        rows[3].errors.length === 0 &&
+        rows[3].warnings.some((w: string) => /not registered/i.test(w)) &&
+        rows[3].schedule?.subjectId === "" &&
+        rows[3].schedule?.subjectName === "Biology",
+      "Preview: unregistered subject for that class is a WARNING (importable), never a hard rejection"
+    );
     assert(rows[4].status === "VALID" && rows[4].schedule.classId === c9a.id, "Preview: 'Class 9' alone resolves to the one matching class/section");
   }
 
@@ -142,7 +151,13 @@ async function run() {
     assert((await previewPost(uploadReq(TEACHER, csv))).status === 403, "Preview: a teacher cannot bulk-import exam schedules");
     const bRes = await previewPost(uploadReq(ADMIN_B, csv));
     const bBody = await json(bRes);
-    assert(bBody.rows[0].status === "INVALID", "Preview: school A's class/subject is not visible to school B's admin");
+    // School B has its own "9-A" class but no "Mathematics" subject at all — the row is a WARNING
+    // (unregistered subject, now allowed), and tenancy still holds: it never resolves to school
+    // A's real Mathematics subject (math9.id), only to an empty/to-be-created reference.
+    assert(
+      bBody.rows[0].status === "WARNING" && bBody.rows[0].schedule?.subjectId !== math9.id,
+      "Preview: school A's registered subject is never matched for school B's admin — treated as unregistered instead"
+    );
   }
 
   // ---------------------------------------------------------------- 5. end-to-end: preview -> commit creates exam + schedules

@@ -81,6 +81,7 @@ export async function GET(req: NextRequest) {
               ? subTeacher.fullName
               : (s.teacherName && s.teacherName !== "Unassigned" ? s.teacherName : "Unassigned"),
             isOptional: Boolean(s.isOptional),
+            unregisteredFromImport: Boolean(s.unregisteredFromImport),
           };
         }),
       };
