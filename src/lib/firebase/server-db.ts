@@ -60,6 +60,9 @@ import {
   VoucherAdjustmentDoc,
   FeeMonth,
   AttendanceStatus,
+  YearlyFeeStructureDoc,
+  FeeStructureImportBatchDoc,
+  AdvanceBalanceDoc,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -94,6 +97,9 @@ const localStore: {
   studentCharges: Map<string, StudentChargeDoc>;
   voucherAdjustments: Map<string, VoucherAdjustmentDoc>;
   enrollmentRequests: Map<string, { schoolId: string; studentId?: string; createdAt: string }>;
+  yearlyFeeStructures: Map<string, YearlyFeeStructureDoc>;
+  feeStructureImportBatches: Map<string, FeeStructureImportBatchDoc>;
+  advanceBalances: Map<string, AdvanceBalanceDoc>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -125,6 +131,9 @@ const localStore: {
   studentCharges: new Map(),
   voucherAdjustments: new Map(),
   enrollmentRequests: new Map(),
+  yearlyFeeStructures: new Map(),
+  feeStructureImportBatches: new Map(),
+  advanceBalances: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -5009,4 +5018,197 @@ export async function saveStudentChargeServer(charge: StudentChargeDoc): Promise
     }
   }
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Yearly Fee Structure (per student, per academic year)
+// ---------------------------------------------------------------------------
+
+export function yearlyFeeStructureId(schoolId: string, academicYear: string, admissionNo: string): string {
+  return `yfs_${schoolId}_${academicYear}_${admissionNo.trim().toUpperCase()}`;
+}
+
+export async function getYearlyFeeStructuresServer(schoolId: string, academicYear: string): Promise<YearlyFeeStructureDoc[]> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("yearlyFeeStructures")
+        .where("schoolId", "==", schoolId)
+        .where("academicYear", "==", academicYear)
+        .get();
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as YearlyFeeStructureDoc));
+    } catch (e) {
+      onFirestoreError(`getYearlyFeeStructuresServer(${schoolId},${academicYear})`, e);
+      throw e;
+    }
+  }
+  return Array.from(localStore.yearlyFeeStructures.values()).filter(
+    (s) => s.schoolId === schoolId && s.academicYear === academicYear
+  );
+}
+
+export async function getYearlyFeeStructureForStudentServer(
+  schoolId: string,
+  studentId: string,
+  academicYear: string
+): Promise<YearlyFeeStructureDoc | null> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("yearlyFeeStructures")
+        .where("schoolId", "==", schoolId)
+        .where("academicYear", "==", academicYear)
+        .where("studentId", "==", studentId)
+        .limit(1)
+        .get();
+      if (snap.empty) return null;
+      const d = snap.docs[0];
+      return { id: d.id, ...d.data() } as YearlyFeeStructureDoc;
+    } catch (e) {
+      onFirestoreError(`getYearlyFeeStructureForStudentServer(${studentId})`, e);
+      throw e;
+    }
+  }
+  return (
+    Array.from(localStore.yearlyFeeStructures.values()).find(
+      (s) => s.schoolId === schoolId && s.academicYear === academicYear && s.studentId === studentId
+    ) || null
+  );
+}
+
+/** Upsert keyed by yearlyFeeStructureId — re-importing the same admission number/year always overwrites the same document, never creates a duplicate. */
+export async function saveYearlyFeeStructureServer(doc: YearlyFeeStructureDoc): Promise<YearlyFeeStructureDoc> {
+  assertProductionDbReady();
+  const id = doc.id || yearlyFeeStructureId(doc.schoolId, doc.academicYear, doc.admissionNo);
+  const data: YearlyFeeStructureDoc = { ...doc, id, updatedAt: new Date().toISOString(), createdAt: doc.createdAt || new Date().toISOString() };
+  localStore.yearlyFeeStructures.set(id, data);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("yearlyFeeStructures").doc(id).set(cleanUndefined(data), { merge: true });
+    } catch (e) {
+      onFirestoreError(`saveYearlyFeeStructureServer(${id})`, e);
+      throw e;
+    }
+  }
+  return data;
+}
+
+export async function saveFeeStructureImportBatchServer(batch: FeeStructureImportBatchDoc): Promise<FeeStructureImportBatchDoc> {
+  assertProductionDbReady();
+  localStore.feeStructureImportBatches.set(batch.id, batch);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("feeStructureImportBatches").doc(batch.id).set(cleanUndefined(batch));
+    } catch (e) {
+      onFirestoreError(`saveFeeStructureImportBatchServer(${batch.id})`, e);
+      throw e;
+    }
+  }
+  return batch;
+}
+
+export async function getFeeStructureImportBatchesServer(schoolId: string, academicYear?: string): Promise<FeeStructureImportBatchDoc[]> {
+  assertProductionDbReady();
+  const sort = (list: FeeStructureImportBatchDoc[]) => list.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  if (hasAdminCredentials) {
+    try {
+      let ref = adminDb.collection("feeStructureImportBatches").where("schoolId", "==", schoolId) as Query;
+      if (academicYear) ref = ref.where("academicYear", "==", academicYear);
+      const snap = await ref.limit(100).get();
+      return sort(snap.docs.map((d) => ({ id: d.id, ...d.data() } as FeeStructureImportBatchDoc)));
+    } catch (e) {
+      onFirestoreError(`getFeeStructureImportBatchesServer(${schoolId})`, e);
+      throw e;
+    }
+  }
+  return sort(
+    Array.from(localStore.feeStructureImportBatches.values()).filter(
+      (b) => b.schoolId === schoolId && (!academicYear || b.academicYear === academicYear)
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Advance balance (per student, per academic year) — consumed automatically by
+// automatic monthly voucher generation (see voucher-generation.ts / applyAdvanceToVoucher).
+// ---------------------------------------------------------------------------
+
+function advanceBalanceId(schoolId: string, studentId: string, academicYear: string): string {
+  return `adv_${schoolId}_${studentId}_${academicYear}`;
+}
+
+export async function getAdvanceBalanceServer(schoolId: string, studentId: string, academicYear: string): Promise<AdvanceBalanceDoc | null> {
+  assertProductionDbReady();
+  const id = advanceBalanceId(schoolId, studentId, academicYear);
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("advanceBalances").doc(id).get();
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as AdvanceBalanceDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getAdvanceBalanceServer(${id})`, e);
+      throw e;
+    }
+  }
+  const local = localStore.advanceBalances.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/**
+ * Applies a signed delta to a student's advance balance (negative = consume, positive = credit)
+ * inside a transaction so two concurrent voucher-generation runs can never both spend the same
+ * credit. The balance is clamped at 0 — a caller consuming more than is available is a bug in
+ * the caller (applyAdvanceToVoucher() already caps the amount at the balance it read), not
+ * something this function silently allows by going negative.
+ */
+export async function adjustAdvanceBalanceServer(
+  schoolId: string,
+  studentId: string,
+  academicYear: string,
+  delta: number
+): Promise<AdvanceBalanceDoc> {
+  assertProductionDbReady();
+  const id = advanceBalanceId(schoolId, studentId, academicYear);
+  const nowIso = new Date().toISOString();
+
+  if (hasAdminCredentials) {
+    try {
+      return await adminDb.runTransaction(async (transaction) => {
+        const ref = adminDb.collection("advanceBalances").doc(id);
+        const snap = await transaction.get(ref);
+        const current = snap.exists ? (snap.data() as AdvanceBalanceDoc).balance || 0 : 0;
+        const next: AdvanceBalanceDoc = {
+          id,
+          schoolId,
+          studentId,
+          academicYear,
+          balance: Math.max(0, current + delta),
+          createdAt: snap.exists ? (snap.data() as AdvanceBalanceDoc).createdAt : nowIso,
+          updatedAt: nowIso,
+        };
+        transaction.set(ref, next, { merge: true });
+        localStore.advanceBalances.set(id, next);
+        return next;
+      });
+    } catch (e) {
+      onFirestoreError(`adjustAdvanceBalanceServer(${id})`, e);
+      throw e;
+    }
+  }
+
+  const current = localStore.advanceBalances.get(id);
+  const next: AdvanceBalanceDoc = {
+    id,
+    schoolId,
+    studentId,
+    academicYear,
+    balance: Math.max(0, (current?.balance || 0) + delta),
+    createdAt: current?.createdAt || nowIso,
+    updatedAt: nowIso,
+  };
+  localStore.advanceBalances.set(id, next);
+  return next;
 }

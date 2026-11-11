@@ -350,6 +350,22 @@ export interface FeeChallanDoc {
   academicYear?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * One-time annual-fee line item (distinct from the recurring `otherFee` and the true,
+   * one-off `admissionFee`), printed as part of "Annual subscription" on the voucher
+   * (see computeVoucherAmounts in fee-voucher.ts). Only ever set by automatic monthly
+   * voucher generation — absent/0 on every challan created before that feature existed or
+   * entered through the manual/bulk import, which never fabricates this charge.
+   */
+  annualFeeCharged?: number;
+  /**
+   * True only on the one generated voucher per student per academic year that actually carried
+   * the one-time admissionFee/annualFeeCharged — so regenerating or generating a later month
+   * never applies them a second time. Set only by automatic voucher generation.
+   */
+  oneTimeChargesApplied?: boolean;
+  /** Set only by automatic voucher generation, to tell a generated voucher apart from a manually/bulk-imported one. */
+  generatedFromStructure?: boolean;
 }
 
 export interface PaymentDoc {
@@ -361,7 +377,13 @@ export interface PaymentDoc {
   receiptNo: string;
   amount: number;
   paymentDate: string;
-  paymentMode: "CASH" | "BANK_TRANSFER" | "ONLINE" | "CHEQUE";
+  /**
+   * ADVANCE_CREDIT: never chosen by a user — set only when automatic voucher generation
+   * auto-applies a student's existing advance balance (see advance-balance.ts) to a newly
+   * generated voucher, so that application is a real, visible PaymentDoc rather than a
+   * paidAmount with nothing backing it.
+   */
+  paymentMode: "CASH" | "BANK_TRANSFER" | "ONLINE" | "CHEQUE" | "ADVANCE_CREDIT";
   transactionRef?: string;
   receiptUrl?: string;
   notes?: string;
@@ -445,6 +467,68 @@ export interface StudentChargeDoc {
   notes?: string;
   createdBy: string;
   updatedBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * One student's yearly fee structure for one academic year (collection `yearlyFeeStructures`,
+ * id `${schoolId}_${academicYear}_${admissionNo}` so re-importing the same admission number for
+ * the same year always upserts the same document instead of accumulating duplicates). Monthly
+ * voucher generation reads this — and only this, never a free-text sheet value at generation
+ * time — to plan each month's charges. A new academic year's structure is a separate document;
+ * nothing here ever overwrites a prior year's record.
+ */
+export interface YearlyFeeStructureDoc {
+  id: string;
+  schoolId: string;
+  academicYear: string;
+  admissionNo: string;
+  studentId: string;
+  studentName?: string;
+  classId: string;
+  className?: string;
+  monthlyTuitionFee: number;
+  annualFee: number;
+  admissionFee: number;
+  otherCharges: number;
+  discount: number;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  updatedBy?: string;
+  /** The import batch that created/last updated this row, if any (manual edits leave it unset). */
+  importBatchId?: string;
+}
+
+/** One Yearly Fee Structure import's outcome, kept for the Import History view. */
+export interface FeeStructureImportBatchDoc {
+  id: string;
+  schoolId: string;
+  academicYear: string;
+  fileName?: string;
+  totalRows: number;
+  created: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: string;
+}
+
+/**
+ * A student's unapplied credit for one academic year (collection `advanceBalances`, id
+ * `${schoolId}_${studentId}_${academicYear}`) — money already received that exceeds every
+ * voucher issued so far. Automatic monthly voucher generation consumes it first (see
+ * advance-balance.ts) before the voucher is left outstanding.
+ */
+export interface AdvanceBalanceDoc {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  academicYear: string;
+  balance: number;
   createdAt: string;
   updatedAt: string;
 }

@@ -76,7 +76,7 @@ export interface VoucherAmounts {
 
 export function computeVoucherAmounts(challan: FeeChallanDoc, studentChallans: FeeChallanDoc[]): VoucherAmounts {
   const tuitionFee = n(challan.tuitionFee);
-  const annualSubscription = n(challan.admissionFee) + n(challan.examFee);
+  const annualSubscription = n(challan.admissionFee) + n(challan.examFee) + n(challan.annualFeeCharged);
   const bookDues = n(challan.otherFee);
   const discount = n(challan.discount);
   const pendingFees = pendingFeesFor(challan, studentChallans);
