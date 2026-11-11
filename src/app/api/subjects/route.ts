@@ -57,6 +57,7 @@ export async function GET(req: NextRequest) {
         teacherName: teacher ? teacher.fullName : s.teacherName || "Unassigned",
         credits: s.credits ?? 3,
         isOptional: Boolean(s.isOptional),
+        unregisteredFromImport: Boolean(s.unregisteredFromImport),
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       };
@@ -227,6 +228,10 @@ export async function PUT(req: NextRequest) {
       teacherName: updatedTeacherName,
       credits: credits !== undefined ? Number(credits) || existing.credits : existing.credits,
       isOptional: isOptional !== undefined ? Boolean(isOptional) : existing.isOptional,
+      // An explicit admin edit through this screen IS the "registration" of a subject the exam
+      // date-sheet import auto-created — it's a real, permanent subject either way, so this only
+      // ever removes a UI badge, never changes any schedule/result that already references it.
+      unregisteredFromImport: false,
       updatedAt: new Date().toISOString(),
     };
 

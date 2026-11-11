@@ -198,6 +198,12 @@ export interface SubjectDoc {
    *  Admin explicitly allocated to it (StudentDoc.optionalSubjectIds) are eligible for its
    *  marks/roster. Unset/false: compulsory, every active student of the class is eligible. */
   isOptional?: boolean;
+  /** Auto-created by an exam date-sheet import because no subject of this name existed yet for
+   *  this class — a real, permanent SubjectDoc (never a fake allocation), just flagged so Admin
+   *  UIs can surface it for registration (assign a teacher, edit it) or linking into an existing
+   *  subject. Cleared by any explicit edit through PUT /api/subjects — that edit itself is the
+   *  "registration". Absent/false: a normal subject created directly by an Admin. */
+  unregisteredFromImport?: boolean;
 }
 
 export interface TimetableDoc {

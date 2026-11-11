@@ -57,6 +57,33 @@ async function run() {
   console.log("==================================================");
 
   const now = new Date().toISOString();
+
+  // Week dates below are anchored to real "now" (comfortably future, never hardcoded calendar
+  // dates) because /api/lesson-plans rejects starting a brand-new draft once a week's Monday
+  // 00:00 deadline has passed (src/lib/lesson-plan-schedule.ts) — a fixed literal date silently
+  // breaks this suite every time real time catches up to it.
+  const toYMD = (d: Date) => d.toISOString().split("T")[0];
+  const addDaysUTC = (dateStr: string, days: number): string => {
+    const d = new Date(`${dateStr}T00:00:00.000Z`);
+    d.setUTCDate(d.getUTCDate() + days);
+    return toYMD(d);
+  };
+  // The Monday at least `weeksAhead` weeks from today (UTC), rolled forward to the next Monday.
+  const futureMonday = (weeksAhead: number): string => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + weeksAhead * 7);
+    const day = d.getUTCDay(); // 0=Sun..6=Sat
+    const toMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
+    d.setUTCDate(d.getUTCDate() + toMonday);
+    return toYMD(d);
+  };
+  const WEEK1_START = futureMonday(3);
+  const WEEK1_END = addDaysUTC(WEEK1_START, 5); // Monday..Saturday
+  const WEEK2_START = addDaysUTC(WEEK1_START, 7);
+  const WEEK2_END = addDaysUTC(WEEK2_START, 5);
+  const WEEK3_START = addDaysUTC(WEEK1_START, 14);
+  const WEEK3_END = addDaysUTC(WEEK3_START, 5);
+
   const YEAR = "2026-2027";
   const NEXT_YEAR = "2027-2028";
   const SCHOOL_A = "school-cw-a";
@@ -146,8 +173,8 @@ async function run() {
   console.log("\n--- Section 1: validateWeekInput ---");
   const v1 = validateWeekInput({
     label: "Mid-Term Week",
-    startDate: "2026-11-09",
-    endDate: "2026-11-14",
+    startDate: WEEK1_START,
+    endDate: WEEK1_END,
     weekNumber: 1,
     status: "ACTIVE",
     order: 10,
@@ -156,32 +183,32 @@ async function run() {
 
   const v2 = validateWeekInput({
     label: "Invalid Number",
-    startDate: "2026-11-09",
-    endDate: "2026-11-14",
+    startDate: WEEK1_START,
+    endDate: WEEK1_END,
     weekNumber: -5,
   });
   assert(!v2.ok && v2.error.includes("positive integer"), "validateWeekInput rejects negative weekNumber");
 
   const v3 = validateWeekInput({
     label: "Invalid Number Zero",
-    startDate: "2026-11-09",
-    endDate: "2026-11-14",
+    startDate: WEEK1_START,
+    endDate: WEEK1_END,
     weekNumber: 0,
   });
   assert(!v3.ok && v3.error.includes("positive integer"), "validateWeekInput rejects weekNumber 0");
 
   const v4 = validateWeekInput({
     label: "Invalid Status",
-    startDate: "2026-11-09",
-    endDate: "2026-11-14",
+    startDate: WEEK1_START,
+    endDate: WEEK1_END,
     status: "UNKNOWN_STATUS",
   });
   assert(!v4.ok && v4.error.includes("ACTIVE or INACTIVE"), "validateWeekInput rejects invalid status value");
 
   const v5 = validateWeekInput({
     label: "Inactive Week",
-    startDate: "2026-11-09",
-    endDate: "2026-11-14",
+    startDate: WEEK1_START,
+    endDate: WEEK1_END,
     status: "INACTIVE",
   });
   assert(v5.ok && v5.value.status === "INACTIVE", "validateWeekInput parses INACTIVE status correctly");
@@ -194,8 +221,8 @@ async function run() {
   // Teacher cannot create weeks
   const resTeacherPost = await weeksPost(req(teacherTokenA, "/api/lesson-plan-weeks", "POST", {
     label: "Hacked Week",
-    startDate: "2026-11-09",
-    endDate: "2026-11-14",
+    startDate: WEEK1_START,
+    endDate: WEEK1_END,
   }));
   assert(resTeacherPost.status === 403, "TEACHER role is forbidden from creating custom weeks (403)");
 
@@ -203,8 +230,8 @@ async function run() {
   const resW1 = await weeksPost(req(adminTokenA, "/api/lesson-plan-weeks", "POST", {
     label: "Orientation & Basics",
     weekNumber: 1,
-    startDate: "2026-11-09",
-    endDate: "2026-11-14",
+    startDate: WEEK1_START,
+    endDate: WEEK1_END,
     academicYear: YEAR,
     status: "ACTIVE",
     order: 1,
@@ -216,8 +243,8 @@ async function run() {
   const resDupNum = await weeksPost(req(adminTokenA, "/api/lesson-plan-weeks", "POST", {
     label: "Another Week 1",
     weekNumber: 1,
-    startDate: "2026-11-16",
-    endDate: "2026-11-21",
+    startDate: WEEK2_START,
+    endDate: WEEK2_END,
     academicYear: YEAR,
   }));
   const bodyDupNum = await json(resDupNum);
@@ -237,8 +264,8 @@ async function run() {
   const resSchoolBW1 = await weeksPost(req(adminTokenB, "/api/lesson-plan-weeks", "POST", {
     label: "School B Week 1",
     weekNumber: 1,
-    startDate: "2026-11-09",
-    endDate: "2026-11-14",
+    startDate: WEEK1_START,
+    endDate: WEEK1_END,
     academicYear: YEAR,
   }));
   assert(resSchoolBW1.status === 201, "Same weekNumber 1 in a DIFFERENT school is isolated and accepted (201)");
@@ -247,8 +274,8 @@ async function run() {
   const resW2 = await weeksPost(req(adminTokenA, "/api/lesson-plan-weeks", "POST", {
     label: "Grammar & Composition",
     weekNumber: 2,
-    startDate: "2026-11-16",
-    endDate: "2026-11-21",
+    startDate: WEEK2_START,
+    endDate: WEEK2_END,
     academicYear: YEAR,
     status: "ACTIVE",
     order: 2,
@@ -259,8 +286,8 @@ async function run() {
   const resW3 = await weeksPost(req(adminTokenA, "/api/lesson-plan-weeks", "POST", {
     label: "Revision & Sports",
     weekNumber: 3,
-    startDate: "2026-11-23",
-    endDate: "2026-11-28",
+    startDate: WEEK3_START,
+    endDate: WEEK3_END,
     academicYear: YEAR,
     status: "INACTIVE",
     order: 3,
@@ -388,7 +415,7 @@ async function run() {
   );
 
   // Deactivate Week 3 explicitly
-  const w3DocId = `lpw_${SCHOOL_A}_2026-11-23`;
+  const w3DocId = `lpw_${SCHOOL_A}_${WEEK3_START}`;
   await weekPut(
     req(adminTokenA, `/api/lesson-plan-weeks/${w3DocId}`, "PUT", {
       status: "INACTIVE",
@@ -407,23 +434,23 @@ async function run() {
   assert(resOpt.status === 200, "Teacher fetches lesson plan options successfully");
 
   const optionWeekIds = bodyOpt.weeks?.map((w: any) => w.weekId) || [];
-  assert(optionWeekIds.includes("2026-11-09"), "Active Week 1 appears in teacher available weeks");
-  assert(optionWeekIds.includes("2026-11-16"), "Active Week 2 appears in teacher available weeks");
-  assert(!optionWeekIds.includes("2026-11-23"), "Deactivated Week 3 does NOT appear in teacher available weeks");
+  assert(optionWeekIds.includes(WEEK1_START), "Active Week 1 appears in teacher available weeks");
+  assert(optionWeekIds.includes(WEEK2_START), "Active Week 2 appears in teacher available weeks");
+  assert(!optionWeekIds.includes(WEEK3_START), "Deactivated Week 3 does NOT appear in teacher available weeks");
 
   // Teacher submits a plan for ACTIVE Week 1
   const daysWeek1 = [
-    { date: "2026-11-09", content: "Introduction to Grammar" },
-    { date: "2026-11-10", content: "Nouns & Pronouns" },
-    { date: "2026-11-11", content: "Verbs & Tenses" },
-    { date: "2026-11-12", content: "Practice Exercises" },
-    { date: "2026-11-13", content: "Spelling Quiz" },
-    { date: "2026-11-14", content: "Weekly Recap" },
+    { date: WEEK1_START, content: "Introduction to Grammar" },
+    { date: addDaysUTC(WEEK1_START, 1), content: "Nouns & Pronouns" },
+    { date: addDaysUTC(WEEK1_START, 2), content: "Verbs & Tenses" },
+    { date: addDaysUTC(WEEK1_START, 3), content: "Practice Exercises" },
+    { date: addDaysUTC(WEEK1_START, 4), content: "Spelling Quiz" },
+    { date: WEEK1_END, content: "Weekly Recap" },
   ];
   const resSubmitW1 = await plansSave(req(teacherTokenA, "/api/lesson-plans", "POST", {
     classId: "cls-cw-1",
     subjectId: "sb-cw-eng",
-    weekId: "2026-11-09",
+    weekId: WEEK1_START,
     days: daysWeek1,
     action: "SAVE_DRAFT",
   }));
@@ -431,12 +458,12 @@ async function run() {
 
   // Teacher tries to create a new lesson plan against DEACTIVATED Week 3
   const daysWeek3 = [
-    { date: "2026-11-23", content: "Sports day plan" },
+    { date: WEEK3_START, content: "Sports day plan" },
   ];
   const resSubmitDeactivated = await plansSave(req(teacherTokenA, "/api/lesson-plans", "POST", {
     classId: "cls-cw-1",
     subjectId: "sb-cw-eng",
-    weekId: "2026-11-23",
+    weekId: WEEK3_START,
     days: daysWeek3,
     action: "SAVE_DRAFT",
   }));
@@ -456,8 +483,8 @@ async function run() {
   );
 
   // The historical lesson plan must STILL be accessible and retrievable
-  const planIdW1 = `lp_${SCHOOL_A}_tch-cw-a1_cls-cw-1_sb-cw-eng_2026-11-09`;
-  const resGetHist = await plansGet(req(teacherTokenA, `/api/lesson-plans?classId=cls-cw-1&subjectId=sb-cw-eng&weekId=2026-11-09`));
+  const planIdW1 = `lp_${SCHOOL_A}_tch-cw-a1_cls-cw-1_sb-cw-eng_${WEEK1_START}`;
+  const resGetHist = await plansGet(req(teacherTokenA, `/api/lesson-plans?classId=cls-cw-1&subjectId=sb-cw-eng&weekId=${WEEK1_START}`));
   const bodyHist = await json(resGetHist);
   assert(
     resGetHist.status === 200 &&
@@ -468,8 +495,8 @@ async function run() {
   // Dates cannot be edited once plans are filed
   const resEditDatesWithPlans = await weekPut(
     req(adminTokenA, `/api/lesson-plan-weeks/${w1Id}`, "PUT", {
-      startDate: "2026-11-08",
-      endDate: "2026-11-13",
+      startDate: addDaysUTC(WEEK1_START, -1),
+      endDate: addDaysUTC(WEEK1_START, 4),
     }),
     idParams(w1Id)
   );

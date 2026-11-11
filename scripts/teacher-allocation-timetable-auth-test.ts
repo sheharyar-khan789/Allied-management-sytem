@@ -358,9 +358,12 @@ async function run() {
     return new Response(JSON.stringify(first ? { error: { message: "UNAUTHORIZED_DOMAIN : Domain not allowlisted" } } : { email: "x" }), { status: first ? 400 : 200 });
   }) as typeof fetch;
   try {
-    const err = await sendViaFirebaseAuth("teacher@x.edu", "https://school.example.com/login", { NEXT_PUBLIC_FIREBASE_API_KEY: "AIzaTestKey" });
+    // sendViaFirebaseAuth returns { ok, error?, canRetry? } (not a bare null/string) — this
+    // assertion previously compared against `null`, a contract the function stopped using,
+    // which made it fail unconditionally regardless of actual behavior.
+    const outcome = await sendViaFirebaseAuth("teacher@x.edu", "https://school.example.com/login", { NEXT_PUBLIC_FIREBASE_API_KEY: "AIzaTestKey" });
     assert(
-      err === null && calls.length === 2 && calls[0].url.includes("accounts:sendOobCode") &&
+      outcome.ok === true && calls.length === 2 && calls[0].url.includes("accounts:sendOobCode") &&
         calls[0].body.requestType === "PASSWORD_RESET" && calls[0].body.email === "teacher@x.edu" &&
         calls[0].body.continueUrl === "https://school.example.com/login" && !("continueUrl" in calls[1].body),
       "Firebase fallback sends PASSWORD_RESET via sendOobCode, retrying without continueUrl when the domain isn't authorized"
@@ -368,7 +371,10 @@ async function run() {
   } finally {
     globalThis.fetch = realFetch;
   }
-  assert((await sendViaFirebaseAuth("t@x.edu", null, {})) !== null, "Firebase fallback reports failure (not success) when no API key is configured");
+  {
+    const outcome = await sendViaFirebaseAuth("t@x.edu", null, {});
+    assert(outcome.ok === false && !!outcome.error, "Firebase fallback reports failure (not success) when no API key is configured");
+  }
 
   console.log("==================================================");
   console.log(`ALLOCATION/TIMETABLE/AUTH SUMMARY: ${passed} PASSED, ${failed} FAILED`);

@@ -28,6 +28,10 @@ export default function ClassesAndSubjectsPage() {
   const [subjectCredits, setSubjectCredits] = useState("3");
   const [subjectIsOptional, setSubjectIsOptional] = useState(false);
 
+  // Linking an unregistered exam-import subject into an existing real subject of the same class.
+  const [linkTargetBySubject, setLinkTargetBySubject] = useState<Record<string, string>>({});
+  const [linkingSubjectId, setLinkingSubjectId] = useState<string | null>(null);
+
   const fetchClasses = async () => {
     try {
       const res = await fetch("/api/classes");
@@ -215,6 +219,32 @@ export default function ClassesAndSubjectsPage() {
     }
   };
 
+  const handleLinkSubject = async (subjectId: string, subjectName: string) => {
+    const targetSubjectId = linkTargetBySubject[subjectId];
+    if (!targetSubjectId) return;
+    if (!confirm(`Link unregistered subject "${subjectName}" into the selected subject? Its exam schedule(s) will move over and "${subjectName}" will be removed.`)) return;
+
+    setLinkingSubjectId(subjectId);
+    try {
+      const res = await fetch("/api/subjects/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subjectId, targetSubjectId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || "Failed to link subject.");
+        return;
+      }
+      fetchClasses();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to link subject.");
+    } finally {
+      setLinkingSubjectId(null);
+    }
+  };
+
   const handleDeleteClass = async (classId: string, displayName: string) => {
     if (!confirm(`Are you sure you want to delete class "${displayName}"? This action cannot be undone.`)) return;
 
@@ -375,10 +405,20 @@ export default function ClassesAndSubjectsPage() {
                       {cls.subjects.map((sub: any) => (
                         <div
                           key={sub.id}
-                          className="p-2 rounded-lg bg-surface-container-low/80 border border-surface-container-high/40 flex items-center justify-between text-xs"
+                          className="p-2 rounded-lg bg-surface-container-low/80 border border-surface-container-high/40 flex items-center justify-between text-xs flex-wrap gap-y-1.5"
                         >
                           <div className="flex flex-col min-w-0 pr-2">
-                            <span className="font-semibold text-on-surface truncate">{sub.name}</span>
+                            <span className="font-semibold text-on-surface truncate flex items-center gap-1.5">
+                              {sub.name}
+                              {sub.unregisteredFromImport && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9px] font-bold uppercase tracking-wide"
+                                  title="Created from an exam date-sheet upload; not yet registered here"
+                                >
+                                  Unregistered
+                                </span>
+                              )}
+                            </span>
                             <span className="text-[10px] text-on-surface-variant font-mono">
                               {sub.code ? `${sub.code} • ` : ""}Teacher:{" "}
                               <span
@@ -391,6 +431,29 @@ export default function ClassesAndSubjectsPage() {
                                 {sub.teacherName || "Unassigned"}
                               </span>
                             </span>
+                            {sub.unregisteredFromImport && cls.subjects.length > 1 && (
+                              <div className="flex items-center gap-1.5 mt-1.5">
+                                <select
+                                  value={linkTargetBySubject[sub.id] || ""}
+                                  onChange={(e) => setLinkTargetBySubject((prev) => ({ ...prev, [sub.id]: e.target.value }))}
+                                  className="h-6 px-1.5 rounded bg-surface-container text-[10px] border border-outline-variant/40"
+                                  aria-label={`Link ${sub.name} into an existing subject`}
+                                >
+                                  <option value="">Link into existing subject…</option>
+                                  {cls.subjects.filter((other: any) => other.id !== sub.id).map((other: any) => (
+                                    <option key={other.id} value={other.id}>{other.name}</option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => handleLinkSubject(sub.id, sub.name)}
+                                  disabled={!linkTargetBySubject[sub.id] || linkingSubjectId === sub.id}
+                                  className="px-2 py-0.5 rounded bg-secondary text-on-secondary text-[10px] font-semibold disabled:opacity-50"
+                                >
+                                  {linkingSubjectId === sub.id ? "Linking…" : "Link"}
+                                </button>
+                              </div>
+                            )}
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
                             <button

@@ -73,7 +73,11 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ valid: false, code: status, error: TOKEN_ERRORS[status] }, { status: 400 });
     }
     const user = await getUserByIdServer(record!.uid);
-    if (!user || user.email.toLowerCase() !== record!.email.toLowerCase()) {
+    // record.uid (bound to the token hash at creation) already uniquely and authoritatively
+    // identifies the account — record.email is only the delivery address, which is deliberately
+    // the guardian's email for a STUDENT with no real mailbox (resolveResetRecipient), not the
+    // account's own sign-in email. Comparing them would reject every legitimate student reset.
+    if (!user) {
       return NextResponse.json({ valid: false, code: "INVALID", error: TOKEN_ERRORS.INVALID }, { status: 400 });
     }
     if (user.status === "SUSPENDED" || user.status === "INACTIVE") {
@@ -162,8 +166,11 @@ export async function POST(req: NextRequest) {
     if (status !== "OK") return tokenError(status);
 
     const user = await getUserByIdServer(record!.uid);
-    // The link is bound to the account and the email it was sent to.
-    if (!user || user.email.toLowerCase() !== record!.email.toLowerCase()) return tokenError("INVALID");
+    // record.uid (bound to the token hash at creation) already uniquely and authoritatively
+    // identifies the account — record.email is only the delivery address, which is deliberately
+    // the guardian's email for a STUDENT with no real mailbox (resolveResetRecipient), not the
+    // account's own sign-in email. Comparing them would reject every legitimate student reset.
+    if (!user) return tokenError("INVALID");
     if (user.status === "SUSPENDED" || user.status === "INACTIVE") return tokenError("INVALID");
     const policyError = checkPasswordPolicy(newPassword, { email: user.email, name: user.name });
     if (policyError) return NextResponse.json({ error: policyError }, { status: 400 });
