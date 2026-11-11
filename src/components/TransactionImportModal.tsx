@@ -93,9 +93,11 @@ export default function TransactionImportModal({
         {/* Header */}
         <div className="p-6 border-b border-outline-variant flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-bold text-on-surface">5-Column Fee & Expense Import</h2>
+            <h2 className="text-xl font-bold text-on-surface">Fee & Expense Import</h2>
             <p className="text-xs text-on-surface-variant mt-0.5">
-              Import transactions: Day & Date | Category | Details | Class | Amount
+              Day &amp; Date | Category | Details | Class | Amount, plus an optional 6th
+              column, Admission No — when given, it is the authoritative student match and
+              the Details/Class columns are never used to look the student up by name.
             </p>
           </div>
           <button
@@ -121,7 +123,8 @@ export default function TransactionImportModal({
                 <div>
                   <h4 className="font-semibold text-on-surface text-sm">Download Excel / CSV Template</h4>
                   <p className="text-xs text-on-surface-variant mt-1">
-                    Contains the exact 5 columns with valid sample rows (Fees, Annual Amount, Other Expenses).
+                    6 columns with valid sample rows (Fees, Annual Amount, Other Expenses). The
+                    original 5-column file (no Admission No) still imports exactly as before.
                   </p>
                 </div>
                 <a

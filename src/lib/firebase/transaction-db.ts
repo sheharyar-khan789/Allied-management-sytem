@@ -35,16 +35,51 @@ export interface TransactionDoc {
   challanRef?: string;
 }
 
+/** OTHER_EXPENSE is kept for every expense recorded before named categories existed. */
+export const OTHER_EXPENSE_CATEGORIES = [
+  "ELECTRICITY", "MAINTENANCE", "STATIONERY", "STAFF", "TRANSPORT", "OTHER_EXPENSE",
+] as const;
+export type OtherExpenseCategory = (typeof OTHER_EXPENSE_CATEGORIES)[number];
+
 export interface ExpenseDoc {
   id: string;
   schoolId: string;
   date: string;
   description: string;
   amount: number;
-  category: "OTHER_EXPENSE";
+  category: OtherExpenseCategory;
+  paymentMethod?: string;
+  receiptRef?: string;
   importBatchId?: string;
   transactionRef?: string;
   createdBy: string;
+  createdByName?: string;
+  createdAt: string;
+  academicYear?: string;
+}
+
+export const OTHER_COLLECTION_CATEGORIES = [
+  "REGISTRATION", "CERTIFICATE", "FINE", "EVENT", "OTHER_INCOME",
+] as const;
+export type OtherCollectionCategory = (typeof OTHER_COLLECTION_CATEGORIES)[number];
+
+/**
+ * School income that is NOT a student tuition/fee payment (registration, certificate charges,
+ * fines, event collections, ...). Kept entirely separate from TransactionDoc's "Fees"/"Annual
+ * Amount" rows and from FeeChallanDoc, so it is never double-counted as — or mistaken for —
+ * student fee collection in the financial dashboard.
+ */
+export interface OtherCollectionDoc {
+  id: string;
+  schoolId: string;
+  date: string;
+  category: OtherCollectionCategory;
+  description: string;
+  amount: number;
+  paymentMethod?: string;
+  receiptRef?: string;
+  createdBy: string;
+  createdByName?: string;
   createdAt: string;
   academicYear?: string;
 }
@@ -54,6 +89,7 @@ const localTransactionStore = {
   importBatches: new Map<string, ImportBatchDoc>(),
   transactions: new Map<string, TransactionDoc>(),
   expenses: new Map<string, ExpenseDoc>(),
+  otherCollections: new Map<string, OtherCollectionDoc>(),
 };
 
 /** Deterministic transaction ID to guarantee idempotency across retries */
@@ -208,4 +244,79 @@ export async function getExpensesByDateRangeServer(
     if (to && e.date > to) return false;
     return true;
   });
+}
+
+export async function getExpenseByIdServer(schoolId: string, expenseId: string): Promise<ExpenseDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("expenses").doc(expenseId).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as ExpenseDoc;
+        return data.schoolId === schoolId ? data : null;
+      }
+    } catch (e: any) {
+      console.warn("getExpenseByIdServer error:", e?.message);
+    }
+  }
+  const local = localTransactionStore.expenses.get(expenseId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+// ---------------------------------------------------------------------------
+// Other Collections — school income that is not a student fee payment.
+// ---------------------------------------------------------------------------
+
+export async function saveOtherCollectionServer(doc: OtherCollectionDoc): Promise<void> {
+  localTransactionStore.otherCollections.set(doc.id, { ...doc });
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("otherCollections").doc(doc.id).set(cleanUndefined(doc), { merge: true });
+    } catch (e: any) {
+      console.warn("Failed to persist otherCollection to Firestore:", e?.message);
+    }
+  }
+}
+
+export async function getOtherCollectionByIdServer(schoolId: string, id: string): Promise<OtherCollectionDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("otherCollections").doc(id).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as OtherCollectionDoc;
+        return data.schoolId === schoolId ? data : null;
+      }
+    } catch (e: any) {
+      console.warn("getOtherCollectionByIdServer error:", e?.message);
+    }
+  }
+  const local = localTransactionStore.otherCollections.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+export async function getOtherCollectionsByDateRangeServer(
+  schoolId: string,
+  from?: string,
+  to?: string
+): Promise<OtherCollectionDoc[]> {
+  let list: OtherCollectionDoc[] = [];
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb.collection("otherCollections").where("schoolId", "==", schoolId).get();
+      if (!snap.empty) {
+        list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as OtherCollectionDoc));
+      }
+    } catch (e: any) {
+      console.warn("getOtherCollectionsByDateRangeServer error:", e?.message);
+    }
+  }
+  if (list.length === 0) {
+    list = Array.from(localTransactionStore.otherCollections.values()).filter((c) => c.schoolId === schoolId);
+  }
+  return list
+    .filter((c) => {
+      if (from && c.date < from) return false;
+      if (to && c.date > to) return false;
+      return true;
+    })
+    .sort((a, b) => b.date.localeCompare(a.date));
 }

@@ -319,6 +319,19 @@ export function missingRequiredFeeStructureColumns(mapping: FeeStructureHeaderMa
   return missing;
 }
 
+/**
+ * The full academic year's theoretical expected fee for one student's yearly structure:
+ * 12 months of tuition/other charges plus the one-time annual/admission fees, minus 12 months
+ * of discount. Used only for the dashboard's "Yearly Expected Fees" figure — never written to
+ * any challan, and never confused with what has actually been billed or collected so far.
+ */
+export function yearlyExpectedFeeFor(
+  structure: Pick<YearlyFeeStructureDoc, "monthlyTuitionFee" | "annualFee" | "admissionFee" | "otherCharges" | "discount">
+): number {
+  const monthly = (structure.monthlyTuitionFee || 0) + (structure.otherCharges || 0) - (structure.discount || 0);
+  return Math.max(0, monthly * 12 + (structure.annualFee || 0) + (structure.admissionFee || 0));
+}
+
 export const FEE_STRUCTURE_IMPORT_TEMPLATE_HEADERS = [
   "Admission No",
   "Student Name",

@@ -1,5 +1,6 @@
 import {
   TRANSACTION_IMPORT_HEADERS,
+  TRANSACTION_IMPORT_HEADERS_WITH_ADMISSION_NO,
   parseTransactionDate,
   parseTransactionAmount,
   normalizeCategory,
@@ -138,10 +139,10 @@ test("12. parseTransactionRow extracts all 5 fields", () => {
 
 // 6. Validation & Student Resolution
 const sampleStudents = [
-  { id: "std-1", fullName: "M. Huzaifa", className: "Nursery", classId: "cls-nursery" },
-  { id: "std-2", fullName: "M. Laique", className: "Nursery", classId: "cls-nursery" },
-  { id: "std-3", fullName: "Ali Khan", className: "Class 1", classId: "cls-1" },
-  { id: "std-4", fullName: "Ali Khan", className: "Class 2", classId: "cls-2" },
+  { id: "std-1", fullName: "M. Huzaifa", className: "Nursery", classId: "cls-nursery", admissionNo: "ADM-0001" },
+  { id: "std-2", fullName: "M. Laique", className: "Nursery", classId: "cls-nursery", admissionNo: "ADM-0002" },
+  { id: "std-3", fullName: "Ali Khan", className: "Class 1", classId: "cls-1", admissionNo: "ADM-0003" },
+  { id: "std-4", fullName: "Ali Khan", className: "Class 2", classId: "cls-2", admissionNo: "ADM-0004" },
 ];
 
 test("13. validateTransactionRows: valid Fees row with matching student", () => {
@@ -248,6 +249,46 @@ test("23. generateTransactionId is deterministic and reproducible", () => {
   expect(id1).toBe(id2);
   expect(id1.startsWith("tx_")).toBe(true);
   expect(id1 !== id3).toBe(true);
+});
+
+// 9. Admission No upgrade (optional 6th column, backward compatible)
+test("24. parseTransactionRow: a 5-cell row has no admissionNo (backward compatible)", () => {
+  const row = parseTransactionRow(2, ["15-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700"]);
+  expect(row.admissionNo).toBe(undefined);
+});
+
+test("25. parseTransactionRow: a 6th cell is read as admissionNo", () => {
+  const row = parseTransactionRow(2, ["15-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700", "ADM-0001"]);
+  expect(row.admissionNo).toBe("ADM-0001");
+});
+
+test("26. validateTransactionRows: Admission No is authoritative, even with a misleading Details/Class", () => {
+  // "Ali Khan" alone is ambiguous by name (two classes), but ADM-0004 names std-4 exactly —
+  // the ambiguous name+class path must never run when an admission number is given.
+  const row = parseTransactionRow(2, ["15-11-2026", "Fees", "Ali Khan", "", "3700", "ADM-0004"]);
+  const results = validateTransactionRows([row], sampleStudents);
+  expect(results[0].status).toBe("VALID");
+  expect(results[0].resolvedStudentId).toBe("std-4");
+});
+
+test("27. validateTransactionRows: an unknown Admission No is INVALID, never falls back to name matching", () => {
+  const row = parseTransactionRow(2, ["15-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700", "ADM-9999"]);
+  const results = validateTransactionRows([row], sampleStudents);
+  expect(results[0].status).toBe("INVALID");
+  expect(results[0].errors[0]).toContain("ADM-9999");
+});
+
+test("28. validateTransactionRows: Admission No match is case-insensitive", () => {
+  const row = parseTransactionRow(2, ["15-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700", "adm-0001"]);
+  const results = validateTransactionRows([row], sampleStudents);
+  expect(results[0].status).toBe("VALID");
+  expect(results[0].resolvedStudentId).toBe("std-1");
+});
+
+test("29. Template: the 5-column format (TRANSACTION_IMPORT_HEADERS) is unchanged", () => {
+  expect(TRANSACTION_IMPORT_HEADERS.length).toBe(5);
+  expect(TRANSACTION_IMPORT_HEADERS_WITH_ADMISSION_NO.length).toBe(6);
+  expect(TRANSACTION_IMPORT_HEADERS_WITH_ADMISSION_NO[5]).toBe("Admission No");
 });
 
 // Summary Report

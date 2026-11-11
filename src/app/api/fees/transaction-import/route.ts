@@ -160,6 +160,7 @@ async function handlePreview(authUser: AuthenticatedUser, req: NextRequest) {
     fullName: s.fullName || "",
     className: s.className || "",
     classId: s.classId || "",
+    admissionNo: s.admissionNo || "",
   }));
 
   // Load existing challans to detect month duplicates
@@ -227,6 +228,7 @@ async function handleCommit(authUser: AuthenticatedUser, req: NextRequest) {
       fullName: s.fullName || "",
       className: s.className || "",
       classId: s.classId || "",
+      admissionNo: s.admissionNo || "",
     }));
 
     const existingChallans = await getFeeChallansServer(

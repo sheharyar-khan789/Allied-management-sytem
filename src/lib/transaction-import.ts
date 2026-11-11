@@ -4,6 +4,14 @@
  * the 5-column transaction import format.
  *
  * Columns: "Day & Date" | "Category" | "Details" | "Class" | "Amount"
+ *
+ * An optional 6th column, "Admission No", is also accepted (see
+ * TRANSACTION_IMPORT_HEADERS_WITH_ADMISSION_NO): when a row carries one, it is the
+ * authoritative student match for "Fees"/"Annual Amount" rows — the name+class fuzzy
+ * matching below is never consulted for that row, so it can never be ambiguous. The
+ * original 5-column format (TRANSACTION_IMPORT_HEADERS, unchanged) keeps working exactly
+ * as before: a file with no 6th column has no admissionNo on any row, so every row falls
+ * back to name+class matching exactly as today.
  */
 
 export const TRANSACTION_IMPORT_HEADERS = [
@@ -12,6 +20,16 @@ export const TRANSACTION_IMPORT_HEADERS = [
   "Details",
   "Class",
   "Amount",
+] as const;
+
+/** The same format, plus the optional, authoritative Admission No column. */
+export const TRANSACTION_IMPORT_HEADERS_WITH_ADMISSION_NO = [
+  "Day & Date",
+  "Category",
+  "Details",
+  "Class",
+  "Amount",
+  "Admission No",
 ] as const;
 
 export type TransactionCategory = "Fees" | "Annual Amount" | "Other Expenses";
@@ -27,6 +45,9 @@ export interface TransactionImportRow {
   rawDate: string;
   rawCategory: string;
   rawAmount: string;
+  /** Optional 6th column. Undefined on a classic 5-column row — never fabricated. */
+  admissionNo?: string;
+  rawAdmissionNo?: string;
 }
 
 export interface TransactionImportResult {
@@ -176,6 +197,7 @@ export function parseTransactionRow(
   const details = String(cells[2] ?? "").trim();
   const className = String(cells[3] ?? "").trim();
   const rawAmount = String(cells[4] ?? "").trim();
+  const rawAdmissionNo = String(cells[5] ?? "").trim();
 
   return {
     rowNumber,
@@ -187,6 +209,8 @@ export function parseTransactionRow(
     rawDate,
     rawCategory,
     rawAmount,
+    admissionNo: rawAdmissionNo || undefined,
+    rawAdmissionNo,
   };
 }
 
@@ -200,7 +224,12 @@ export function parseTransactionRow(
  * Rules:
  * - "Other Expenses": VALID if date + amount + details are present (no student needed)
  * - "Fees" / "Annual Amount":
- *   - Must resolve exactly 1 student by fullName (case-insensitive contains) + className
+ *   - A row carrying an Admission No is matched by it ONLY — authoritative, exact,
+ *     case-insensitive — and the name+class fuzzy matching below never runs for that row.
+ *     0 matches → INVALID ("Admission No not found"). This can never be AMBIGUOUS: admission
+ *     numbers are unique per school.
+ *   - A row with no Admission No falls back to the original matching: must resolve exactly 1
+ *     student by fullName (case-insensitive contains) + className
  *   - 0 matches → INVALID ("Student not found")
  *   - 2+ matches → AMBIGUOUS ("Multiple students match")
  *   - 1 match → VALID; check for duplicate (same studentId + yearMonth within batch)
@@ -212,6 +241,7 @@ export function validateTransactionRows(
     fullName: string;
     className: string;
     classId: string;
+    admissionNo?: string;
   }>,
   existingTxDates?: Set<string> // set of `${studentId}_${yearMonth}` for duplicate check
 ): TransactionImportResult[] {
@@ -257,26 +287,42 @@ export function validateTransactionRows(
       continue;
     }
 
-    // "Fees" or "Annual Amount" — must resolve a student
-    const detailsLower = row.details.toLowerCase();
-    const classNameLower = row.className.toLowerCase();
+    // "Fees" or "Annual Amount" — must resolve a student.
+    // An Admission No is authoritative: matched exactly, never by the fuzzy name/class rules
+    // below, and can never be ambiguous (admission numbers are unique per school).
+    let matches: typeof students;
+    if (row.admissionNo) {
+      const admissionLower = row.admissionNo.trim().toLowerCase();
+      matches = students.filter((s) => (s.admissionNo || "").trim().toLowerCase() === admissionLower);
+      if (matches.length === 0) {
+        results.push({
+          row,
+          status: "INVALID",
+          errors: [`Admission No "${row.admissionNo}" not found.`],
+        });
+        continue;
+      }
+    } else {
+      const detailsLower = row.details.toLowerCase();
+      const classNameLower = row.className.toLowerCase();
 
-    const matches = students.filter((s) => {
-      const nameMatch = s.fullName.toLowerCase().includes(detailsLower) ||
-        detailsLower.includes(s.fullName.toLowerCase());
-      const classMatch = !classNameLower ||
-        s.className.toLowerCase().includes(classNameLower) ||
-        classNameLower.includes(s.className.toLowerCase());
-      return nameMatch && classMatch;
-    });
-
-    if (matches.length === 0) {
-      results.push({
-        row,
-        status: "INVALID",
-        errors: [`Student not found: "${row.details}" in class "${row.className}"`],
+      matches = students.filter((s) => {
+        const nameMatch = s.fullName.toLowerCase().includes(detailsLower) ||
+          detailsLower.includes(s.fullName.toLowerCase());
+        const classMatch = !classNameLower ||
+          s.className.toLowerCase().includes(classNameLower) ||
+          classNameLower.includes(s.className.toLowerCase());
+        return nameMatch && classMatch;
       });
-      continue;
+
+      if (matches.length === 0) {
+        results.push({
+          row,
+          status: "INVALID",
+          errors: [`Student not found: "${row.details}" in class "${row.className}"`],
+        });
+        continue;
+      }
     }
 
     if (matches.length > 1) {

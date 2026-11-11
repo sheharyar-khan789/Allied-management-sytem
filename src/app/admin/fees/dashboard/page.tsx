@@ -10,6 +10,13 @@ interface FinancialSummary {
   otherExpenses: number;
   netCollection: number;
   totalTransactions: number;
+  otherCollections?: number;
+  totalIncome?: number;
+  netBalance?: number;
+  yearlyExpectedFees?: number;
+  totalCollectedOverall?: number;
+  outstandingDues?: number;
+  advancePayments?: number;
 }
 
 interface DailySummary {
@@ -243,6 +250,61 @@ export default function FinancialDashboardPage() {
             </span>
           </div>
           <p className="text-[11px] text-on-surface-variant mt-1">Fees + Annual Collection</p>
+        </div>
+      </div>
+
+      {/* Other income/expense (this period) and the overall academic-year standing */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
+          <div className="flex items-center justify-between text-on-surface-variant">
+            <span className="text-xs font-bold uppercase tracking-wider">Other Collections</span>
+            <span className="material-symbols-outlined text-[20px] text-tertiary">redeem</span>
+          </div>
+          <div className="mt-3">
+            <span className="text-2xl font-black text-on-surface font-mono">Rs. {(summary.otherCollections || 0).toLocaleString()}</span>
+          </div>
+          <p className="text-[11px] text-on-surface-variant mt-1">Registration, certificates, fines, events (this period)</p>
+        </div>
+        <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
+          <div className="flex items-center justify-between text-on-surface-variant">
+            <span className="text-xs font-bold uppercase tracking-wider">Total Income</span>
+            <span className="material-symbols-outlined text-[20px] text-emerald-600">trending_up</span>
+          </div>
+          <div className="mt-3">
+            <span className="text-2xl font-black text-emerald-700 font-mono">Rs. {(summary.totalIncome || 0).toLocaleString()}</span>
+          </div>
+          <p className="text-[11px] text-on-surface-variant mt-1">Student fees + other collections (this period)</p>
+        </div>
+        <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
+          <div className="flex items-center justify-between text-on-surface-variant">
+            <span className="text-xs font-bold uppercase tracking-wider">Net Remaining Balance</span>
+            <span className="material-symbols-outlined text-[20px] text-primary">savings</span>
+          </div>
+          <div className="mt-3">
+            <span className="text-2xl font-black text-on-surface font-mono">Rs. {(summary.netBalance || 0).toLocaleString()}</span>
+          </div>
+          <p className="text-[11px] text-on-surface-variant mt-1">Total income − actual expenses (this period)</p>
+        </div>
+        <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
+          <div className="flex items-center justify-between text-on-surface-variant">
+            <span className="text-xs font-bold uppercase tracking-wider">Advance Payments</span>
+            <span className="material-symbols-outlined text-[20px] text-tertiary">account_balance_wallet</span>
+          </div>
+          <div className="mt-3">
+            <span className="text-2xl font-black text-on-surface font-mono">Rs. {(summary.advancePayments || 0).toLocaleString()}</span>
+          </div>
+          <p className="text-[11px] text-on-surface-variant mt-1">Unapplied student credit, this academic year</p>
+        </div>
+      </div>
+
+      <div className="p-4 rounded-xl bg-surface-container/40 border border-outline-variant/40">
+        <p className="text-[11px] font-bold uppercase tracking-wider text-on-surface-variant mb-2">
+          Overall academic-year standing (not limited to the date range above)
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+          <div><span className="text-on-surface-variant">Yearly Expected Fees: </span><span className="font-bold text-on-surface">Rs. {(summary.yearlyExpectedFees || 0).toLocaleString()}</span></div>
+          <div><span className="text-on-surface-variant">Collected So Far: </span><span className="font-bold text-on-surface">Rs. {(summary.totalCollectedOverall || 0).toLocaleString()}</span></div>
+          <div><span className="text-on-surface-variant">Outstanding Student Dues: </span><span className="font-bold text-error">Rs. {(summary.outstandingDues || 0).toLocaleString()}</span></div>
         </div>
       </div>
 

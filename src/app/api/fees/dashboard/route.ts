@@ -4,8 +4,12 @@ import {
   getTransactionsByDateRangeServer,
   getImportBatchesServer,
   getExpensesByDateRangeServer,
+  getOtherCollectionsByDateRangeServer,
   TransactionDoc,
 } from "@/lib/firebase/transaction-db";
+import { getFeeChallanStatsServer, getYearlyFeeStructuresServer, getAdvanceBalancesForSchoolServer } from "@/lib/firebase/server-db";
+import { yearlyExpectedFeeFor } from "@/lib/fee-structure-import";
+import { getDefaultAcademicYear } from "@/lib/school-display";
 
 export const dynamic = "force-dynamic";
 
@@ -34,13 +38,24 @@ export async function GET(req: NextRequest) {
   const academicYear = searchParams.get("academicYear") || undefined;
 
   const schoolId = authUser.schoolId;
+  const effectiveAcademicYear = academicYear || getDefaultAcademicYear();
 
   // Fetch transactions and import batches
-  const [transactions, importBatches, expenses] = await Promise.all([
+  const [transactions, importBatches, expenses, otherCollections, challanStats, yearlyStructures, advanceBalances] = await Promise.all([
     getTransactionsByDateRangeServer(schoolId, from, to, category, classId),
     getImportBatchesServer(schoolId, 30),
     getExpensesByDateRangeServer(schoolId, from, to),
+    getOtherCollectionsByDateRangeServer(schoolId, from, to),
+    // Not date-ranged: the current standing of every fee challan ever issued, regardless of
+    // the "from"/"to" transaction window above — a different, period-independent figure.
+    getFeeChallanStatsServer(schoolId, {}),
+    getYearlyFeeStructuresServer(schoolId, effectiveAcademicYear),
+    getAdvanceBalancesForSchoolServer(schoolId, effectiveAcademicYear),
   ]);
+
+  const otherCollectionsTotal = otherCollections.reduce((sum, c) => sum + (c.amount || 0), 0);
+  const yearlyExpectedFees = yearlyStructures.reduce((sum, s) => sum + yearlyExpectedFeeFor(s), 0);
+  const advancePaymentsTotal = advanceBalances.reduce((sum, b) => sum + (b.balance || 0), 0);
 
   // Compute financial totals
   let feeCollection = 0;
@@ -75,6 +90,12 @@ export async function GET(req: NextRequest) {
   // Other Expenses must NOT be added to collection income.
   const netCollection = feeCollection + annualCollection;
 
+  // Total Income = student fee payments (this period) + other, non-fee school income (this period).
+  // Net Remaining Balance = Total Income - actual recorded expenses (this period). Outstanding
+  // dues and the yearly expected total are reported separately below — neither is collected cash.
+  const totalIncome = netCollection + otherCollectionsTotal;
+  const netBalance = totalIncome - otherExpenses;
+
   // Daily breakdown
   const dailyMap = new Map<string, { date: string; fees: number; annual: number; expenses: number }>();
   for (const tx of transactions) {
@@ -92,12 +113,22 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     success: true,
+    academicYear: effectiveAcademicYear,
     summary: {
       feeCollection,
       annualCollection,
       otherExpenses,
       netCollection,
       totalTransactions: transactions.length,
+      // This period (from/to):
+      otherCollections: otherCollectionsTotal,
+      totalIncome,
+      netBalance,
+      // Not period-bound — the school's overall standing for effectiveAcademicYear:
+      yearlyExpectedFees,
+      totalCollectedOverall: challanStats.totalCollected,
+      outstandingDues: challanStats.totalOutstanding,
+      advancePayments: advancePaymentsTotal,
     },
     dailyBreakdown,
     transactions: transactions.slice(0, 200), // top 200 recent transactions

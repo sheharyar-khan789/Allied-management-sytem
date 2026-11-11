@@ -5164,6 +5164,25 @@ export async function getAdvanceBalanceServer(schoolId: string, studentId: strin
  * the caller (applyAdvanceToVoucher() already caps the amount at the balance it read), not
  * something this function silently allows by going negative.
  */
+/** Every student's advance balance for one academic year, for the dashboard's "Advance Payments" total. */
+export async function getAdvanceBalancesForSchoolServer(schoolId: string, academicYear: string): Promise<AdvanceBalanceDoc[]> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("advanceBalances")
+        .where("schoolId", "==", schoolId)
+        .where("academicYear", "==", academicYear)
+        .get();
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as AdvanceBalanceDoc));
+    } catch (e) {
+      onFirestoreError(`getAdvanceBalancesForSchoolServer(${schoolId})`, e);
+      throw e;
+    }
+  }
+  return Array.from(localStore.advanceBalances.values()).filter((b) => b.schoolId === schoolId && b.academicYear === academicYear);
+}
+
 export async function adjustAdvanceBalanceServer(
   schoolId: string,
   studentId: string,
