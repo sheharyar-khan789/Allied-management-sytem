@@ -7,6 +7,7 @@ import FileUpload from "@/components/FileUpload";
 import StudentFeeAccount from "@/components/StudentFeeAccount";
 import FeeImportModal from "@/components/FeeImportModal";
 import TransactionImportModal from "@/components/TransactionImportModal";
+import YearlyFeeLedgerManager from "@/components/YearlyFeeLedgerManager";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 
 const MONTHS = [
@@ -15,7 +16,7 @@ const MONTHS = [
 ];
 
 export default function FeeManagementPage() {
-  const [view, setView] = useState<"ledger" | "student">("ledger");
+  const [view, setView] = useState<"ledger" | "student" | "yearlyLedger">("ledger");
   const [initialStudentId, setInitialStudentId] = useState("");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -214,11 +215,12 @@ export default function FeeManagementPage() {
         {[
           { key: "ledger", label: "Challan Ledger", icon: "receipt_long" },
           { key: "student", label: "Student Fee Account (12 Months)", icon: "calendar_month" },
+          { key: "yearlyLedger", label: "Yearly Fee Ledger", icon: "table_chart" },
         ].map((tab) => (
           <button
             key={tab.key}
             type="button"
-            onClick={() => setView(tab.key as "ledger" | "student")}
+            onClick={() => setView(tab.key as "ledger" | "student" | "yearlyLedger")}
             className={`flex items-center gap-1.5 py-3 px-3 text-xs sm:text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
               view === tab.key ? "border-secondary text-secondary font-bold" : "border-transparent text-on-surface-variant hover:text-on-surface"
             }`}
@@ -230,6 +232,7 @@ export default function FeeManagementPage() {
       </div>
 
       {view === "student" && <StudentFeeAccount classes={classes} initialStudentId={initialStudentId} />}
+      {view === "yearlyLedger" && <YearlyFeeLedgerManager classes={classes} />}
 
       {view === "ledger" && loadError && (
         <div role="alert" className="p-3 rounded-lg bg-error-container text-on-error-container text-xs font-bold flex items-center gap-2">

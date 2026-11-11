@@ -14,8 +14,10 @@ const STATUS_LABELS: Record<string, string> = {
   PUBLISHED: "Published (visible to students & parents)",
 };
 
+const NEW_SUBJECT_OPTION = "__new__";
+
 const EMPTY_SCHEDULE = {
-  classId: "", subjectId: "", examDate: "", startTime: "", endTime: "", totalMarks: "100", passingMarks: "33", roomNo: "",
+  classId: "", subjectId: "", newSubjectName: "", examDate: "", startTime: "", endTime: "", totalMarks: "100", passingMarks: "33", roomNo: "",
 };
 
 const inputCls =
@@ -231,6 +233,7 @@ export default function ExamsManagementPage() {
         ? {
             classId: sched.classId,
             subjectId: sched.subjectId,
+            newSubjectName: "",
             examDate: sched.examDate || "",
             startTime: sched.startTime || "",
             endTime: sched.endTime || "",
@@ -246,8 +249,22 @@ export default function ExamsManagementPage() {
   const handleSaveSchedule = async () => {
     setFormError("");
     setNotice("");
-    if (!selectedExamId || !newSchedule.classId || !newSchedule.subjectId || !newSchedule.examDate || !newSchedule.startTime || !newSchedule.endTime) {
-      setFormError("Class, subject, date, and both times are required.");
+    const addingNewSubject = newSchedule.subjectId === NEW_SUBJECT_OPTION;
+    const newSubjectName = newSchedule.newSubjectName.trim();
+    if (
+      !selectedExamId ||
+      !newSchedule.classId ||
+      !newSchedule.subjectId ||
+      (addingNewSubject && !newSubjectName) ||
+      !newSchedule.examDate ||
+      !newSchedule.startTime ||
+      !newSchedule.endTime
+    ) {
+      setFormError(
+        addingNewSubject
+          ? "Class, the new subject's name, date, and both times are required."
+          : "Class, subject, date, and both times are required."
+      );
       return;
     }
     const total = Number(newSchedule.totalMarks);
@@ -256,7 +273,11 @@ export default function ExamsManagementPage() {
     if (!(passing >= 0) || passing > total) return setFormError("Passing marks must be between 0 and the maximum marks.");
     setSavingSchedule(true);
     try {
-      const { ok, json } = await callApi("PATCH", { examId: selectedExamId, ...newSchedule });
+      const { classId, examDate, startTime, endTime, totalMarks, passingMarks, roomNo } = newSchedule;
+      const payload = addingNewSubject
+        ? { examId: selectedExamId, classId, subjectName: newSubjectName, examDate, startTime, endTime, totalMarks, passingMarks, roomNo }
+        : { examId: selectedExamId, classId, subjectId: newSchedule.subjectId, examDate, startTime, endTime, totalMarks, passingMarks, roomNo };
+      const { ok, json } = await callApi("PATCH", payload);
       if (!ok) {
         setFormError(json.error || "Failed to save the subject schedule.");
         return;
@@ -266,6 +287,8 @@ export default function ExamsManagementPage() {
       setNotice(
         json.updated
           ? `Subject schedule updated${json.resultsRecomputed ? `; ${json.resultsRecomputed} recorded result(s) re-graded with the new marks` : ""}.`
+          : json.subjectUnregistered
+          ? `Subject "${json.schedule?.subjectName}" added as a new exam subject. Select it below to enter marks — assign it a teacher in Classes whenever convenient.`
           : "Subject added. Select it below to enter marks."
       );
       await loadExams(selectedExamId, json.schedule?.id);
@@ -545,7 +568,7 @@ export default function ExamsManagementPage() {
           <div>
             <label htmlFor="exams-class-6" className={labelCls}>Class</label>
             <select id="exams-class-6" value={newSchedule.classId} disabled={editingSchedule}
-              onChange={(e) => setNewSchedule((s) => ({ ...s, classId: e.target.value, subjectId: "" }))} className={`${inputCls} disabled:opacity-60`}>
+              onChange={(e) => setNewSchedule((s) => ({ ...s, classId: e.target.value, subjectId: "", newSubjectName: "" }))} className={`${inputCls} disabled:opacity-60`}>
               <option value="">Select class</option>
               {classes.map((c) => (
                 <option key={c.id} value={c.id}>{c.displayName}</option>
@@ -558,11 +581,29 @@ export default function ExamsManagementPage() {
               onChange={(e) => setNewSchedule((s) => ({ ...s, subjectId: e.target.value }))} className={`${inputCls} disabled:opacity-60`}>
               <option value="">Select subject</option>
               {(scheduleClass?.subjects || []).map((sub: any) => (
-                <option key={sub.id} value={sub.id}>{sub.name}</option>
+                <option key={sub.id} value={sub.id}>{sub.name}{sub.unregisteredFromImport ? " (unregistered)" : ""}</option>
               ))}
+              {!editingSchedule && <option value={NEW_SUBJECT_OPTION}>+ Add new subject…</option>}
             </select>
-            {newSchedule.classId && (scheduleClass?.subjects || []).length === 0 && (
-              <p className="text-[10px] text-error mt-1">This class has no subjects. Add them in Classes first.</p>
+            {newSchedule.subjectId === NEW_SUBJECT_OPTION ? (
+              <input
+                type="text"
+                maxLength={160}
+                value={newSchedule.newSubjectName}
+                onChange={(e) => setNewSchedule((s) => ({ ...s, newSubjectName: e.target.value }))}
+                placeholder="e.g. Special Aptitude Test"
+                className={`${inputCls} mt-2`}
+                aria-label="New subject name"
+              />
+            ) : (
+              newSchedule.classId && (scheduleClass?.subjects || []).length === 0 && (
+                <p className="text-[10px] text-on-surface-variant mt-1">This class has no subjects yet — use &quot;+ Add new subject&quot; above, or add one permanently in Classes.</p>
+              )
+            )}
+            {newSchedule.subjectId === NEW_SUBJECT_OPTION && (
+              <p className="text-[10px] text-on-surface-variant mt-1">
+                Reuses a same-named subject of this class if one exists; otherwise creates it — no teacher required yet.
+              </p>
             )}
           </div>
           <div>

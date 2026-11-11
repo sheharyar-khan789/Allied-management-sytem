@@ -60,6 +60,9 @@ import {
   VoucherAdjustmentDoc,
   FeeMonth,
   AttendanceStatus,
+  YearlyFeeLedgerDoc,
+  YearlyFeeLedgerImportBatchDoc,
+  AdvanceCreditDoc,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -94,6 +97,9 @@ const localStore: {
   studentCharges: Map<string, StudentChargeDoc>;
   voucherAdjustments: Map<string, VoucherAdjustmentDoc>;
   enrollmentRequests: Map<string, { schoolId: string; studentId?: string; createdAt: string }>;
+  yearlyFeeLedger: Map<string, YearlyFeeLedgerDoc>;
+  yearlyFeeLedgerImportBatches: Map<string, YearlyFeeLedgerImportBatchDoc>;
+  advanceCredits: Map<string, AdvanceCreditDoc>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -125,6 +131,9 @@ const localStore: {
   studentCharges: new Map(),
   voucherAdjustments: new Map(),
   enrollmentRequests: new Map(),
+  yearlyFeeLedger: new Map(),
+  yearlyFeeLedgerImportBatches: new Map(),
+  advanceCredits: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -384,7 +393,7 @@ localStore.exams.set("ex-mid-2025", {
  * yet), logs FIRESTORE_INDEX_MISSING and runs `fallback` (the older, more expensive but exact
  * path) instead of failing the request.
  */
-async function withIndexFallback<T>(label: string, run: () => Promise<T>, fallback: () => Promise<T>): Promise<T> {
+export async function withIndexFallback<T>(label: string, run: () => Promise<T>, fallback: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (e) {
@@ -3262,8 +3271,19 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
 
   if (hasAdminCredentials) {
     try {
+      let resultPayment: PaymentDoc = payment;
       await adminDb.runTransaction(async (transaction) => {
         const challanRef = adminDb.collection("feeChallans").doc(challanId);
+        const paymentRef = adminDb.collection("payments").doc(payment.id);
+        // Reads must happen before any write in a Firestore transaction.
+        const paymentSnap = await transaction.get(paymentRef);
+        if (paymentSnap.exists) {
+          // Idempotent retry / concurrent duplicate of the exact same payment id: this amount
+          // was already applied to the challan by the request that created it — applying it
+          // again here would double-count the payment. Treat as a no-op, not an error.
+          resultPayment = paymentSnap.data() as PaymentDoc;
+          return;
+        }
         const challanSnap = await transaction.get(challanRef);
 
         if (!challanSnap.exists) {
@@ -3297,7 +3317,6 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
           ...(payment.receiptUrl ? { receiptUrl: payment.receiptUrl } : {}),
         };
 
-        const paymentRef = adminDb.collection("payments").doc(payment.id);
         transaction.set(paymentRef, payment);
         transaction.set(challanRef, updatedChallan, { merge: true });
 
@@ -3307,7 +3326,7 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
       invalidateCachePrefix(cacheKeys.feeAggregatesPrefix(schoolId));
       invalidateCachePrefix(cacheKeys.recentPayments(schoolId));
 
-      return payment;
+      return resultPayment;
     } catch (e: any) {
       onFirestoreError(`recordFeePaymentServer(${challanId})`, e);
       throw e;
@@ -3315,6 +3334,10 @@ export async function recordFeePaymentServer(payment: PaymentDoc): Promise<Payme
   }
 
   // Non-production fallback
+  if (localStore.payments.has(payment.id)) {
+    // Same idempotent-retry guard as the production transaction above.
+    return localStore.payments.get(payment.id)!;
+  }
   const challan = localStore.feeChallans.get(challanId);
   if (!challan) throw new Error("Fee challan not found.");
   if (challan.schoolId !== schoolId) {
@@ -5009,4 +5032,178 @@ export async function saveStudentChargeServer(charge: StudentChargeDoc): Promise
     }
   }
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Yearly Fee Ledger (expected fee only — never a payment, never Paid/Unpaid)
+// ---------------------------------------------------------------------------
+
+export function yearlyFeeLedgerId(schoolId: string, academicYear: string, studentId: string): string {
+  return `yfl_${schoolId}_${academicYear}_${studentId}`;
+}
+
+export async function getYearlyFeeLedgerServer(schoolId: string, academicYear: string): Promise<YearlyFeeLedgerDoc[]> {
+  assertProductionDbReady();
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("yearlyFeeLedger")
+        .where("schoolId", "==", schoolId)
+        .where("academicYear", "==", academicYear)
+        .get();
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as YearlyFeeLedgerDoc));
+    } catch (e) {
+      onFirestoreError(`getYearlyFeeLedgerServer(${schoolId},${academicYear})`, e);
+      throw e;
+    }
+  }
+  return Array.from(localStore.yearlyFeeLedger.values()).filter((e) => e.schoolId === schoolId && e.academicYear === academicYear);
+}
+
+export async function getYearlyFeeLedgerForStudentServer(
+  schoolId: string,
+  studentId: string,
+  academicYear: string
+): Promise<YearlyFeeLedgerDoc | null> {
+  assertProductionDbReady();
+  const id = yearlyFeeLedgerId(schoolId, academicYear, studentId);
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("yearlyFeeLedger").doc(id).get();
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as YearlyFeeLedgerDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getYearlyFeeLedgerForStudentServer(${studentId})`, e);
+      throw e;
+    }
+  }
+  const local = localStore.yearlyFeeLedger.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/** Upsert keyed by yearlyFeeLedgerId — re-importing the same admission number/year always overwrites the same document, never creates a duplicate. */
+export async function saveYearlyFeeLedgerEntryServer(doc: YearlyFeeLedgerDoc): Promise<YearlyFeeLedgerDoc> {
+  assertProductionDbReady();
+  const id = doc.id || yearlyFeeLedgerId(doc.schoolId, doc.academicYear, doc.studentId);
+  const data: YearlyFeeLedgerDoc = { ...doc, id, updatedAt: new Date().toISOString(), createdAt: doc.createdAt || new Date().toISOString() };
+  localStore.yearlyFeeLedger.set(id, data);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("yearlyFeeLedger").doc(id).set(cleanUndefined(data), { merge: true });
+    } catch (e) {
+      onFirestoreError(`saveYearlyFeeLedgerEntryServer(${id})`, e);
+      throw e;
+    }
+  }
+  return data;
+}
+
+export async function saveYearlyLedgerImportBatchServer(batch: YearlyFeeLedgerImportBatchDoc): Promise<YearlyFeeLedgerImportBatchDoc> {
+  assertProductionDbReady();
+  localStore.yearlyFeeLedgerImportBatches.set(batch.id, batch);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("yearlyFeeLedgerImportBatches").doc(batch.id).set(cleanUndefined(batch));
+    } catch (e) {
+      onFirestoreError(`saveYearlyLedgerImportBatchServer(${batch.id})`, e);
+      throw e;
+    }
+  }
+  return batch;
+}
+
+export async function getYearlyLedgerImportBatchesServer(schoolId: string, academicYear?: string): Promise<YearlyFeeLedgerImportBatchDoc[]> {
+  assertProductionDbReady();
+  const sort = (list: YearlyFeeLedgerImportBatchDoc[]) => list.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  if (hasAdminCredentials) {
+    try {
+      let ref = adminDb.collection("yearlyFeeLedgerImportBatches").where("schoolId", "==", schoolId) as Query;
+      if (academicYear) ref = ref.where("academicYear", "==", academicYear);
+      const snap = await ref.limit(100).get();
+      return sort(snap.docs.map((d) => ({ id: d.id, ...d.data() } as YearlyFeeLedgerImportBatchDoc)));
+    } catch (e) {
+      onFirestoreError(`getYearlyLedgerImportBatchesServer(${schoolId})`, e);
+      throw e;
+    }
+  }
+  return sort(
+    Array.from(localStore.yearlyFeeLedgerImportBatches.values()).filter(
+      (b) => b.schoolId === schoolId && (!academicYear || b.academicYear === academicYear)
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Advance credit (per student, school-wide — Daily Import's unapplied payment surplus)
+// ---------------------------------------------------------------------------
+
+function advanceCreditId(schoolId: string, studentId: string): string {
+  return `advcr_${schoolId}_${studentId}`;
+}
+
+export async function getAdvanceCreditServer(schoolId: string, studentId: string): Promise<AdvanceCreditDoc | null> {
+  assertProductionDbReady();
+  const id = advanceCreditId(schoolId, studentId);
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("advanceCredits").doc(id).get();
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as AdvanceCreditDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getAdvanceCreditServer(${id})`, e);
+      throw e;
+    }
+  }
+  const local = localStore.advanceCredits.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/**
+ * Applies a signed delta to a student's advance credit (positive = credit from an overpayment,
+ * negative = a deliberate future spend by some other workflow) inside a transaction, the same
+ * pattern as the fee-structure/voucher work's adjustAdvanceBalanceServer, so two concurrent
+ * Daily Import commits can never both credit/spend the same balance incorrectly. Clamped at 0.
+ */
+export async function adjustAdvanceCreditServer(schoolId: string, studentId: string, delta: number): Promise<AdvanceCreditDoc> {
+  assertProductionDbReady();
+  const id = advanceCreditId(schoolId, studentId);
+  const nowIso = new Date().toISOString();
+
+  if (hasAdminCredentials) {
+    try {
+      return await adminDb.runTransaction(async (transaction) => {
+        const ref = adminDb.collection("advanceCredits").doc(id);
+        const snap = await transaction.get(ref);
+        const current = snap.exists ? (snap.data() as AdvanceCreditDoc).balance || 0 : 0;
+        const next: AdvanceCreditDoc = {
+          id,
+          schoolId,
+          studentId,
+          balance: Math.max(0, current + delta),
+          createdAt: snap.exists ? (snap.data() as AdvanceCreditDoc).createdAt : nowIso,
+          updatedAt: nowIso,
+        };
+        transaction.set(ref, next, { merge: true });
+        localStore.advanceCredits.set(id, next);
+        return next;
+      });
+    } catch (e) {
+      onFirestoreError(`adjustAdvanceCreditServer(${id})`, e);
+      throw e;
+    }
+  }
+
+  const current = localStore.advanceCredits.get(id);
+  const next: AdvanceCreditDoc = {
+    id,
+    schoolId,
+    studentId,
+    balance: Math.max(0, (current?.balance || 0) + delta),
+    createdAt: current?.createdAt || nowIso,
+    updatedAt: nowIso,
+  };
+  localStore.advanceCredits.set(id, next);
+  return next;
 }

@@ -191,6 +191,110 @@ export function parseTransactionRow(
 }
 
 // ---------------------------------------------------------------------------
+// Class/section matching
+// ---------------------------------------------------------------------------
+
+/**
+ * Lowercases, trims, and splits a class label into its real tokens — "Class 5-A" -> ["class",
+ * "5", "a"], "5 A" -> ["5", "a"], "Nursery-A" -> ["nursery", "a"]. Matching compares these
+ * tokens, never a raw substring: a naive `"class15a".includes("5a")` is true, so comparing
+ * stripped strings directly would let an imported "5-A" cross-match an existing "Class 15-A",
+ * or match a different section of the same grade ("5-B") whenever the import didn't give the
+ * section — token equality cannot make that mistake.
+ */
+export function classLabelTokens(raw: string): string[] {
+  return raw
+    .toLowerCase()
+    .trim()
+    .replace(/[-_/]+/g, " ")
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .filter(Boolean);
+}
+
+/**
+ * True when every token of the imported class text appears, verbatim, among the student's
+ * actual class tokens. An empty imported class text always matches (the row is then resolved
+ * by student name alone) — this is unchanged existing behaviour, not a new leniency.
+ */
+export function classLabelsMatch(studentClassName: string, importedClassText: string): boolean {
+  const importTokens = classLabelTokens(importedClassText);
+  if (importTokens.length === 0) return true;
+  const studentTokens = classLabelTokens(studentClassName);
+  return importTokens.every((t) => studentTokens.includes(t));
+}
+
+/** Collapses internal whitespace (not just leading/trailing) before any name comparison, so
+ *  "Ali  Khan" (accidental double space) still matches the real "Ali Khan". */
+function normalizeName(v: string): string {
+  return v.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+/**
+ * Dedup key for one "Other Expenses" row: same date + same description + same amount is
+ * treated as the same expense re-submitted, never silently recorded twice. Normalizes
+ * whitespace/case the same way normalizeName does, for the same reason.
+ */
+export function buildExpenseDedupKey(date: string, details: string, amount: number): string {
+  return `${date}|${normalizeName(details)}|${amount}`;
+}
+
+// ---------------------------------------------------------------------------
+// Daily Import payment allocation
+// ---------------------------------------------------------------------------
+
+export interface AllocationChallanInput {
+  id: string;
+  /** Sort key for "oldest first" ordering among the non-targeted challans — e.g. year*12+monthIndex. */
+  periodKey: number;
+  balanceAmount: number;
+}
+
+export interface AllocationLine {
+  challanId: string;
+  amount: number;
+}
+
+export interface AllocationPlan {
+  lines: AllocationLine[];
+  /** Whatever is left after every outstanding challan (targeted month first, then the rest
+   *  oldest-first) has been fully settled — becomes the student's advance credit, never
+   *  silently dropped and never applied to a challan that was not actually outstanding. */
+  advanceCredit: number;
+}
+
+/**
+ * Allocates one Daily Import payment: first to the challan the row's own date targets (up to
+ * its balance), then to the student's other outstanding challans oldest-period-first, then
+ * whatever remains becomes advance credit. A payment is never applied to a challan with a
+ * zero/negative balance, and no challan's balance is ever reduced below zero, so an unrelated
+ * month is never marked Paid just because a different month's payment arrived.
+ */
+export function planPaymentAllocation(
+  targetChallanId: string | null,
+  outstandingChallans: AllocationChallanInput[],
+  amount: number
+): AllocationPlan {
+  const target = targetChallanId ? outstandingChallans.find((c) => c.id === targetChallanId) : undefined;
+  const others = outstandingChallans
+    .filter((c) => c.id !== targetChallanId)
+    .sort((a, b) => a.periodKey - b.periodKey);
+  const ordered = target ? [target, ...others] : others;
+
+  let remaining = amount;
+  const lines: AllocationLine[] = [];
+  for (const challan of ordered) {
+    if (remaining <= 0) break;
+    if (challan.balanceAmount <= 0) continue;
+    const applied = Math.min(remaining, challan.balanceAmount);
+    lines.push({ challanId: challan.id, amount: applied });
+    remaining -= applied;
+  }
+
+  return { lines, advanceCredit: Math.max(0, remaining) };
+}
+
+// ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 
@@ -198,12 +302,18 @@ export function parseTransactionRow(
  * Validate parsed rows against student list and check for duplicates.
  *
  * Rules:
- * - "Other Expenses": VALID if date + amount + details are present (no student needed)
+ * - "Other Expenses": VALID if date + amount + details are present (no student needed);
+ *   DUPLICATE if the same date+description+amount already exists (existingExpenseKeys) or
+ *   appears earlier in this same file.
  * - "Fees" / "Annual Amount":
- *   - Must resolve exactly 1 student by fullName (case-insensitive contains) + className
+ *   - Must resolve exactly 1 student by fullName (case-insensitive, whitespace-normalized,
+ *     contains) + className (token match, see classLabelsMatch)
  *   - 0 matches → INVALID ("Student not found")
  *   - 2+ matches → AMBIGUOUS ("Multiple students match")
- *   - 1 match → VALID; check for duplicate (same studentId + yearMonth within batch)
+ *   - 1 match → VALID; DUPLICATE if the exact same studentId+date+category+amount already
+ *     exists (existingTxDates) or appears earlier in this same file — NOT merely the same
+ *     student+month, since a student can legitimately make several distinct payments
+ *     (partial, then the remainder, or an advance) within one month.
  */
 export function validateTransactionRows(
   rows: TransactionImportRow[],
@@ -213,10 +323,12 @@ export function validateTransactionRows(
     className: string;
     classId: string;
   }>,
-  existingTxDates?: Set<string> // set of `${studentId}_${yearMonth}` for duplicate check
+  existingTxDates?: Set<string>, // set of `${studentId}|${date}|${category}|${amount}` for duplicate check
+  existingExpenseKeys?: Set<string> // set of buildExpenseDedupKey(...) for "Other Expenses" rows
 ): TransactionImportResult[] {
-  // Track duplicates within this batch (for Fees category)
+  // Track duplicates within this batch (for Fees category, and separately for Other Expenses)
   const seenInBatch = new Set<string>();
+  const seenExpenseKeysInBatch = new Set<string>();
   const results: TransactionImportResult[] = [];
 
   for (const row of rows) {
@@ -251,22 +363,31 @@ export function validateTransactionRows(
       continue;
     }
 
-    // "Other Expenses" — no student resolution needed
+    // "Other Expenses" — no student resolution needed, but still checked for duplicates.
     if (row.category === "Other Expenses") {
+      if (row.date) {
+        const expenseKey = buildExpenseDedupKey(row.date, row.details, row.amount ?? 0);
+        if (existingExpenseKeys?.has(expenseKey) || seenExpenseKeysInBatch.has(expenseKey)) {
+          results.push({
+            row,
+            status: "DUPLICATE",
+            errors: [`Duplicate: an "Other Expenses" entry already exists for "${row.details}" on ${row.date} for Rs. ${row.amount}.`],
+          });
+          continue;
+        }
+        seenExpenseKeysInBatch.add(expenseKey);
+      }
       results.push({ row, status: "VALID", errors: [] });
       continue;
     }
 
-    // "Fees" or "Annual Amount" — must resolve a student
-    const detailsLower = row.details.toLowerCase();
-    const classNameLower = row.className.toLowerCase();
+    // "Fees" or "Annual Amount" — must resolve a student.
+    const detailsNorm = normalizeName(row.details);
 
     const matches = students.filter((s) => {
-      const nameMatch = s.fullName.toLowerCase().includes(detailsLower) ||
-        detailsLower.includes(s.fullName.toLowerCase());
-      const classMatch = !classNameLower ||
-        s.className.toLowerCase().includes(classNameLower) ||
-        classNameLower.includes(s.className.toLowerCase());
+      const nameNorm = normalizeName(s.fullName);
+      const nameMatch = nameNorm.includes(detailsNorm) || detailsNorm.includes(nameNorm);
+      const classMatch = classLabelsMatch(s.className, row.className);
       return nameMatch && classMatch;
     });
 
@@ -293,21 +414,25 @@ export function validateTransactionRows(
       continue;
     }
 
-    // Exactly 1 match — check for duplicates (only for Fees category)
+    // Exactly 1 match — check for duplicates (Fees and Annual Amount: both are now actual
+    // received payments under Daily Import's payment-recording model, Phase 2). The dedup key
+    // is the EXACT row content (student + date + category + amount), never just student+month —
+    // a student can legitimately make several distinct payments (partial, then the remainder,
+    // or an advance) within the same month, and only resubmitting the identical row is a
+    // genuine duplicate.
     const student = matches[0];
     resolvedStudentId = student.id;
     resolvedStudentName = student.fullName;
     resolvedClassId = student.classId;
 
-    if (row.category === "Fees" && row.date) {
-      const yearMonth = row.date.substring(0, 7); // YYYY-MM
-      const dupKey = `${student.id}_${yearMonth}`;
+    if ((row.category === "Fees" || row.category === "Annual Amount") && row.date) {
+      const dupKey = `${student.id}|${row.date}|${row.category}|${row.amount}`;
 
       if (existingTxDates?.has(dupKey) || seenInBatch.has(dupKey)) {
         results.push({
           row,
           status: "DUPLICATE",
-          errors: [`Duplicate: a Fees transaction already exists for "${student.fullName}" in ${yearMonth}`],
+          errors: [`Duplicate: a ${row.category} payment of ${row.amount} for "${student.fullName}" on ${row.date} already exists.`],
           resolvedStudentId,
           resolvedStudentName,
           resolvedClassId,

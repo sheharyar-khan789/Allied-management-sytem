@@ -44,6 +44,9 @@ function AdminTeacherObservationsContent() {
   const [editRating, setEditRating] = useState("SATISFACTORY");
   const [editCategory, setEditCategory] = useState("TEACHING_QUALITY");
   const [editDate, setEditDate] = useState("");
+  const [editSubmittedByMode, setEditSubmittedByMode] = useState<"none" | "staff" | "other">("none");
+  const [editSubmittedByStaffId, setEditSubmittedByStaffId] = useState("");
+  const [editSubmittedByName, setEditSubmittedByName] = useState("");
   const [saving, setSaving] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState("");
   const [notice, setNotice] = useState("");
@@ -56,6 +59,10 @@ function AdminTeacherObservationsContent() {
   const [addRating, setAddRating] = useState("SATISFACTORY");
   const [addTitle, setAddTitle] = useState("");
   const [addNote, setAddNote] = useState("");
+  // Submitted By — independent of Author (the admin typing this in, always). Never defaulted.
+  const [addSubmittedByMode, setAddSubmittedByMode] = useState<"none" | "staff" | "other">("none");
+  const [addSubmittedByStaffId, setAddSubmittedByStaffId] = useState("");
+  const [addSubmittedByName, setAddSubmittedByName] = useState("");
   const [addError, setAddError] = useState("");
   const [addSaving, setAddSaving] = useState(false);
 
@@ -97,12 +104,29 @@ function AdminTeacherObservationsContent() {
     setEditRating(openObservation.rating);
     setEditCategory(openObservation.category);
     setEditDate(openObservation.observationDate);
+    if (openObservation.submittedByStaffId) {
+      setEditSubmittedByMode("staff");
+      setEditSubmittedByStaffId(openObservation.submittedByStaffId);
+      setEditSubmittedByName("");
+    } else if (openObservation.submittedByName) {
+      setEditSubmittedByMode("other");
+      setEditSubmittedByStaffId("");
+      setEditSubmittedByName(openObservation.submittedByName);
+    } else {
+      setEditSubmittedByMode("none");
+      setEditSubmittedByStaffId("");
+      setEditSubmittedByName("");
+    }
     setEditing(true);
     setNotice("");
   };
 
   const saveEdit = async () => {
     if (!openObservation || !editNote.trim()) return;
+    if (editSubmittedByMode === "other" && !editSubmittedByName.trim()) {
+      setNotice("Enter the name of the person who submitted this observation, or choose \"Not specified\".");
+      return;
+    }
     setSaving(true);
     try {
       const res = await fetch("/api/teacher-observations", {
@@ -115,6 +139,8 @@ function AdminTeacherObservationsContent() {
           rating: editRating,
           category: editCategory,
           observationDate: editDate,
+          submittedByStaffId: editSubmittedByMode === "staff" ? editSubmittedByStaffId : "",
+          submittedByName: editSubmittedByMode === "other" ? editSubmittedByName.trim() : "",
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -158,6 +184,10 @@ function AdminTeacherObservationsContent() {
       setAddError("Please write the observation.");
       return;
     }
+    if (addSubmittedByMode === "other" && !addSubmittedByName.trim()) {
+      setAddError("Enter the name of the person who submitted this observation, or choose \"Not specified\".");
+      return;
+    }
     setAddSaving(true);
     try {
       const res = await fetch("/api/teacher-observations", {
@@ -170,6 +200,8 @@ function AdminTeacherObservationsContent() {
           rating: addRating,
           title: addTitle,
           note: addNote,
+          submittedByStaffId: addSubmittedByMode === "staff" ? addSubmittedByStaffId : "",
+          submittedByName: addSubmittedByMode === "other" ? addSubmittedByName.trim() : "",
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -183,6 +215,9 @@ function AdminTeacherObservationsContent() {
       setAddNote("");
       setAddCategory("TEACHING_QUALITY");
       setAddRating("SATISFACTORY");
+      setAddSubmittedByMode("none");
+      setAddSubmittedByStaffId("");
+      setAddSubmittedByName("");
       setNotice("Observation added.");
       await load();
     } catch {
@@ -339,11 +374,47 @@ function AdminTeacherObservationsContent() {
             )}
 
             <div>
-              <label htmlFor="tobs-add-teacher" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Teacher</label>
+              <label htmlFor="tobs-add-teacher" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Teacher (this note is about)</label>
               <select id="tobs-add-teacher" value={addTeacherId} onChange={(e) => setAddTeacherId(e.target.value)} className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-semibold text-on-surface border border-outline-variant/40">
                 <option value="">Select a teacher...</option>
                 {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
+            </div>
+            <div>
+              <label htmlFor="tobs-add-submitted-by" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">
+                Submitted By <span className="font-normal normal-case text-on-surface-variant">(the Coordinator/Teacher who actually provided this information — optional, not the same as Author)</span>
+              </label>
+              <select
+                id="tobs-add-submitted-by"
+                value={addSubmittedByMode === "staff" ? addSubmittedByStaffId : addSubmittedByMode}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "none" || v === "other") {
+                    setAddSubmittedByMode(v as "none" | "other");
+                    setAddSubmittedByStaffId("");
+                  } else {
+                    setAddSubmittedByMode("staff");
+                    setAddSubmittedByStaffId(v);
+                    setAddSubmittedByName("");
+                  }
+                }}
+                className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-semibold text-on-surface border border-outline-variant/40"
+              >
+                <option value="none">Not specified</option>
+                {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                <option value="other">Other (type a name)...</option>
+              </select>
+              {addSubmittedByMode === "other" && (
+                <input
+                  type="text"
+                  maxLength={160}
+                  value={addSubmittedByName}
+                  onChange={(e) => setAddSubmittedByName(e.target.value)}
+                  placeholder="Name of the person who submitted this"
+                  className="w-full h-9 px-3 mt-2 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40"
+                  aria-label="Submitted By name"
+                />
+              )}
             </div>
             <div className="grid grid-cols-3 gap-2">
               <div>
@@ -392,8 +463,15 @@ function AdminTeacherObservationsContent() {
                 <p className="text-[10px] font-bold text-on-surface-variant uppercase">{openObservation.categoryLabel} • {openObservation.ratingLabel}</p>
                 <h2 className="font-headline-md text-base font-bold text-on-surface mt-0.5">{openObservation.title || "Untitled note"}</h2>
                 <p className="text-[11px] text-on-surface-variant mt-0.5">
-                  {openObservation.teacherName || "Unknown teacher"} • Written by {openObservation.authorName} on {formatDate(openObservation.observationDate)}
+                  {openObservation.teacherName || "Unknown teacher"} • on {formatDate(openObservation.observationDate)}
                   {openObservation.updatedAt !== openObservation.createdAt ? ` • last edited ${formatDate(openObservation.updatedAt)}` : ""}
+                </p>
+                <p className="text-[11px] text-on-surface-variant mt-1 flex flex-wrap gap-x-3">
+                  <span><span className="font-bold text-on-surface">Author:</span> {openObservation.authorName}</span>
+                  <span>
+                    <span className="font-bold text-on-surface">Submitted By:</span>{" "}
+                    <span className={openObservation.submittedByName ? "" : "italic"}>{openObservation.submittedByDisplay}</span>
+                  </span>
                 </p>
               </div>
               <button type="button" onClick={() => { setOpenId(""); setConfirmDeleteId(""); }} className="text-on-surface-variant hover:text-on-surface shrink-0">
@@ -428,6 +506,42 @@ function AdminTeacherObservationsContent() {
                 <div>
                   <label htmlFor="tobs-edit-title" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Title</label>
                   <input id="tobs-edit-title" maxLength={200} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40" />
+                </div>
+                <div>
+                  <label htmlFor="tobs-edit-submitted-by" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">
+                    Submitted By <span className="font-normal normal-case text-on-surface-variant">(independent of Author)</span>
+                  </label>
+                  <select
+                    id="tobs-edit-submitted-by"
+                    value={editSubmittedByMode === "staff" ? editSubmittedByStaffId : editSubmittedByMode}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "none" || v === "other") {
+                        setEditSubmittedByMode(v as "none" | "other");
+                        setEditSubmittedByStaffId("");
+                      } else {
+                        setEditSubmittedByMode("staff");
+                        setEditSubmittedByStaffId(v);
+                        setEditSubmittedByName("");
+                      }
+                    }}
+                    className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs font-semibold text-on-surface border border-outline-variant/40"
+                  >
+                    <option value="none">Not specified</option>
+                    {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    <option value="other">Other (type a name)...</option>
+                  </select>
+                  {editSubmittedByMode === "other" && (
+                    <input
+                      type="text"
+                      maxLength={160}
+                      value={editSubmittedByName}
+                      onChange={(e) => setEditSubmittedByName(e.target.value)}
+                      placeholder="Name of the person who submitted this"
+                      className="w-full h-9 px-3 mt-2 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40"
+                      aria-label="Submitted By name"
+                    />
+                  )}
                 </div>
                 <div>
                   <label htmlFor="tobs-edit-note" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Observation Text</label>

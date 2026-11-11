@@ -45,6 +45,14 @@ const writableFields = {
   note: z.string().trim().min(1, "Observation text is required.").max(4000),
   subjectId: z.union([idString, z.literal(""), z.null()]).optional(),
   classId: z.union([idString, z.literal(""), z.null()]).optional(),
+  // Submitted By — the Coordinator/Teacher who actually provided this observation's information,
+  // independent of Author (always the admin who typed it in). `submittedByStaffId` selects an
+  // existing staff record (its name is resolved server-side, never trusted from the client, so a
+  // selected staff member's identity can't be spoofed with a mismatched name); `submittedByName`
+  // alone (no id) is a free-text entry for someone with no staff record. Either, both, or neither
+  // may be sent — `""` explicitly clears a previously-saved value.
+  submittedByStaffId: z.union([idString, z.literal(""), z.null()]).optional(),
+  submittedByName: z.union([z.string().trim().max(160), z.literal(""), z.null()]).optional(),
 };
 
 const createSchema = z.object({ teacherId: idString, ...writableFields });
@@ -58,6 +66,29 @@ const updateSchema = z.object({
 });
 
 const jsonError = (error: string, status: number) => NextResponse.json({ error }, { status });
+
+/**
+ * Resolves the "Submitted By" person from raw request fields. A `staffId` always wins and is
+ * verified against this school's real staff records — its name is then snapshotted from that
+ * record, never taken from whatever `name` the client also sent, so a selected staff member's
+ * identity can never be spoofed or drift out of sync. With no `staffId`, a non-empty `name` is
+ * stored as free text (for a Coordinator with no staff record). Neither given (or both blank)
+ * resolves to "nothing" — the caller decides whether that means "don't touch" or "clear".
+ */
+async function resolveSubmittedBy(
+  schoolId: string,
+  staffId: string | null | undefined,
+  name: string | null | undefined
+): Promise<{ ok: true; submittedByStaffId?: string; submittedByName?: string } | { ok: false; error: string }> {
+  if (staffId) {
+    const staff = await getTeacherByIdServer(schoolId, staffId);
+    if (!staff) return { ok: false, error: "The selected staff member was not found for this school." };
+    return { ok: true, submittedByStaffId: staff.id, submittedByName: staff.fullName };
+  }
+  const trimmedName = typeof name === "string" ? name.trim() : "";
+  if (trimmedName) return { ok: true, submittedByName: trimmedName };
+  return { ok: true };
+}
 
 /** Admin-only, school-wide search across every teacher's notes. */
 /**
@@ -142,6 +173,11 @@ export async function POST(req: NextRequest) {
     const teacher = await getTeacherByIdServer(authUser.schoolId, body.teacherId);
     if (!teacher) return jsonError("Teacher not found for this school.", 404);
 
+    // Submitted By is never defaulted to the logged-in admin — absent unless the admin actually
+    // specifies it (an existing staff member, or a free-text name).
+    const submittedBy = await resolveSubmittedBy(authUser.schoolId, body.submittedByStaffId, body.submittedByName);
+    if (!submittedBy.ok) return jsonError(submittedBy.error, 400);
+
     const obsDoc: TeacherObservationDoc = {
       id: `tobs-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       schoolId: authUser.schoolId,
@@ -156,6 +192,8 @@ export async function POST(req: NextRequest) {
       note: body.note,
       ...(body.subjectId ? { subjectId: body.subjectId } : {}),
       ...(body.classId ? { classId: body.classId } : {}),
+      ...(submittedBy.submittedByStaffId ? { submittedByStaffId: submittedBy.submittedByStaffId } : {}),
+      ...(submittedBy.submittedByName ? { submittedByName: submittedBy.submittedByName } : {}),
       createdAt: new Date().toISOString(),
     };
 
@@ -193,6 +231,16 @@ export async function PUT(req: NextRequest) {
     const existing = await getTeacherObservationByIdServer(authUser.schoolId, body.id);
     if (!existing || existing.deletedAt) return jsonError("Observation not found.", 404);
 
+    // Submitted By is only recomputed when the admin actually sent one of its two fields in this
+    // request — neither field present means "leave Submitted By exactly as it was saved", not
+    // "clear it". Sending `""` for both explicitly clears a previously-saved value.
+    let submittedByPatch: { submittedByStaffId?: string; submittedByName?: string } | null = null;
+    if (body.submittedByStaffId !== undefined || body.submittedByName !== undefined) {
+      const resolved = await resolveSubmittedBy(authUser.schoolId, body.submittedByStaffId, body.submittedByName);
+      if (!resolved.ok) return jsonError(resolved.error, 400);
+      submittedByPatch = { submittedByStaffId: resolved.submittedByStaffId, submittedByName: resolved.submittedByName };
+    }
+
     const titleChanged = body.title !== undefined && body.title !== (existing.title || "");
     const noteChanged = body.note !== undefined && body.note !== existing.note;
     const history = titleChanged || noteChanged
@@ -217,6 +265,7 @@ export async function PUT(req: NextRequest) {
       ...(body.note !== undefined ? { note: body.note } : {}),
       ...(body.subjectId !== undefined ? { subjectId: body.subjectId || undefined } : {}),
       ...(body.classId !== undefined ? { classId: body.classId || undefined } : {}),
+      ...(submittedByPatch ? { submittedByStaffId: submittedByPatch.submittedByStaffId, submittedByName: submittedByPatch.submittedByName } : {}),
       ...(history ? { editHistory: history } : {}),
       updatedAt: new Date().toISOString(),
       updatedBy: authUser.uid,

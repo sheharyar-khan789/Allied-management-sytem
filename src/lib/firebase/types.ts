@@ -428,6 +428,66 @@ export interface StudentFeeLedgerDoc {
   updatedAt: string;
 }
 
+/**
+ * One student's EXPECTED fee for one academic year (collection `yearlyFeeLedger`, id
+ * `${schoolId}_${academicYear}_${studentId}` — re-importing the same admission number for the
+ * same year always upserts this one document, never a duplicate). This is the Yearly Fee
+ * Ledger: it records what a student OWES per month/year, never what they have PAID — Daily
+ * Import (actual received payments, see transaction-import.ts) is a completely separate
+ * workflow and never writes here, and this import never touches FeeChallanDoc/PaymentDoc or
+ * marks anything Paid.
+ */
+export interface YearlyFeeLedgerDoc {
+  id: string;
+  schoolId: string;
+  academicYear: string;
+  studentId: string;
+  admissionNo: string;
+  studentName?: string;
+  classId: string;
+  className?: string;
+  monthlyFee: number;
+  annualFee: number;
+  /** Stored, not just computed on read: monthlyFee*12 + annualFee at the time of the last save. */
+  yearlyExpectedFee: number;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  updatedBy?: string;
+  importBatchId?: string;
+}
+
+/** One Yearly Fee Ledger import's outcome, kept for an Import History view. */
+export interface YearlyFeeLedgerImportBatchDoc {
+  id: string;
+  schoolId: string;
+  academicYear: string;
+  fileName?: string;
+  totalRows: number;
+  created: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+/**
+ * A student's unapplied payment credit (collection `advanceCredits`, id
+ * `${schoolId}_${studentId}`) — money Daily Import received that exceeded every outstanding
+ * due it could legally be applied to. Never auto-applied to a future month's challan by this
+ * phase (that would risk marking an unrelated month Paid) — it is tracked here only, for an
+ * admin to apply deliberately later.
+ */
+export interface AdvanceCreditDoc {
+  id: string;
+  schoolId: string;
+  studentId: string;
+  balance: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export const STUDENT_CHARGE_TYPES = ["EVENT", "TRIP", "SPORTS", "EXAM", "ACTIVITY", "OTHER"] as const;
 export type StudentChargeType = (typeof STUDENT_CHARGE_TYPES)[number];
 
@@ -576,6 +636,20 @@ export interface TeacherObservationDoc {
   updatedAt?: string;
   updatedBy?: string;
   editHistory?: { at: string; by: string; byName?: string; previousTitle?: string; previousNote: string }[];
+  /**
+   * The Coordinator/Teacher who actually PROVIDED this observation's information — independent
+   * of `authorUid`/`authorName` (always the admin who typed it into the system; see that field's
+   * own comment). Never defaults to the logged-in admin and is never assumed to be the same
+   * person as Author. Set either by picking an existing staff member (`submittedByStaffId`
+   * references a real TeacherDoc; `submittedByName` is then a snapshot of that teacher's name at
+   * save time, so a later rename doesn't retroactively change this historical record — same
+   * convention as `teacherName`/`authorName`) or by typing a name with no matching staff record
+   * (`submittedByStaffId` absent). Both fields absent on records saved before this existed, or
+   * when Admin never specified who actually submitted the information — shown as "Not recorded",
+   * never guessed or backfilled.
+   */
+  submittedByStaffId?: string;
+  submittedByName?: string;
   /** Soft delete: kept for the audit trail, excluded from normal reads. */
   deletedAt?: string | null;
   deletedBy?: string;

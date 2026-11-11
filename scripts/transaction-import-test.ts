@@ -185,20 +185,44 @@ test("17. validateTransactionRows: Other Expenses requires no student match", ()
   expect(results[0].resolvedStudentId).toBe(undefined);
 });
 
-test("18. validateTransactionRows: detect duplicate Fees in same month/batch", () => {
+test("18. validateTransactionRows: detect an exact duplicate row (same date+amount) within the same batch", () => {
+  // Phase 2: the dedup key is the exact payment (student+date+category+amount). Two rows for
+  // the same student on DIFFERENT dates (even with the same amount) are two distinct
+  // legitimate payments, not a duplicate — see test 18b.
   const row1 = parseTransactionRow(2, ["15-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700"]);
-  const row2 = parseTransactionRow(3, ["20-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700"]);
+  const row2 = parseTransactionRow(3, ["15-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700"]);
   const results = validateTransactionRows([row1, row2], sampleStudents);
   expect(results[0].status).toBe("VALID");
   expect(results[1].status).toBe("DUPLICATE");
   expect(results[1].errors[0]).toContain("Duplicate");
 });
 
+test("18b. validateTransactionRows: the same amount on two DIFFERENT dates in one batch are both VALID (two distinct payments)", () => {
+  const row1 = parseTransactionRow(2, ["15-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700"]);
+  const row2 = parseTransactionRow(3, ["20-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700"]);
+  const results = validateTransactionRows([row1, row2], sampleStudents);
+  expect(results[0].status).toBe("VALID");
+  expect(results[1].status).toBe("VALID");
+});
+
 test("19. validateTransactionRows: detect duplicate Fees against existing DB records", () => {
+  // Phase 2: the dedup key is the EXACT payment (student+date+category+amount), not just
+  // student+month — a student can legitimately make several distinct payments within one
+  // month (partial, then the remainder, or an advance), so only resubmitting the identical
+  // row is a genuine duplicate. Row's date parses to ISO "2026-11-15".
   const row = parseTransactionRow(2, ["15-11-2026", "Fees", "M. Huzaifa", "Nursery", "3700"]);
-  const existingSet = new Set(["std-1_2026-11"]);
+  const existingSet = new Set(["std-1|2026-11-15|Fees|3700"]);
   const results = validateTransactionRows([row], sampleStudents, existingSet);
   expect(results[0].status).toBe("DUPLICATE");
+});
+
+test("19b. validateTransactionRows: a DIFFERENT amount in the same month is NOT a duplicate (partial + remainder payments)", () => {
+  const row = parseTransactionRow(2, ["20-11-2026", "Fees", "M. Huzaifa", "Nursery", "1500"]);
+  // Only an existing Nov 15 / Rs. 3700 payment is on record — this Nov 20 / Rs. 1500 payment
+  // is a distinct, legitimate second payment in the same month, not a resubmission of the first.
+  const existingSet = new Set(["std-1|2026-11-15|Fees|3700"]);
+  const results = validateTransactionRows([row], sampleStudents, existingSet);
+  expect(results[0].status).toBe("VALID");
 });
 
 test("20. validateTransactionRows: same student in different months are both VALID", () => {

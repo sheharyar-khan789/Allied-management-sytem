@@ -72,7 +72,8 @@ export default function TeacherObservationsPage() {
                   <th className="py-3 px-4 font-bold">Category</th>
                   <th className="py-3 px-4 font-bold">Rating</th>
                   <th className="py-3 px-4 font-bold">Title / Excerpt</th>
-                  <th className="py-3 px-4 font-bold">Written by</th>
+                  <th className="py-3 px-4 font-bold">Author</th>
+                  <th className="py-3 px-4 font-bold">Submitted By</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container-low">
@@ -91,6 +92,7 @@ export default function TeacherObservationsPage() {
                     </td>
                     <td className="py-3 px-4 font-medium text-on-surface max-w-sm truncate">{o.title || o.note}</td>
                     <td className="py-3 px-4 text-on-surface-variant">{o.authorName}</td>
+                    <td className={`py-3 px-4 ${o.submittedByName ? "text-on-surface-variant" : "text-on-surface-variant italic"}`}>{o.submittedByDisplay}</td>
                   </tr>
                 ))}
               </tbody>
@@ -107,8 +109,15 @@ export default function TeacherObservationsPage() {
                 <p className="text-[10px] font-bold text-on-surface-variant uppercase">{openObservation.categoryLabel} • {openObservation.ratingLabel}</p>
                 <h2 className="font-headline-md text-base font-bold text-on-surface mt-0.5">{openObservation.title || "Untitled note"}</h2>
                 <p className="text-[11px] text-on-surface-variant mt-0.5">
-                  Written by {openObservation.authorName} on {formatDate(openObservation.observationDate)}
+                  On {formatDate(openObservation.observationDate)}
                   {openObservation.updatedAt !== openObservation.createdAt ? ` • last edited ${formatDate(openObservation.updatedAt)}` : ""}
+                </p>
+                <p className="text-[11px] text-on-surface-variant mt-1 flex flex-wrap gap-x-3">
+                  <span><span className="font-bold text-on-surface">Author:</span> {openObservation.authorName}</span>
+                  <span>
+                    <span className="font-bold text-on-surface">Submitted By:</span>{" "}
+                    <span className={openObservation.submittedByName ? "" : "italic"}>{openObservation.submittedByDisplay}</span>
+                  </span>
                 </p>
               </div>
               <button type="button" onClick={() => setOpenId("")} className="text-on-surface-variant hover:text-on-surface shrink-0">

@@ -469,15 +469,24 @@ export async function POST(req: NextRequest) {
  * is deterministic). When marks are already recorded and the maximum/passing marks change, the
  * derived percentage/grade/pass-fail of those results are recomputed from their unchanged
  * obtained marks — and a new maximum below an already-recorded mark is refused.
+ *
+ * `subjectId` selects an existing subject of the class, as before. An admin adding a subject that
+ * was never pre-created in Subject Allocation (a one-off test, an additional exam subject) instead
+ * sends `subjectName` with no `subjectId` — the exact same `resolveOrCreateSubjectForSchedule`
+ * used by exam creation and the bulk date-sheet import resolves it: reusing a same-named subject
+ * of this class if one already exists (never a duplicate), or creating a real, permanent SubjectDoc
+ * flagged `unregisteredFromImport` so Admin can later assign it a teacher or link it into an
+ * existing subject, exactly like a bulk-imported unregistered subject.
  */
 export async function PATCH(req: NextRequest) {
   try {
     const authUser = await requireAuth(req, ["ADMIN"]);
     const body = await req.json();
     const { examId, classId, subjectId, examDate, startTime, endTime, totalMarks, passingMarks, roomNo } = body;
+    const subjectName = typeof body.subjectName === "string" ? body.subjectName.trim().slice(0, 160) : "";
 
-    if (!examId || !classId || !subjectId || !examDate || !startTime || !endTime) {
-      return jsonError("examId, classId, subjectId, examDate, startTime, and endTime are required.", 400);
+    if (!examId || !classId || (!subjectId && !subjectName) || !examDate || !startTime || !endTime) {
+      return jsonError("examId, classId, a subject (existing, or a new subject name), examDate, startTime, and endTime are required.", 400);
     }
     const cleanExamDate = validateDateString(examDate);
     if (!cleanExamDate) {
@@ -498,21 +507,33 @@ export async function PATCH(req: NextRequest) {
     if (!exams.some((e) => e.id === examId)) {
       return jsonError("Exam not found for this school.", 404);
     }
-    const classOk = classes.some((c) => c.id === classId);
-    const subject = subjects.find((s) => s.id === subjectId && s.classId === classId);
-    if (!classOk || !subject) {
-      return jsonError("Class or subject not found for this school.", 404);
+    const targetClass = classes.find((c) => c.id === classId);
+    if (!targetClass) {
+      return jsonError("Class not found for this school.", 404);
     }
 
-    const scheduleId = `sch-${examId}-${classId}-${subjectId}`;
-    const previous = await getExamScheduleByIdServer(authUser.schoolId, scheduleId);
     const now = new Date().toISOString();
+    let subject: SubjectDoc | null = subjectId ? subjects.find((s) => s.id === subjectId && s.classId === classId) || null : null;
+    if (!subject) {
+      // A client-supplied subjectId that doesn't resolve (stale UI, tampered request) is a genuine
+      // not-found — never silently fall back to creating an unrelated subject under a guessed name.
+      if (subjectId && !subjectName) {
+        return jsonError("Subject not found for this school.", 404);
+      }
+      subject = await resolveOrCreateSubjectForSchedule(authUser.schoolId, targetClass, subjects, undefined, subjectName, now);
+      if (!subject) {
+        return jsonError("A subject (existing, or a new subject name) is required.", 400);
+      }
+    }
+
+    const scheduleId = `sch-${examId}-${classId}-${subject.id}`;
+    const previous = await getExamScheduleByIdServer(authUser.schoolId, scheduleId);
     const scheduleDoc: ExamScheduleDoc = {
       id: scheduleId,
       schoolId: authUser.schoolId,
       examId,
       classId,
-      subjectId,
+      subjectId: subject.id,
       subjectName: subject.name,
       examDate: cleanExamDate,
       startTime,
@@ -562,7 +583,13 @@ export async function PATCH(req: NextRequest) {
     );
 
     return NextResponse.json(
-      { success: true, schedule: scheduleDoc, updated: Boolean(previous), resultsRecomputed: recomputed },
+      {
+        success: true,
+        schedule: scheduleDoc,
+        updated: Boolean(previous),
+        resultsRecomputed: recomputed,
+        subjectUnregistered: Boolean(subject.unregisteredFromImport),
+      },
       { status: previous ? 200 : 201 }
     );
   } catch (error: any) {

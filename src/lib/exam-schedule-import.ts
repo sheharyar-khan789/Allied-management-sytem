@@ -172,21 +172,24 @@ export interface ScheduleImportContext {
  * own name ("Class 9", "Class 9-A") or its short numeric-level form ("9", "9-A", "9 A") — the
  * form most admins actually type into a spreadsheet — never a fuzzy/partial match that could
  * silently pick the wrong class.
+ *
+ * The short numeric-level candidates are derived from digits actually present in the class's OWN
+ * name (e.g. "Class 9" -> "9"), never from the stored `numericLevel` field directly: a class whose
+ * name has no digits at all (Nursery, KG, Prep) gets an arbitrary fallback numericLevel assigned
+ * at creation time (see POST /api/classes: `parseInt(name...) || count`), which can coincidentally
+ * equal a genuinely numbered class's real level. Trusting that field here previously made an
+ * admin's exact, unambiguous label (e.g. "1-A") wrongly match BOTH "Class 1-A" and a same-level
+ * "Nursery-A" purely because of that coincidence.
  */
 function matchClass(label: string, classes: ScheduleImportContext["classes"]): Pick<ClassDoc, "id" | "name" | "section">[] {
   const target = slug(label);
   return classes.filter((c) => {
     const section = c.section || "";
-    const candidates = [
-      c.name,
-      `${c.name}${section}`,
-      `${c.name} ${section}`,
-      `${c.name}-${section}`,
-      String(c.numericLevel),
-      `${c.numericLevel}${section}`,
-      `${c.numericLevel} ${section}`,
-      `${c.numericLevel}-${section}`,
-    ];
+    const candidates = [c.name, `${c.name}${section}`, `${c.name} ${section}`, `${c.name}-${section}`];
+    const digitsInName = c.name.match(/\d+/)?.[0];
+    if (digitsInName) {
+      candidates.push(digitsInName, `${digitsInName}${section}`, `${digitsInName} ${section}`, `${digitsInName}-${section}`);
+    }
     return candidates.some((candidate) => slug(candidate) === target);
   });
 }

@@ -50,6 +50,11 @@ export interface TeacherObservationView {
   createdAt: string;
   updatedAt: string;
   editHistory: { at: string; by: string; byName?: string; previousTitle?: string; previousNote: string }[];
+  /** Raw stored value, or null when never specified — never guessed/backfilled. */
+  submittedByStaffId: string | null;
+  submittedByName: string | null;
+  /** Display-ready: the saved name, or "Not recorded" when `submittedByName` is null. */
+  submittedByDisplay: string;
 }
 
 export function toTeacherObservationView(o: TeacherObservationDoc): TeacherObservationView {
@@ -72,6 +77,9 @@ export function toTeacherObservationView(o: TeacherObservationDoc): TeacherObser
     createdAt: o.createdAt,
     updatedAt: o.updatedAt || o.createdAt,
     editHistory: o.editHistory || [],
+    submittedByStaffId: o.submittedByStaffId || null,
+    submittedByName: o.submittedByName || null,
+    submittedByDisplay: o.submittedByName || "Not recorded",
   };
 }
 
