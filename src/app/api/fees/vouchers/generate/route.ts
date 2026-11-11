@@ -11,6 +11,8 @@ import {
   saveFeeChallanServer,
   recordPaymentServer,
   createAuditLogServer,
+  saveVoucherGenerationBatchServer,
+  getVoucherGenerationBatchesServer,
 } from "@/lib/firebase/server-db";
 import { FEE_MONTHS, FeeChallanDoc, PaymentDoc, StudentDoc } from "@/lib/firebase/types";
 import { applyAdvanceToVoucher, planMonthlyVoucher, voucherAlreadyExists, VoucherGenerationAction } from "@/lib/voucher-generation";
@@ -228,7 +230,28 @@ async function handle(req: NextRequest, doCommit: boolean) {
     failed: rows.filter((r) => r.action === "FAILED").length,
   };
 
+  let batchId: string | undefined;
   if (doCommit) {
+    batchId = `vgb-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    await saveVoucherGenerationBatchServer({
+      id: batchId,
+      schoolId,
+      academicYear,
+      month,
+      year,
+      scope,
+      classId,
+      studentId,
+      totalStudents: summary.totalStudents,
+      generated: summary.generated,
+      skippedExists: summary.skippedExists,
+      skippedNoStructure: summary.skippedNoStructure,
+      failed: summary.failed,
+      createdBy: authUser.uid,
+      createdByName: authUser.email,
+      createdAt: new Date().toISOString(),
+    });
+
     await createAuditLogServer(
       schoolId,
       authUser.uid,
@@ -236,13 +259,13 @@ async function handle(req: NextRequest, doCommit: boolean) {
       authUser.role,
       "GENERATE_MONTHLY_VOUCHERS",
       "FEE",
-      "voucher-generation",
+      batchId,
       `Generated ${month} ${year} vouchers (${academicYear}, scope ${scope}${classId ? ` ${classId}` : ""}${studentId ? ` ${studentId}` : ""}): ` +
         `${summary.generated} generated, ${summary.skippedExists} already existed, ${summary.skippedNoStructure} had no structure, ${summary.failed} failed.`
     );
   }
 
-  return NextResponse.json({ success: true, academicYear, month, year, scope, committed: doCommit, summary, rows });
+  return NextResponse.json({ success: true, academicYear, month, year, scope, committed: doCommit, batchId, summary, rows });
 }
 
 export async function POST(req: NextRequest) {
@@ -256,5 +279,21 @@ export async function POST(req: NextRequest) {
     if (busy) return busy;
     console.error("Voucher generation error:", error?.message || error);
     return NextResponse.json({ error: "Voucher generation failed." }, { status: 500 });
+  }
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const authUser = await requireAuth(req, ["ADMIN"]);
+    const { searchParams } = new URL(req.url);
+    const academicYear = searchParams.get("academicYear") || undefined;
+    const batches = await getVoucherGenerationBatchesServer(authUser.schoolId, academicYear);
+    return NextResponse.json({ success: true, batches });
+  } catch (error: any) {
+    if (error instanceof Response) return error;
+    const busy = serviceBusyResponseFor(error, "/api/fees/vouchers/generate");
+    if (busy) return busy;
+    console.error("Voucher generation history error:", error?.message || error);
+    return NextResponse.json({ error: "Failed to load generation history." }, { status: 500 });
   }
 }

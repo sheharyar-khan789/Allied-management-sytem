@@ -501,6 +501,26 @@ export interface YearlyFeeStructureDoc {
   importBatchId?: string;
 }
 
+/** One Monthly Voucher Generation run's outcome, kept for the Generation History view. */
+export interface VoucherGenerationBatchDoc {
+  id: string;
+  schoolId: string;
+  academicYear: string;
+  month: string;
+  year: number;
+  scope: "SCHOOL" | "CLASS" | "STUDENT";
+  classId?: string;
+  studentId?: string;
+  totalStudents: number;
+  generated: number;
+  skippedExists: number;
+  skippedNoStructure: number;
+  failed: number;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: string;
+}
+
 /** One Yearly Fee Structure import's outcome, kept for the Import History view. */
 export interface FeeStructureImportBatchDoc {
   id: string;

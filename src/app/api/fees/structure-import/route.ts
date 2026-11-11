@@ -5,6 +5,7 @@ import {
   getYearlyFeeStructuresServer,
   saveYearlyFeeStructureServer,
   saveFeeStructureImportBatchServer,
+  getFeeStructureImportBatchesServer,
   createAuditLogServer,
 } from "@/lib/firebase/server-db";
 import { YearlyFeeStructureDoc } from "@/lib/firebase/types";
@@ -292,6 +293,10 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const academicYear = searchParams.get("academicYear") || "";
     if (!isValidAcademicYear(academicYear)) return bad('A valid academicYear query param (e.g. "2026-2027") is required.');
+    if (searchParams.get("history") === "true") {
+      const batches = await getFeeStructureImportBatchesServer(authUser.schoolId, academicYear);
+      return NextResponse.json({ success: true, academicYear, batches });
+    }
     const structures = await getYearlyFeeStructuresServer(authUser.schoolId, academicYear);
     return NextResponse.json({ success: true, academicYear, structures });
   } catch (error: any) {

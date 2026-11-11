@@ -63,6 +63,7 @@ import {
   YearlyFeeStructureDoc,
   FeeStructureImportBatchDoc,
   AdvanceBalanceDoc,
+  VoucherGenerationBatchDoc,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -100,6 +101,7 @@ const localStore: {
   yearlyFeeStructures: Map<string, YearlyFeeStructureDoc>;
   feeStructureImportBatches: Map<string, FeeStructureImportBatchDoc>;
   advanceBalances: Map<string, AdvanceBalanceDoc>;
+  voucherGenerationBatches: Map<string, VoucherGenerationBatchDoc>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -134,6 +136,7 @@ const localStore: {
   yearlyFeeStructures: new Map(),
   feeStructureImportBatches: new Map(),
   advanceBalances: new Map(),
+  voucherGenerationBatches: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -5125,6 +5128,41 @@ export async function getFeeStructureImportBatchesServer(schoolId: string, acade
   }
   return sort(
     Array.from(localStore.feeStructureImportBatches.values()).filter(
+      (b) => b.schoolId === schoolId && (!academicYear || b.academicYear === academicYear)
+    )
+  );
+}
+
+export async function saveVoucherGenerationBatchServer(batch: VoucherGenerationBatchDoc): Promise<VoucherGenerationBatchDoc> {
+  assertProductionDbReady();
+  localStore.voucherGenerationBatches.set(batch.id, batch);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("voucherGenerationBatches").doc(batch.id).set(cleanUndefined(batch));
+    } catch (e) {
+      onFirestoreError(`saveVoucherGenerationBatchServer(${batch.id})`, e);
+      throw e;
+    }
+  }
+  return batch;
+}
+
+export async function getVoucherGenerationBatchesServer(schoolId: string, academicYear?: string): Promise<VoucherGenerationBatchDoc[]> {
+  assertProductionDbReady();
+  const sort = (list: VoucherGenerationBatchDoc[]) => list.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  if (hasAdminCredentials) {
+    try {
+      let ref = adminDb.collection("voucherGenerationBatches").where("schoolId", "==", schoolId) as Query;
+      if (academicYear) ref = ref.where("academicYear", "==", academicYear);
+      const snap = await ref.limit(100).get();
+      return sort(snap.docs.map((d) => ({ id: d.id, ...d.data() } as VoucherGenerationBatchDoc)));
+    } catch (e) {
+      onFirestoreError(`getVoucherGenerationBatchesServer(${schoolId})`, e);
+      throw e;
+    }
+  }
+  return sort(
+    Array.from(localStore.voucherGenerationBatches.values()).filter(
       (b) => b.schoolId === schoolId && (!academicYear || b.academicYear === academicYear)
     )
   );

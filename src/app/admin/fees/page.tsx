@@ -7,6 +7,9 @@ import FileUpload from "@/components/FileUpload";
 import StudentFeeAccount from "@/components/StudentFeeAccount";
 import FeeImportModal from "@/components/FeeImportModal";
 import TransactionImportModal from "@/components/TransactionImportModal";
+import YearlyFeeStructureManager from "@/components/YearlyFeeStructureManager";
+import VoucherGenerationPanel from "@/components/VoucherGenerationPanel";
+import OtherFinancialRecords from "@/components/OtherFinancialRecords";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 
 const MONTHS = [
@@ -15,7 +18,7 @@ const MONTHS = [
 ];
 
 export default function FeeManagementPage() {
-  const [view, setView] = useState<"ledger" | "student">("ledger");
+  const [view, setView] = useState<"ledger" | "student" | "structure" | "generate" | "other">("ledger");
   const [initialStudentId, setInitialStudentId] = useState("");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -214,11 +217,14 @@ export default function FeeManagementPage() {
         {[
           { key: "ledger", label: "Challan Ledger", icon: "receipt_long" },
           { key: "student", label: "Student Fee Account (12 Months)", icon: "calendar_month" },
+          { key: "structure", label: "Yearly Fee Structure", icon: "table_chart" },
+          { key: "generate", label: "Generate Vouchers", icon: "auto_awesome" },
+          { key: "other", label: "Other Collections & Expenses", icon: "account_balance" },
         ].map((tab) => (
           <button
             key={tab.key}
             type="button"
-            onClick={() => setView(tab.key as "ledger" | "student")}
+            onClick={() => setView(tab.key as "ledger" | "student" | "structure" | "generate" | "other")}
             className={`flex items-center gap-1.5 py-3 px-3 text-xs sm:text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
               view === tab.key ? "border-secondary text-secondary font-bold" : "border-transparent text-on-surface-variant hover:text-on-surface"
             }`}
@@ -230,6 +236,9 @@ export default function FeeManagementPage() {
       </div>
 
       {view === "student" && <StudentFeeAccount classes={classes} initialStudentId={initialStudentId} />}
+      {view === "structure" && <YearlyFeeStructureManager classes={classes} />}
+      {view === "generate" && <VoucherGenerationPanel classes={classes} />}
+      {view === "other" && <OtherFinancialRecords />}
 
       {view === "ledger" && loadError && (
         <div role="alert" className="p-3 rounded-lg bg-error-container text-on-error-container text-xs font-bold flex items-center gap-2">

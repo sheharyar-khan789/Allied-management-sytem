@@ -11,7 +11,7 @@
  */
 import { NextRequest } from "next/server";
 import { POST as structureImportPost, GET as structureListGet } from "../src/app/api/fees/structure-import/route";
-import { POST as generatePost } from "../src/app/api/fees/vouchers/generate/route";
+import { POST as generatePost, GET as generateHistoryGet } from "../src/app/api/fees/vouchers/generate/route";
 import { createSessionCookieServer } from "../src/lib/firebase/server-auth";
 import {
   saveClassServer,
@@ -287,6 +287,11 @@ async function run() {
   assert(s3Sept.status === "PAID" && s3Sept.balanceAmount === 0, "A huge advance balance fully pays the voucher without overpaying it");
   const s3Balance = await getAdvanceBalanceServer(A, s3.id, YEAR);
   assert((s3Balance?.balance || 0) === 999999 - s3Sept.totalExpected, "Only the voucher's own total is deducted from the advance balance; the remainder is preserved, never negative");
+
+  // Generation history.
+  const genHistory = await json(await generateHistoryGet(req(ADMIN_A, `http://x/api/fees/vouchers/generate?academicYear=${YEAR}`)));
+  assert(genHistory.batches?.length >= 4, "Generation history: every commit for this academic year is recorded");
+  assert(genHistory.batches?.every((b: any) => typeof b.generated === "number"), "Generation history: each batch records how many vouchers it generated");
 
   // Security.
   const teacherGen = await generatePost(req(TEACHER_A, genUrl(true), "POST", { academicYear: YEAR, month: "December", year: 2026, scope: "SCHOOL" }));
