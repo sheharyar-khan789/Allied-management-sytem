@@ -449,9 +449,18 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
           <section className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <h3 className="font-headline-md text-sm font-bold text-on-surface">Yearly Fee Structure (Automatic Vouchers) — {account.academicYear}</h3>
-              <button type="button" onClick={openStructureAdjust} className="px-3 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90">
-                {account.yearlyStructure ? "Adjust" : "Set Up"}
-              </button>
+              <div className="flex gap-2">
+                <a
+                  href={`/api/fees/reports/student-ledger?studentId=${encodeURIComponent(studentId)}&academicYear=${encodeURIComponent(account.academicYear)}`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold"
+                >
+                  <span className="material-symbols-outlined text-[16px]">download</span>
+                  Export Ledger
+                </a>
+                <button type="button" onClick={openStructureAdjust} className="px-3 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90">
+                  {account.yearlyStructure ? "Adjust" : "Set Up"}
+                </button>
+              </div>
             </div>
             {account.yearlyStructure ? (
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">

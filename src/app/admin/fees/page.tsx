@@ -10,6 +10,7 @@ import TransactionImportModal from "@/components/TransactionImportModal";
 import YearlyFeeStructureManager from "@/components/YearlyFeeStructureManager";
 import VoucherGenerationPanel from "@/components/VoucherGenerationPanel";
 import OtherFinancialRecords from "@/components/OtherFinancialRecords";
+import FeeReportsPanel from "@/components/FeeReportsPanel";
 import { useDebouncedValue } from "@/lib/use-debounced-value";
 
 const MONTHS = [
@@ -18,7 +19,7 @@ const MONTHS = [
 ];
 
 export default function FeeManagementPage() {
-  const [view, setView] = useState<"ledger" | "student" | "structure" | "generate" | "other">("ledger");
+  const [view, setView] = useState<"ledger" | "student" | "structure" | "generate" | "other" | "reports">("ledger");
   const [initialStudentId, setInitialStudentId] = useState("");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -220,11 +221,12 @@ export default function FeeManagementPage() {
           { key: "structure", label: "Yearly Fee Structure", icon: "table_chart" },
           { key: "generate", label: "Generate Vouchers", icon: "auto_awesome" },
           { key: "other", label: "Other Collections & Expenses", icon: "account_balance" },
+          { key: "reports", label: "Reports", icon: "summarize" },
         ].map((tab) => (
           <button
             key={tab.key}
             type="button"
-            onClick={() => setView(tab.key as "ledger" | "student" | "structure" | "generate" | "other")}
+            onClick={() => setView(tab.key as "ledger" | "student" | "structure" | "generate" | "other" | "reports")}
             className={`flex items-center gap-1.5 py-3 px-3 text-xs sm:text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
               view === tab.key ? "border-secondary text-secondary font-bold" : "border-transparent text-on-surface-variant hover:text-on-surface"
             }`}
@@ -239,6 +241,7 @@ export default function FeeManagementPage() {
       {view === "structure" && <YearlyFeeStructureManager classes={classes} />}
       {view === "generate" && <VoucherGenerationPanel classes={classes} />}
       {view === "other" && <OtherFinancialRecords />}
+      {view === "reports" && <FeeReportsPanel classes={classes} />}
 
       {view === "ledger" && loadError && (
         <div role="alert" className="p-3 rounded-lg bg-error-container text-on-error-container text-xs font-bold flex items-center gap-2">

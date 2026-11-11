@@ -116,10 +116,16 @@ function RecordSection({
             Total: {formatCurrency(total)}
           </p>
         </div>
-        <button type="button" onClick={openModal} className="px-3 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-semibold flex items-center gap-1 hover:bg-secondary/90">
-          <span className="material-symbols-outlined text-[16px]">add</span>
-          {addLabel}
-        </button>
+        <div className="flex gap-2">
+          <a href={`${endpoint}/export`} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold">
+            <span className="material-symbols-outlined text-[16px]">download</span>
+            Export
+          </a>
+          <button type="button" onClick={openModal} className="px-3 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-semibold flex items-center gap-1 hover:bg-secondary/90">
+            <span className="material-symbols-outlined text-[16px]">add</span>
+            {addLabel}
+          </button>
+        </div>
       </div>
 
       {error && <div role="alert" className="p-3 text-xs text-error">{error}</div>}
