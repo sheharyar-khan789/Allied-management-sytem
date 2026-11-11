@@ -8,7 +8,10 @@ import {
   getStudentChargesServer,
   getStudentFeeLedgerServer,
   updateStudentFeeLedgerServer,
+  getPaymentsByStudentServer,
+  getYearlyFeeStructureForStudentServer,
 } from "@/lib/firebase/server-db";
+import { getDefaultAcademicYear } from "@/lib/school-display";
 import { FEE_MONTHS, FeeChallanDoc, FeeMonth, StudentDoc, StudentFeeLedgerDoc } from "@/lib/firebase/types";
 import { idString, parseJsonBody, year as yearSchema } from "@/lib/input-validation";
 import { feeMonthOf } from "@/lib/fee-ledger";
@@ -90,11 +93,14 @@ export async function GET(req: NextRequest) {
       if (!student || student.schoolId !== authUser.schoolId) return jsonError("Student not found for this school.", 404);
     }
 
-    const [ledger, challans, charges] = await Promise.all([
+    const academicYear = getDefaultAcademicYear();
+    const [ledger, challans, charges, payments, yearlyStructure] = await Promise.all([
       getStudentFeeLedgerServer(authUser.schoolId, student.id, year.data),
       // All sessions: a calendar year spans two academic sessions.
       getFeeChallansServer(authUser.schoolId, student.id, undefined, undefined, undefined, undefined, { allSessions: true }),
       getStudentChargesServer(authUser.schoolId, student.id),
+      getPaymentsByStudentServer(authUser.schoolId, student.id),
+      getYearlyFeeStructureForStudentServer(authUser.schoolId, student.id, academicYear),
     ]);
 
     // A student gets display fields only (no staff uids or audit fields).
@@ -102,8 +108,32 @@ export async function GET(req: NextRequest) {
       authUser.role === "STUDENT"
         ? charges.map((c) => ({ id: c.id, type: c.type, description: c.description, amount: c.amount, date: c.date, status: c.status, notes: c.notes || "" }))
         : charges;
+    const vouchers = challans
+      .filter((c) => c.year === year.data)
+      .sort((a, b) => b.dueDate.localeCompare(a.dueDate))
+      .map((c) => ({ id: c.id, challanNo: c.challanNo, month: c.month, year: c.year, totalExpected: c.totalExpected, paidAmount: c.paidAmount, balanceAmount: c.balanceAmount, status: c.status, generatedFromStructure: !!c.generatedFromStructure }));
+    const visiblePayments = payments.slice(0, 50).map((p) => ({ id: p.id, amount: p.amount, paymentDate: p.paymentDate, paymentMode: p.paymentMode, receiptNo: p.receiptNo, voucherStatus: p.voucherStatus || "ACTIVE" }));
+
     return NextResponse.json(
-      { success: true, ...buildAccount(student, year.data, ledger, challans), charges: visibleCharges },
+      {
+        success: true,
+        academicYear,
+        ...buildAccount(student, year.data, ledger, challans),
+        charges: visibleCharges,
+        vouchers,
+        payments: visiblePayments,
+        yearlyStructure: yearlyStructure
+          ? {
+              academicYear,
+              monthlyTuitionFee: yearlyStructure.monthlyTuitionFee,
+              annualFee: yearlyStructure.annualFee,
+              admissionFee: yearlyStructure.admissionFee,
+              otherCharges: yearlyStructure.otherCharges,
+              discount: yearlyStructure.discount,
+              updatedAt: yearlyStructure.updatedAt,
+            }
+          : null,
+      },
       { headers: NO_STORE }
     );
   } catch (error: any) {
@@ -150,13 +180,30 @@ export async function PUT(req: NextRequest) {
     );
 
     // Read back what is now persisted so the page renders stored state, not its own guess.
-    const [ledger, challans, charges] = await Promise.all([
+    const putAcademicYear = getDefaultAcademicYear();
+    const [ledger, challans, charges, payments, yearlyStructure] = await Promise.all([
       getStudentFeeLedgerServer(authUser.schoolId, student.id, year),
       getFeeChallansServer(authUser.schoolId, student.id, undefined, undefined, undefined, undefined, { allSessions: true }),
       getStudentChargesServer(authUser.schoolId, student.id),
+      getPaymentsByStudentServer(authUser.schoolId, student.id),
+      getYearlyFeeStructureForStudentServer(authUser.schoolId, student.id, putAcademicYear),
     ]);
+    const vouchers = challans
+      .filter((c) => c.year === year)
+      .sort((a, b) => b.dueDate.localeCompare(a.dueDate))
+      .map((c) => ({ id: c.id, challanNo: c.challanNo, month: c.month, year: c.year, totalExpected: c.totalExpected, paidAmount: c.paidAmount, balanceAmount: c.balanceAmount, status: c.status, generatedFromStructure: !!c.generatedFromStructure }));
     return NextResponse.json(
-      { success: true, ...buildAccount(student, year, ledger, challans), charges },
+      {
+        success: true,
+        academicYear: putAcademicYear,
+        ...buildAccount(student, year, ledger, challans),
+        charges,
+        vouchers,
+        payments: payments.slice(0, 50).map((p) => ({ id: p.id, amount: p.amount, paymentDate: p.paymentDate, paymentMode: p.paymentMode, receiptNo: p.receiptNo, voucherStatus: p.voucherStatus || "ACTIVE" })),
+        yearlyStructure: yearlyStructure
+          ? { academicYear: putAcademicYear, monthlyTuitionFee: yearlyStructure.monthlyTuitionFee, annualFee: yearlyStructure.annualFee, admissionFee: yearlyStructure.admissionFee, otherCharges: yearlyStructure.otherCharges, discount: yearlyStructure.discount, updatedAt: yearlyStructure.updatedAt }
+          : null,
+      },
       { headers: NO_STORE }
     );
   } catch (error: any) {

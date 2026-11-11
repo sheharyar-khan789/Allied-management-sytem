@@ -27,6 +27,8 @@ interface ClassOption {
  * for a calendar year, the annual fee's paid status, and additional / event payments. Every
  * value shown is what the server returned after its last write — nothing is kept only locally.
  */
+const EMPTY_STRUCTURE_ADJUST = { monthlyTuitionFee: "", annualFee: "", admissionFee: "", otherCharges: "", discount: "", reason: "" };
+
 export default function StudentFeeAccount({ classes, initialStudentId }: { classes: ClassOption[]; initialStudentId?: string }) {
   const thisYear = new Date().getFullYear();
   const [classId, setClassId] = useState("");
@@ -42,6 +44,38 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
   const [chargeForm, setChargeForm] = useState(EMPTY_CHARGE);
   const [chargeModalOpen, setChargeModalOpen] = useState(false);
   const [chargeError, setChargeError] = useState("");
+
+  // Quick school-wide search by Admission No / Name — finds a student without picking a class first.
+  const [quickSearch, setQuickSearch] = useState("");
+  const [quickResults, setQuickResults] = useState<any[]>([]);
+  const [quickBusy, setQuickBusy] = useState(false);
+
+  const [structureModalOpen, setStructureModalOpen] = useState(false);
+  const [structureForm, setStructureForm] = useState(EMPTY_STRUCTURE_ADJUST);
+  const [structureError, setStructureError] = useState("");
+  const [structureSaving, setStructureSaving] = useState(false);
+
+  const runQuickSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickSearch.trim()) return;
+    setQuickBusy(true);
+    try {
+      const res = await fetch(`/api/students?search=${encodeURIComponent(quickSearch.trim())}&limit=20`, { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      setQuickResults(json.success && Array.isArray(json.students) ? json.students : []);
+    } catch {
+      setQuickResults([]);
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
+  const pickQuickResult = (s: any) => {
+    setClassId(s.classId || "");
+    setStudentId(s.id);
+    setQuickResults([]);
+    setQuickSearch("");
+  };
 
   // The account on screen must always be the selected student's: responses for a student/year
   // that is no longer selected are dropped instead of overwriting the current one.
@@ -166,6 +200,46 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
     }
   };
 
+  const openStructureAdjust = () => {
+    const s = account?.yearlyStructure;
+    setStructureForm({
+      monthlyTuitionFee: s ? String(s.monthlyTuitionFee) : "",
+      annualFee: s ? String(s.annualFee) : "",
+      admissionFee: s ? String(s.admissionFee) : "",
+      otherCharges: s ? String(s.otherCharges) : "",
+      discount: s ? String(s.discount) : "",
+      reason: "",
+    });
+    setStructureError("");
+    setStructureModalOpen(true);
+  };
+
+  const saveStructureAdjust = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setStructureSaving(true);
+    setStructureError("");
+    try {
+      const body: Record<string, unknown> = { studentId, academicYear: account.academicYear, reason: structureForm.reason };
+      (["monthlyTuitionFee", "annualFee", "admissionFee", "otherCharges", "discount"] as const).forEach((f) => {
+        if (structureForm[f] !== "") body[f] = Number(structureForm[f]);
+      });
+      const res = await fetch("/api/fees/student-structure", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || "Failed to save the adjustment.");
+      setStructureModalOpen(false);
+      setNotice("Yearly fee structure adjusted.");
+      await loadAccount();
+    } catch (err: any) {
+      setStructureError(err?.message || "Failed to save the adjustment.");
+    } finally {
+      setStructureSaving(false);
+    }
+  };
+
   const openCharge = (charge?: any) => {
     setChargeForm(
       charge
@@ -212,6 +286,31 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
 
   return (
     <div className="flex flex-col gap-4">
+      <form onSubmit={runQuickSearch} className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-wrap items-end gap-3 relative">
+        <div className="min-w-[260px]">
+          <label htmlFor="fee-acct-quicksearch" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Quick Search (Admission No / Name, any class)</label>
+          <input id="fee-acct-quicksearch" type="text" value={quickSearch} onChange={(e) => setQuickSearch(e.target.value)} className={`${selectClass} w-full`} placeholder="ADM-0001 or student name" />
+        </div>
+        <button type="submit" disabled={quickBusy || !quickSearch.trim()} className="px-3 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50">
+          {quickBusy ? "Searching..." : "Search"}
+        </button>
+        {quickResults.length > 0 && (
+          <div className="absolute top-full left-4 mt-1 w-80 max-h-60 overflow-y-auto bg-surface-container-lowest border border-outline-variant/40 rounded-lg shadow-lg z-10">
+            {quickResults.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => pickQuickResult(s)}
+                className="w-full text-left px-3 py-2 text-xs hover:bg-surface-container-low border-b border-surface-container-low last:border-0"
+              >
+                <span className="font-semibold text-on-surface">{s.fullName}</span>
+                <span className="text-on-surface-variant font-mono ml-2">{s.admissionNumber}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </form>
+
       <div className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 flex flex-wrap items-end gap-3">
         <div>
           <label htmlFor="fee-acct-class" className="block text-[11px] font-bold text-on-surface-variant uppercase tracking-wider mb-1">Class</label>
@@ -347,6 +446,98 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
             </div>
           </section>
 
+          <section className="p-4 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="font-headline-md text-sm font-bold text-on-surface">Yearly Fee Structure (Automatic Vouchers) — {account.academicYear}</h3>
+              <button type="button" onClick={openStructureAdjust} className="px-3 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90">
+                {account.yearlyStructure ? "Adjust" : "Set Up"}
+              </button>
+            </div>
+            {account.yearlyStructure ? (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+                <div><span className="text-on-surface-variant">Monthly</span><div className="font-bold text-on-surface">{formatCurrency(account.yearlyStructure.monthlyTuitionFee)}</div></div>
+                <div><span className="text-on-surface-variant">Annual</span><div className="font-bold text-on-surface">{formatCurrency(account.yearlyStructure.annualFee)}</div></div>
+                <div><span className="text-on-surface-variant">Admission</span><div className="font-bold text-on-surface">{formatCurrency(account.yearlyStructure.admissionFee)}</div></div>
+                <div><span className="text-on-surface-variant">Other</span><div className="font-bold text-on-surface">{formatCurrency(account.yearlyStructure.otherCharges)}</div></div>
+                <div><span className="text-on-surface-variant">Discount</span><div className="font-bold text-on-surface">{formatCurrency(account.yearlyStructure.discount)}</div></div>
+              </div>
+            ) : (
+              <p className="text-xs text-on-surface-variant">No yearly fee structure set for {account.academicYear} — automatic monthly voucher generation will skip this student until one is set.</p>
+            )}
+          </section>
+
+          <section className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">
+            <div className="p-4 border-b border-surface-container-low">
+              <h3 className="font-headline-md text-sm font-bold text-on-surface">Vouchers — {year}</h3>
+            </div>
+            {(account.vouchers || []).length === 0 ? (
+              <p className="p-6 text-center text-xs text-on-surface-variant">No vouchers issued for {year}.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-surface-container-low text-on-surface-variant uppercase text-[11px] font-bold">
+                      <th className="py-2.5 px-4">Voucher</th>
+                      <th className="py-2.5 px-4">Month</th>
+                      <th className="py-2.5 px-4">Total</th>
+                      <th className="py-2.5 px-4">Paid</th>
+                      <th className="py-2.5 px-4">Balance</th>
+                      <th className="py-2.5 px-4">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-container-low">
+                    {account.vouchers.map((v: any) => (
+                      <tr key={v.id}>
+                        <td className="py-2.5 px-4 font-mono">{v.challanNo}</td>
+                        <td className="py-2.5 px-4">{v.month} {v.year}</td>
+                        <td className="py-2.5 px-4 font-semibold">{formatCurrency(v.totalExpected)}</td>
+                        <td className="py-2.5 px-4">{formatCurrency(v.paidAmount)}</td>
+                        <td className="py-2.5 px-4">{formatCurrency(v.balanceAmount)}</td>
+                        <td className="py-2.5 px-4"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${v.status === "PAID" ? "bg-tertiary-container/10 text-on-tertiary-container" : v.status === "PARTIAL" ? "bg-amber-100 text-amber-800" : "bg-error-container text-on-error-container"}`}>{v.status}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">
+            <div className="p-4 border-b border-surface-container-low">
+              <h3 className="font-headline-md text-sm font-bold text-on-surface">Payment History</h3>
+            </div>
+            {(account.payments || []).length === 0 ? (
+              <p className="p-6 text-center text-xs text-on-surface-variant">No payments recorded for this student yet.</p>
+            ) : (
+              <div className="overflow-x-auto max-h-72">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead className="sticky top-0 bg-surface-container-low">
+                    <tr className="text-on-surface-variant uppercase text-[11px] font-bold">
+                      <th className="py-2.5 px-4">Date</th>
+                      <th className="py-2.5 px-4">Receipt</th>
+                      <th className="py-2.5 px-4">Amount</th>
+                      <th className="py-2.5 px-4">Mode</th>
+                      <th className="py-2.5 px-4">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-surface-container-low">
+                    {account.payments.map((p: any) => (
+                      <tr key={p.id}>
+                        <td className="py-2.5 px-4 text-on-surface-variant">{formatDate(p.paymentDate)}</td>
+                        <td className="py-2.5 px-4 font-mono">{p.receiptNo}</td>
+                        <td className="py-2.5 px-4 font-semibold">{formatCurrency(p.amount)}</td>
+                        <td className="py-2.5 px-4">{p.paymentMode}</td>
+                        <td className="py-2.5 px-4">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${p.voucherStatus === "REVERSED" ? "bg-error-container text-on-error-container" : "bg-tertiary-container/10 text-on-tertiary-container"}`}>{p.voucherStatus}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
           <section className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">
             <div className="p-4 border-b border-surface-container-low flex items-center justify-between gap-2">
               <h3 className="font-headline-md text-sm font-bold text-on-surface">Additional / Event Payments</h3>
@@ -449,6 +640,57 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
                 <button type="button" onClick={() => setChargeModalOpen(false)} className="px-3 py-1.5 rounded bg-surface-container text-on-surface font-semibold">Cancel</button>
                 <button type="submit" disabled={savingKey === "charge"} className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50">
                   {savingKey === "charge" ? "Saving..." : chargeForm.id ? "Save Changes" : "Add Payment"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {structureModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div role="dialog" aria-modal="true" aria-labelledby="structure-adjust-heading" className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8">
+            <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+              <h3 id="structure-adjust-heading" className="font-headline-md text-sm font-bold text-on-surface">Adjust Yearly Fee Structure — {account?.academicYear}</h3>
+              <button type="button" onClick={() => setStructureModalOpen(false)} className="text-on-surface-variant hover:text-on-surface" aria-label="Close">
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            {structureError && <div role="alert" className="p-2.5 rounded bg-error-container text-on-error-container text-xs">{structureError}</div>}
+            <form onSubmit={saveStructureAdjust} className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="sadj-monthly" className="block font-semibold text-on-surface mb-1">Monthly Tuition Fee</label>
+                  <input id="sadj-monthly" type="number" min={0} step="any" value={structureForm.monthlyTuitionFee} onChange={(e) => setStructureForm({ ...structureForm, monthlyTuitionFee: e.target.value })} className={inputClass} />
+                </div>
+                <div>
+                  <label htmlFor="sadj-annual" className="block font-semibold text-on-surface mb-1">Annual Fee</label>
+                  <input id="sadj-annual" type="number" min={0} step="any" value={structureForm.annualFee} onChange={(e) => setStructureForm({ ...structureForm, annualFee: e.target.value })} className={inputClass} />
+                </div>
+                <div>
+                  <label htmlFor="sadj-admission" className="block font-semibold text-on-surface mb-1">Admission Fee</label>
+                  <input id="sadj-admission" type="number" min={0} step="any" value={structureForm.admissionFee} onChange={(e) => setStructureForm({ ...structureForm, admissionFee: e.target.value })} className={inputClass} />
+                </div>
+                <div>
+                  <label htmlFor="sadj-other" className="block font-semibold text-on-surface mb-1">Other Charges</label>
+                  <input id="sadj-other" type="number" min={0} step="any" value={structureForm.otherCharges} onChange={(e) => setStructureForm({ ...structureForm, otherCharges: e.target.value })} className={inputClass} />
+                </div>
+                <div>
+                  <label htmlFor="sadj-discount" className="block font-semibold text-on-surface mb-1">Discount / Concession</label>
+                  <input id="sadj-discount" type="number" min={0} step="any" value={structureForm.discount} onChange={(e) => setStructureForm({ ...structureForm, discount: e.target.value })} className={inputClass} />
+                </div>
+              </div>
+              <div>
+                <label htmlFor="sadj-reason" className="block font-semibold text-on-surface mb-1">Reason *</label>
+                <textarea id="sadj-reason" required minLength={3} maxLength={500} rows={2} value={structureForm.reason} onChange={(e) => setStructureForm({ ...structureForm, reason: e.target.value })} placeholder="e.g. Sibling discount approved by principal" className="w-full p-2 rounded bg-surface-container-low text-on-surface border border-outline-variant/40" />
+              </div>
+              <p className="text-on-surface-variant">
+                Recorded in the audit log with the previous and new values. This never changes any voucher already generated — only future vouchers use the new structure.
+              </p>
+              <div className="flex justify-end gap-2 pt-2 border-t border-surface-container-low">
+                <button type="button" onClick={() => setStructureModalOpen(false)} className="px-3 py-1.5 rounded bg-surface-container text-on-surface font-semibold">Cancel</button>
+                <button type="submit" disabled={structureSaving} className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50">
+                  {structureSaving ? "Saving..." : "Save Adjustment"}
                 </button>
               </div>
             </form>
