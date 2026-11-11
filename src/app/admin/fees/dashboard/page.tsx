@@ -185,6 +185,13 @@ export default function FinancialDashboardPage() {
           <span className="material-symbols-outlined text-[16px]">refresh</span>
           Refresh
         </button>
+        <a
+          href={`/api/fees/dashboard/export?from=${from}&to=${to}`}
+          className="h-9 px-4 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold flex items-center gap-1.5"
+        >
+          <span className="material-symbols-outlined text-[16px]">download</span>
+          Export CSV
+        </a>
       </div>
 
       {error && (

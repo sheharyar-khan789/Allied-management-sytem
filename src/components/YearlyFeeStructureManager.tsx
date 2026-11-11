@@ -179,6 +179,13 @@ export default function YearlyFeeStructureManager({ classes }: { classes: ClassO
           Compare with {previousYear}
         </label>
         <div className="flex gap-2 ml-auto">
+          <a
+            href={`/api/fees/structure-import/export?academicYear=${encodeURIComponent(academicYear)}`}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold"
+          >
+            <span className="material-symbols-outlined text-[16px]">download</span>
+            Export CSV
+          </a>
           <button type="button" onClick={loadHistory} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface text-xs font-semibold">
             <span className="material-symbols-outlined text-[16px]">history</span>
             Import History
