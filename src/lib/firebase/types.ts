@@ -485,6 +485,9 @@ export interface YearlyFeeLedgerImportBatchDoc {
   updated: number;
   unchanged: number;
   skipped: number;
+  /** Rows whose Student Name matched more than one active student and could not be resolved by
+   *  Admission No or Class — absent on batches imported before this was tracked separately. */
+  ambiguous?: number;
   createdBy: string;
   createdAt: string;
 }

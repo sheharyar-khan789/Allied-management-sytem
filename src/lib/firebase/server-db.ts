@@ -2908,17 +2908,18 @@ export interface FeeTotals {
 }
 
 /**
- * Challan count / expected / collected per class of the active session, via one count+sum
- * aggregation per class instead of reading every challan. A challan belongs to the session of its
- * class (challans always carry a classId and are stamped from it). Cached for AGGREGATES and
- * dropped on every challan save / payment in this instance.
+ * Challan count / expected / collected per class of the given session (the active one when
+ * `academicYear` is omitted), via one count+sum aggregation per class instead of reading every
+ * challan. A challan belongs to the session of its class (challans always carry a classId and
+ * are stamped from it). Cached for AGGREGATES and dropped on every challan save / payment in
+ * this instance; the cache key includes the resolved year so different sessions never collide.
  */
-export async function getFeeTotalsByClassServer(schoolId: string): Promise<Map<string, FeeTotals>> {
-  const classes = await getSessionClassesServer(schoolId);
+export async function getFeeTotalsByClassServer(schoolId: string, academicYear?: string): Promise<Map<string, FeeTotals>> {
+  const classes = await getSessionClassesServer(schoolId, academicYear ?? undefined);
   const fromList = async () => {
     const totals = new Map<string, FeeTotals>();
     for (const c of classes) totals.set(c.id, { count: 0, expected: 0, collected: 0 });
-    for (const ch of await getFeeChallansServer(schoolId)) {
+    for (const ch of await getFeeChallansServer(schoolId, undefined, undefined, undefined, undefined, undefined, academicYear ? { academicYear } : undefined)) {
       const t = totals.get(ch.classId);
       if (!t) continue;
       t.count++;
@@ -2928,7 +2929,8 @@ export async function getFeeTotalsByClassServer(schoolId: string): Promise<Map<s
     return totals;
   };
   if (!hasAdminCredentials) return fromList();
-  const rows = await cached(`${cacheKeys.feeAggregatesPrefix(schoolId)}byclass`, CACHE_TTL_MS.AGGREGATES, () =>
+  const cacheSuffix = academicYear ? `byclass:${academicYear}` : "byclass";
+  const rows = await cached(`${cacheKeys.feeAggregatesPrefix(schoolId)}${cacheSuffix}`, CACHE_TTL_MS.AGGREGATES, () =>
     withIndexFallback(
       "feeChallans totals by class",
       () =>

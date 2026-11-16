@@ -8,12 +8,20 @@ import type { StudentDoc, YearlyFeeLedgerDoc } from "./firebase/types";
  * This records EXPECTED fee only (monthly fee -> yearly expected = monthly*12 + annual). It
  * must never be confused with Daily Import (actual received payments, transaction-import.ts):
  * this file never looks at FeeChallanDoc/PaymentDoc and never computes a Paid/Unpaid status.
+ *
+ * Student identification: Student Name is the primary match key (the template leads with it).
+ * Class is optional and only used to disambiguate when two+ active students share a name. An
+ * Admission No column is still accepted (old files keep working) and, when present, is the
+ * strongest signal — it resolves the student directly without needing Name or Class at all. A
+ * name with no Admission No and no Class that still matches more than one active student is
+ * never silently resolved to either one — it is reported AMBIGUOUS and nothing is written for
+ * that row, so a rename/duplicate-name situation can never update the wrong student's fees.
  */
 
 export const YEARLY_LEDGER_IMPORT_MAX_ROWS = 2000;
 export const YEARLY_LEDGER_IMPORT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 
-export type YearlyLedgerImportField = "admissionNo" | "studentName" | "monthlyFee" | "annualFee";
+export type YearlyLedgerImportField = "admissionNo" | "studentName" | "className" | "monthlyFee" | "annualFee";
 
 function normHeader(h: string): string {
   return h.toLowerCase().replace(/['’`]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
@@ -22,6 +30,7 @@ function normHeader(h: string): string {
 const HEADER_ALIASES: Record<YearlyLedgerImportField, string[]> = {
   admissionNo: ["admission no", "admission number", "admission id", "student id", "reg no", "registration no", "gr no"],
   studentName: ["student name", "name", "full name", "student"],
+  className: ["class", "class section", "class name", "grade", "grade section"],
   monthlyFee: ["monthly fee", "monthly tuition fee", "tuition fee", "fee"],
   annualFee: ["annual fee", "annual charges", "yearly fee", "yearly charges"],
 };
@@ -86,7 +95,7 @@ function slug(v: string): string {
   return v.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-export type YearlyLedgerImportRowStatus = "VALID" | "WARNING" | "INVALID" | "DUPLICATE";
+export type YearlyLedgerImportRowStatus = "VALID" | "WARNING" | "INVALID" | "DUPLICATE" | "AMBIGUOUS";
 export type YearlyLedgerImportAction = "NEW" | "UPDATE" | "UNCHANGED";
 
 export interface NormalizedYearlyLedgerEntry {
@@ -121,6 +130,7 @@ export interface YearlyLedgerImportSummary {
   warnings: number;
   invalid: number;
   duplicates: number;
+  ambiguous: number;
   newCount: number;
   updateCount: number;
   unchangedCount: number;
@@ -132,18 +142,66 @@ export function yearlyExpectedFeeFor(monthlyFee: number, annualFee: number): num
   return Math.max(0, monthlyFee * 12 + annualFee);
 }
 
+type StudentCandidate = YearlyLedgerImportContext["students"][number];
+
+/** A student's class label as it would appear in an uploaded sheet ("Class 5-A"). */
+function studentClassLabel(s: Pick<StudentDoc, "className">): string {
+  return (s.className || "").trim();
+}
+
+/**
+ * Resolves one row's student from Admission No (if given, decisive on its own) or Student Name
+ * (optionally narrowed by Class when the name alone is ambiguous). Never guesses: a name that
+ * still matches more than one active student after applying Class returns every remaining
+ * candidate so the caller can report them, rather than picking one.
+ */
+function resolveStudent(
+  admissionNo: string,
+  studentName: string,
+  className: string,
+  studentByAdmission: Map<string, StudentCandidate[]>,
+  studentsByName: Map<string, StudentCandidate[]>
+): { student: StudentCandidate | null; candidates: StudentCandidate[]; usedAdmission: boolean } {
+  if (admissionNo) {
+    const matches = studentByAdmission.get(slug(admissionNo)) || [];
+    if (matches.length === 1) return { student: matches[0], candidates: matches, usedAdmission: true };
+    return { student: null, candidates: matches, usedAdmission: true };
+  }
+  const byName = studentsByName.get(slug(studentName)) || [];
+  if (byName.length <= 1) return { student: byName[0] || null, candidates: byName, usedAdmission: false };
+  // Duplicate names: narrow by class, if given.
+  if (className) {
+    const classKey = slug(className);
+    const narrowed = byName.filter((s) => {
+      const label = slug(studentClassLabel(s));
+      return label === classKey || label.endsWith(classKey) || classKey.endsWith(label);
+    });
+    if (narrowed.length === 1) return { student: narrowed[0], candidates: narrowed, usedAdmission: false };
+    return { student: null, candidates: narrowed.length > 0 ? narrowed : byName, usedAdmission: false };
+  }
+  return { student: null, candidates: byName, usedAdmission: false };
+}
+
 export function validateYearlyLedgerImportRows(
   inputs: YearlyLedgerImportRowInput[],
   ctx: YearlyLedgerImportContext,
   firstDataRowNumber = 2
 ): { rows: YearlyLedgerImportRowResult[]; summary: YearlyLedgerImportSummary } {
-  const studentByAdmission = new Map<string, (typeof ctx.students)[number][]>();
+  const studentByAdmission = new Map<string, StudentCandidate[]>();
+  const studentsByName = new Map<string, StudentCandidate[]>();
   for (const s of ctx.students) {
-    const key = slug(s.admissionNo || "");
-    if (!key) continue;
-    const list = studentByAdmission.get(key) || [];
-    list.push(s);
-    studentByAdmission.set(key, list);
+    const admKey = slug(s.admissionNo || "");
+    if (admKey) {
+      const list = studentByAdmission.get(admKey) || [];
+      list.push(s);
+      studentByAdmission.set(admKey, list);
+    }
+    const nameKey = slug(s.fullName || "");
+    if (nameKey) {
+      const list = studentsByName.get(nameKey) || [];
+      list.push(s);
+      studentsByName.set(nameKey, list);
+    }
   }
   const existingByAdmission = new Map(ctx.existingEntries.map((e) => [slug(e.admissionNo), e]));
   const seenInFile = new Map<string, number>();
@@ -154,26 +212,44 @@ export function validateYearlyLedgerImportRows(
     const warnings: string[] = [];
 
     const admissionNo = (input.admissionNo || "").trim();
-    if (!admissionNo) errors.push("Admission No is required to match the student.");
-    const admissionKey = slug(admissionNo);
-    const matches = admissionNo ? studentByAdmission.get(admissionKey) || [] : [];
-    if (admissionNo && matches.length === 0) {
-      errors.push(`No student found with admission number "${admissionNo}".`);
-    }
-    if (matches.length > 1) {
-      errors.push(`Ambiguous: ${matches.length} students share admission number "${admissionNo}". Fix the student records first.`);
-    }
-    const student = matches.length === 1 ? matches[0] : undefined;
+    const studentName = (input.studentName || "").trim();
+    const className = (input.className || "").trim();
+    let isAmbiguous = false;
 
-    if (student && input.studentName) {
-      const given = slug(input.studentName);
+    if (!admissionNo && !studentName) {
+      errors.push("Student Name (or Admission No) is required to match the student.");
+    }
+
+    const { student, candidates, usedAdmission } = resolveStudent(
+      admissionNo, studentName, className, studentByAdmission, studentsByName
+    );
+
+    if (admissionNo && !studentName && !student) {
+      if (candidates.length === 0) errors.push(`No student found with admission number "${admissionNo}".`);
+      else errors.push(`Ambiguous: ${candidates.length} students share admission number "${admissionNo}". Fix the student records first.`);
+    } else if (!usedAdmission && studentName && !student) {
+      if (candidates.length === 0) {
+        errors.push(`No student found named "${studentName}"${className ? ` in class "${className}"` : ""}.`);
+      } else {
+        isAmbiguous = true;
+        const list = candidates
+          .map((c) => `${c.fullName} (Admission No ${c.admissionNo || "—"}, ${studentClassLabel(c) || "no class on record"})`)
+          .join("; ");
+        errors.push(
+          `Ambiguous: ${candidates.length} students are named "${studentName}"${className ? ` in class "${className}"` : ""} — ${list}. Add the Admission No column, or a more specific Class, to resolve.`
+        );
+      }
+    }
+
+    if (student && admissionNo && studentName) {
+      const given = slug(studentName);
       const actual = slug(student.fullName);
       if (given !== actual && !actual.includes(given) && !given.includes(actual)) {
-        warnings.push(`Student name "${input.studentName}" does not match the record for ${admissionNo} (${student.fullName}). The admission number was used.`);
+        warnings.push(`Student name "${studentName}" does not match the record for ${admissionNo} (${student.fullName}). The admission number was used.`);
       }
     }
     if (student && student.status !== "ACTIVE") {
-      warnings.push(`Student ${student.fullName} (${admissionNo}) is not an active student.`);
+      warnings.push(`Student ${student.fullName} (${student.admissionNo || "no admission no"}) is not an active student.`);
     }
 
     const monthlyFee = parseMoney(input.monthlyFee);
@@ -183,18 +259,27 @@ export function validateYearlyLedgerImportRows(
     const annualFee = parseMoney(input.annualFee);
     if (annualFee === null) errors.push(`Annual Fee "${input.annualFee}" is not a valid amount.`);
 
+    // Duplicate-in-file detection keys on the resolved student id when known (name OR admission
+    // no both ultimately resolve to the same real student, so two differently-written rows for
+    // the same person are still caught), falling back to the raw admission no when the student
+    // couldn't be resolved at all (e.g. two unmatched rows for the same typo'd admission no).
     let isDuplicateInFile = false;
-    if (admissionNo) {
-      if (seenInFile.has(admissionKey)) {
-        errors.push(`Another row (row ${seenInFile.get(admissionKey)}) already carries this admission number in this file.`);
+    const dedupeKey = student ? `id:${student.id}` : admissionNo ? `adm:${slug(admissionNo)}` : "";
+    if (dedupeKey) {
+      if (seenInFile.has(dedupeKey)) {
+        errors.push(`Another row (row ${seenInFile.get(dedupeKey)}) already carries this student in this file.`);
         isDuplicateInFile = true;
       } else {
-        seenInFile.set(admissionKey, rowNumber);
+        seenInFile.set(dedupeKey, rowNumber);
       }
     }
 
     const status: YearlyLedgerImportRowStatus =
-      errors.length > 0 ? (isDuplicateInFile ? "DUPLICATE" : "INVALID") : warnings.length > 0 ? "WARNING" : "VALID";
+      isDuplicateInFile ? "DUPLICATE"
+        : isAmbiguous ? "AMBIGUOUS"
+        : errors.length > 0 ? "INVALID"
+        : warnings.length > 0 ? "WARNING"
+        : "VALID";
 
     const entry: NormalizedYearlyLedgerEntry | null =
       (status === "VALID" || status === "WARNING") && student && monthlyFee !== null && annualFee !== null
@@ -228,6 +313,7 @@ export function validateYearlyLedgerImportRows(
     warnings: rows.filter((r) => r.status === "WARNING").length,
     invalid: rows.filter((r) => r.status === "INVALID").length,
     duplicates: rows.filter((r) => r.status === "DUPLICATE").length,
+    ambiguous: rows.filter((r) => r.status === "AMBIGUOUS").length,
     newCount: rows.filter((r) => r.action === "NEW").length,
     updateCount: rows.filter((r) => r.action === "UPDATE").length,
     unchangedCount: rows.filter((r) => r.action === "UNCHANGED").length,
@@ -240,9 +326,9 @@ export function validateYearlyLedgerImportRows(
 export function missingRequiredYearlyLedgerColumns(mapping: YearlyLedgerHeaderMapping): string[] {
   const fields = new Set(mapping.columns.values());
   const missing: string[] = [];
-  if (!fields.has("admissionNo")) missing.push("Admission No");
+  if (!fields.has("studentName") && !fields.has("admissionNo")) missing.push("Student Name (or Admission No)");
   if (!fields.has("monthlyFee")) missing.push("Monthly Fee");
   return missing;
 }
 
-export const YEARLY_LEDGER_IMPORT_TEMPLATE_HEADERS = ["Admission No", "Student Name", "Monthly Fee", "Annual Fee"];
+export const YEARLY_LEDGER_IMPORT_TEMPLATE_HEADERS = ["Student Name", "Class", "Monthly Fee", "Annual Fee"];
