@@ -100,6 +100,8 @@ export async function GET(
       assignedClassIds: Array.isArray(teacher.assignedClassIds) ? teacher.assignedClassIds : [],
       baseSalary: teacher.baseSalary ?? teacher.salary ?? 0,
       documents: teacher.documents || [],
+      // Coordinator Observation Submission permission — see TeacherDoc.canSubmitObservations.
+      canSubmitObservations: teacher.canSubmitObservations === true,
     };
 
     return NextResponse.json({
@@ -157,6 +159,9 @@ export async function PUT(
     }
     if (body.status !== undefined && !["ACTIVE", "INACTIVE"].includes(body.status)) {
       return NextResponse.json({ error: "status must be ACTIVE or INACTIVE." }, { status: 400 });
+    }
+    if (body.canSubmitObservations !== undefined && typeof body.canSubmitObservations !== "boolean") {
+      return NextResponse.json({ error: "canSubmitObservations must be true or false." }, { status: 400 });
     }
     if (body.baseSalary !== undefined || body.salary !== undefined) {
       requireRecentAuth(authUser, "change a teacher's salary", req);
@@ -313,6 +318,7 @@ export async function PUT(
       salary: updatedSalary,
       joiningDate: updatedJoiningDate,
       endingDate: updatedEndingDate,
+      canSubmitObservations: body.canSubmitObservations !== undefined ? body.canSubmitObservations : baseRecord.canSubmitObservations,
       updatedAt: new Date().toISOString()
     };
 
@@ -368,6 +374,8 @@ export async function PUT(
           }.`
         : usernameChange?.changed
         ? `Set login username "${usernameChange.username}" for faculty member ${updated.fullName} (${updated.employeeId}).`
+        : body.canSubmitObservations !== undefined
+        ? `${body.canSubmitObservations ? "Granted" : "Revoked"} Coordinator Observation Submission permission for faculty member ${updated.fullName} (${updated.employeeId}).`
         : parsedDocuments !== undefined
         ? `Updated documents for faculty member ${updated.fullName} (${updated.employeeId}); now ${parsedDocuments.length} document(s) on file.`
         : `Updated profile for faculty member ${updated.fullName} (${updated.employeeId}).`

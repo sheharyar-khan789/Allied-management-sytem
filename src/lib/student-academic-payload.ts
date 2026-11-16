@@ -44,7 +44,7 @@ export async function buildStudentAcademicPayload(
   }
 ) {
   const recentOnly = options?.attendanceRecords === "recent";
-  const [attendances, attendanceTotals, challans, examResultsRaw, exams, payments, classes, school, settings] = await Promise.all([
+  const [attendances, attendanceTotals, challansRaw, examResultsRaw, exams, payments, classes, school, settings] = await Promise.all([
     recentOnly ? getStudentRecentAttendanceServer(schoolId, student.id) : getStudentAttendanceServer(schoolId, student.id),
     recentOnly ? getStudentAttendanceTotalsServer(schoolId, student.id) : Promise.resolve(null),
     getStudentFeeChallansServer(schoolId, student.id),
@@ -55,6 +55,11 @@ export async function buildStudentAcademicPayload(
     getSchoolServer(schoolId),
     getSchoolSettingsServer(schoolId),
   ]);
+  // A VOID challan (an admin's correction of a duplicate/erroneous entry, always zero
+  // payments — see DELETE /api/fees/challans/[id]) is never shown to the family: it isn't a
+  // real financial fact, and its "VOID" status would otherwise render with the same styling
+  // as an outstanding unpaid challan on the parent/student fee screens.
+  const challans = challansRaw.filter((c) => c.status !== "VOID");
 
   const publishedExamIds = new Set(exams.filter((e) => e.status === "PUBLISHED").map((e) => e.id));
   const visibleExams = exams.filter((e) => !options?.publishedResultsOnly || publishedExamIds.has(e.id));

@@ -12,10 +12,10 @@ export default async function TeacherLayout({
 }) {
   // See admin/layout.tsx for why this catches only a confirmed Firestore outage: that message
   // must not be shown for an unrelated, unexpected error.
-  let teacherName: string, designation: string, canTakeAttendance: boolean;
+  let teacherName: string, designation: string, canTakeAttendance: boolean, canSubmitObservations: boolean;
   try {
     const session = await requirePageRole("TEACHER");
-    ({ teacherName, designation, canTakeAttendance } = await loadTeacherShellData(session));
+    ({ teacherName, designation, canTakeAttendance, canSubmitObservations } = await loadTeacherShellData(session));
   } catch (e) {
     if (e instanceof ServiceUnavailableError) return <ServiceBusyNotice />;
     throw e;
@@ -23,7 +23,7 @@ export default async function TeacherLayout({
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      <TeacherNav teacherName={teacherName} designation={designation} canTakeAttendance={canTakeAttendance} />
+      <TeacherNav teacherName={teacherName} designation={designation} canTakeAttendance={canTakeAttendance} canSubmitObservations={canSubmitObservations} />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full">
         {children}
       </main>

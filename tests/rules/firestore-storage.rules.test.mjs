@@ -59,6 +59,17 @@ beforeEach(async () => {
     await setDoc(doc(db, "attendance", "att-math"), { id: "att-math", schoolId: "A", classId: "cls-a", subjectId: "sub-a-math", studentId: "std-a2" });
     await setDoc(doc(db, "studentFeeLedgers", "A_std-a_2026"), { id: "A_std-a_2026", schoolId: "A", studentId: "std-a" });
     await setDoc(doc(db, "studentCharges", "chg-a"), { id: "chg-a", schoolId: "A", studentId: "std-a" });
+    // A VOID challan (admin-corrected duplicate, see DELETE /api/fees/challans/[id]) — same
+    // collection/rule as any other challan; status is just a data value to the rules, never a
+    // special case, so the same read/write expectations as ch-a must hold for it too.
+    await setDoc(doc(db, "feeChallans", "ch-a-void"), { id: "ch-a-void", schoolId: "A", studentId: "std-a", status: "VOID", totalExpected: 0, paidAmount: 0, balanceAmount: 0 });
+    // Teacher Observations: tch-a has one open note and one Admin/Principal-only private note.
+    await setDoc(doc(db, "teacherObservations", "obs-open"), { id: "obs-open", schoolId: "A", teacherId: "tch-a" });
+    await setDoc(doc(db, "teacherObservations", "obs-private"), { id: "obs-private", schoolId: "A", teacherId: "tch-a", isPrivate: true });
+    // Coordinator Observation Submission: tch-a2 submitted a draft ABOUT tch-a. Opposite scoping
+    // from teacherObservations above — the SUBJECT (tch-a) must never read this, only the
+    // SUBMITTER (tch-a2).
+    await setDoc(doc(db, "teacherObservationSubmissions", "sub-a"), { id: "sub-a", schoolId: "A", teacherId: "tch-a", submittedByTeacherId: "tch-a2", status: "PENDING" });
     // Server-only: login-username uniqueness locks and admin-defined lesson-plan weeks.
     await setDoc(doc(db, "usernames", "ali.teacher01"), { id: "ali.teacher01", username: "ali.teacher01", uid: "tch-a", schoolId: "A" });
     await setDoc(doc(db, "lessonPlanWeeks", "lpw_A_2026-12-24"), { id: "lpw_A_2026-12-24", schoolId: "A", weekId: "2026-12-24" });
@@ -172,4 +183,61 @@ test("storage: same-school read only, no client writes", async () => {
   await assertFails(getBytes(ref(storageAs("adminB", "B"), "schools/A/profile-photos/p.png")));
   await assertFails(uploadString(ref(storageAs("adminA", "A"), "schools/A/profile-photos/new.png"), "x"));
   assert.ok(true);
+});
+
+test("private admin observation: Admin/Principal (the ADMIN role) always reads it; the subject teacher never does", async () => {
+  // "Principal" has no separate auth role in this system (Admin IS Principal here) — isAdmin()
+  // is the only check this feature has, or needs.
+  await assertSucceeds(getDoc(doc(as("adminA"), "teacherObservations", "obs-private")));
+  await assertSucceeds(getDoc(doc(as("adminA"), "teacherObservations", "obs-open")));
+  // tch-a is the subject of BOTH notes — only the non-private one is visible to them.
+  await assertSucceeds(getDoc(doc(as("teacherA"), "teacherObservations", "obs-open")));
+  await assertFails(getDoc(doc(as("teacherA"), "teacherObservations", "obs-private")));
+  // A teacher who is neither admin nor the subject sees neither, regardless of isPrivate.
+  await assertFails(getDoc(doc(as("teacher2A"), "teacherObservations", "obs-open")));
+  await assertFails(getDoc(doc(as("teacher2A"), "teacherObservations", "obs-private")));
+  // Cross-school: school B's admin is still just an ADMIN of a different school.
+  await assertFails(getDoc(doc(as("adminB"), "teacherObservations", "obs-private")));
+  // Students/parents were never in scope for this collection at all.
+  await assertFails(getDoc(doc(as("studentA"), "teacherObservations", "obs-open")));
+  await assertFails(getDoc(doc(as("parentA"), "teacherObservations", "obs-open")));
+  // Never written directly, private or not — the API (Admin SDK) is the only writer.
+  await assertFails(setDoc(doc(as("adminA"), "teacherObservations", "obs-open"), { isPrivate: false }));
+  await assertFails(setDoc(doc(as("adminA"), "teacherObservations", "obs-private"), { isPrivate: false }));
+});
+
+test("coordinator observation submission: opposite scoping from teacherObservations — the SUBMITTER reads their own, the SUBJECT never does", async () => {
+  // sub-a: submittedByTeacherId = tch-a2 (teacher2A), teacherId (the subject) = tch-a (teacherA).
+  await assertSucceeds(getDoc(doc(as("adminA"), "teacherObservationSubmissions", "sub-a")));
+  await assertSucceeds(getDoc(doc(as("teacher2A"), "teacherObservationSubmissions", "sub-a")));
+  // The critical check: tch-a is who this PENDING submission is ABOUT, and must never read it —
+  // not while pending, and the rule makes no exception for any other status either.
+  await assertFails(getDoc(doc(as("teacherA"), "teacherObservationSubmissions", "sub-a")));
+  // Cross-school and other roles: no path in.
+  await assertFails(getDoc(doc(as("adminB"), "teacherObservationSubmissions", "sub-a")));
+  await assertFails(getDoc(doc(as("studentA"), "teacherObservationSubmissions", "sub-a")));
+  await assertFails(getDoc(doc(as("parentA"), "teacherObservationSubmissions", "sub-a")));
+  // Never written directly — not a create, not a status flip to APPROVED/REJECTED, by anyone,
+  // including the submitter and the admin. Only the Admin SDK (the approve/reject API) writes.
+  await assertFails(setDoc(doc(as("teacher2A"), "teacherObservationSubmissions", "sub-a"), { status: "APPROVED" }));
+  await assertFails(setDoc(doc(as("adminA"), "teacherObservationSubmissions", "sub-a"), { status: "APPROVED" }));
+  await assertFails(setDoc(doc(as("teacher2A"), "teacherObservationSubmissions", "sub-new"), { schoolId: "A", teacherId: "tch-a", submittedByTeacherId: "tch-a2", status: "PENDING" }));
+});
+
+test("VOID fee challans: same read/write rule as any other status — never a special case, never client-writable, never restorable by a client", async () => {
+  // Read access for a VOID challan is identical to a PAID/PENDING/PARTIAL one — the rule has no
+  // status condition at all, by design (voiding is an application-level, not a rules-level,
+  // concept). This is what's actually being asserted: status never widens or narrows the rule.
+  await assertSucceeds(getDoc(doc(as("adminA"), "feeChallans", "ch-a-void")));
+  await assertSucceeds(getDoc(doc(as("studentA"), "feeChallans", "ch-a-void")));
+  await assertSucceeds(getDoc(doc(as("parentA"), "feeChallans", "ch-a-void")));
+  await assertFails(getDoc(doc(as("adminB"), "feeChallans", "ch-a-void")));
+  // The actual safety net against "accidentally restoring" a VOID challan (e.g. an import bug
+  // un-zeroing totalExpected, or a client trying to) is that NO client write ever reaches
+  // feeChallans at all, regardless of status — only the Admin SDK (server) writes here, and the
+  // server-side guards (yearly-ledger-import / transaction-import) are covered by
+  // scripts/private-obs-coordinator-fees-edit-test.ts, not by rules.
+  await assertFails(setDoc(doc(as("adminA"), "feeChallans", "ch-a-void"), { status: "PARTIAL", totalExpected: 5000, paidAmount: 1000 }));
+  await assertFails(setDoc(doc(as("adminA"), "feeChallans", "ch-a-void"), { totalExpected: 5000 }));
+  await assertFails(deleteDoc(doc(as("adminA"), "feeChallans", "ch-a-void")));
 });

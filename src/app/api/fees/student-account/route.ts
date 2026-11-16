@@ -35,7 +35,11 @@ function jsonError(error: string, status: number) {
 
 function buildAccount(student: StudentDoc, year: number, ledger: StudentFeeLedgerDoc | null, challans: FeeChallanDoc[]) {
   const months = FEE_MONTHS.map((month) => {
-    const monthChallans = challans.filter((c) => c.year === year && feeMonthOf(c.month) === month);
+    // A VOID challan (an admin-corrected duplicate/erroneous entry, always zero payments — see
+    // DELETE /api/fees/challans/[id]) is excluded here: it must never make a month that's
+    // genuinely paid via its real challan look unpaid just because the voided one isn't "PAID",
+    // and a family has no reason to see a challan an admin already voided as an entry mistake.
+    const monthChallans = challans.filter((c) => c.year === year && feeMonthOf(c.month) === month && c.status !== "VOID");
     const challanPaid = monthChallans.length > 0 && monthChallans.every((c) => c.status === "PAID");
     const explicit = ledger?.months?.[month];
     return {
@@ -97,10 +101,14 @@ export async function GET(req: NextRequest) {
       getStudentChargesServer(authUser.schoolId, student.id),
     ]);
 
-    // A student gets display fields only (no staff uids or audit fields).
+    // A student gets display fields only (no staff uids or audit fields), and never a VOID
+    // charge — that's an admin's correction of their own mistake (see DELETE
+    // /api/fees/charges), not something the family needs to see or act on.
     const visibleCharges =
       authUser.role === "STUDENT"
-        ? charges.map((c) => ({ id: c.id, type: c.type, description: c.description, amount: c.amount, date: c.date, status: c.status, notes: c.notes || "" }))
+        ? charges
+            .filter((c) => c.status !== "VOID")
+            .map((c) => ({ id: c.id, type: c.type, description: c.description, amount: c.amount, date: c.date, status: c.status, notes: c.notes || "" }))
         : charges;
     return NextResponse.json(
       { success: true, ...buildAccount(student, year.data, ledger, challans), charges: visibleCharges },

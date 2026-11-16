@@ -296,8 +296,12 @@ async function handleCommit(authUser: AuthenticatedUser, req: NextRequest) {
         const month = MONTH_NAMES[mIdx] || "November";
         const academicYear = configuredAcademicYear;
 
+        // A VOID challan (admin-corrected duplicate/erroneous entry — see DELETE
+        // /api/fees/challans/[id]) is never matched here: the admin explicitly decided this
+        // month has no real bill, so an import for it must create a fresh challan, never
+        // resurrect/fund the voided one.
         let targetChallan = existingChallans.find(
-          (c) => c.studentId === item.resolvedStudentId && c.month === month && c.year === year
+          (c) => c.studentId === item.resolvedStudentId && c.month === month && c.year === year && c.status !== "VOID"
         );
 
         if (!targetChallan) {

@@ -53,6 +53,9 @@ const writableFields = {
   // may be sent — `""` explicitly clears a previously-saved value.
   submittedByStaffId: z.union([idString, z.literal(""), z.null()]).optional(),
   submittedByName: z.union([z.string().trim().max(160), z.literal(""), z.null()]).optional(),
+  // Admin/Principal-only visibility. Enforced server-side in getTeacherObservationsServer and in
+  // firestore.rules — this field is never trusted to "just" hide something in the UI.
+  isPrivate: z.boolean().optional(),
 };
 
 const createSchema = z.object({ teacherId: idString, ...writableFields });
@@ -148,6 +151,9 @@ export async function GET(req: NextRequest) {
         success: true,
         teacher: { id: teacher.id, fullName: teacher.fullName },
         observations: sortTeacherObservationsNewestFirst(observations.map((o) => toTeacherObservationView(o))),
+        // Nav-visibility hint only — the real enforcement is server-side on every submission
+        // write (see /api/teacher-observation-submissions), never trusted from this flag alone.
+        coordinator: teacher.canSubmitObservations === true,
       });
     }
 
@@ -194,6 +200,7 @@ export async function POST(req: NextRequest) {
       ...(body.classId ? { classId: body.classId } : {}),
       ...(submittedBy.submittedByStaffId ? { submittedByStaffId: submittedBy.submittedByStaffId } : {}),
       ...(submittedBy.submittedByName ? { submittedByName: submittedBy.submittedByName } : {}),
+      ...(body.isPrivate ? { isPrivate: true } : {}),
       createdAt: new Date().toISOString(),
     };
 
@@ -266,6 +273,9 @@ export async function PUT(req: NextRequest) {
       ...(body.subjectId !== undefined ? { subjectId: body.subjectId || undefined } : {}),
       ...(body.classId !== undefined ? { classId: body.classId || undefined } : {}),
       ...(submittedByPatch ? { submittedByStaffId: submittedByPatch.submittedByStaffId, submittedByName: submittedByPatch.submittedByName } : {}),
+      // Toggling privacy is content-neutral — it never pushes an editHistory entry (that's
+      // reserved for title/note text changes, computed above from titleChanged/noteChanged).
+      ...(body.isPrivate !== undefined ? { isPrivate: body.isPrivate } : {}),
       ...(history ? { editHistory: history } : {}),
       updatedAt: new Date().toISOString(),
       updatedBy: authUser.uid,

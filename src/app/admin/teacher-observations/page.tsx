@@ -26,6 +26,7 @@ export default function AdminTeacherObservationsPage() {
 function AdminTeacherObservationsContent() {
   // A teacher profile page can deep-link here with ?teacherId=... to pre-filter this screen.
   const searchParams = useSearchParams();
+  const [tab, setTab] = useState<"notes" | "submissions">("notes");
   const [observations, setObservations] = useState<any[]>([]);
   const [teachers, setTeachers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,6 +48,7 @@ function AdminTeacherObservationsContent() {
   const [editSubmittedByMode, setEditSubmittedByMode] = useState<"none" | "staff" | "other">("none");
   const [editSubmittedByStaffId, setEditSubmittedByStaffId] = useState("");
   const [editSubmittedByName, setEditSubmittedByName] = useState("");
+  const [editIsPrivate, setEditIsPrivate] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState("");
   const [notice, setNotice] = useState("");
@@ -63,6 +65,7 @@ function AdminTeacherObservationsContent() {
   const [addSubmittedByMode, setAddSubmittedByMode] = useState<"none" | "staff" | "other">("none");
   const [addSubmittedByStaffId, setAddSubmittedByStaffId] = useState("");
   const [addSubmittedByName, setAddSubmittedByName] = useState("");
+  const [addIsPrivate, setAddIsPrivate] = useState(false);
   const [addError, setAddError] = useState("");
   const [addSaving, setAddSaving] = useState(false);
 
@@ -117,6 +120,7 @@ function AdminTeacherObservationsContent() {
       setEditSubmittedByStaffId("");
       setEditSubmittedByName("");
     }
+    setEditIsPrivate(openObservation.isPrivate === true);
     setEditing(true);
     setNotice("");
   };
@@ -141,6 +145,7 @@ function AdminTeacherObservationsContent() {
           observationDate: editDate,
           submittedByStaffId: editSubmittedByMode === "staff" ? editSubmittedByStaffId : "",
           submittedByName: editSubmittedByMode === "other" ? editSubmittedByName.trim() : "",
+          isPrivate: editIsPrivate,
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -202,6 +207,7 @@ function AdminTeacherObservationsContent() {
           note: addNote,
           submittedByStaffId: addSubmittedByMode === "staff" ? addSubmittedByStaffId : "",
           submittedByName: addSubmittedByMode === "other" ? addSubmittedByName.trim() : "",
+          isPrivate: addIsPrivate,
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -218,6 +224,7 @@ function AdminTeacherObservationsContent() {
       setAddSubmittedByMode("none");
       setAddSubmittedByStaffId("");
       setAddSubmittedByName("");
+      setAddIsPrivate(false);
       setNotice("Observation added.");
       await load();
     } catch {
@@ -241,15 +248,38 @@ function AdminTeacherObservationsContent() {
             Formal evaluation notes written about a teacher. Only an administrator can add, edit, or remove one.
           </p>
         </div>
+        {tab === "notes" && (
+          <button
+            type="button"
+            onClick={() => { setAddOpen(true); setAddError(""); }}
+            className="shrink-0 h-9 px-4 rounded-lg bg-secondary text-on-secondary text-xs font-bold hover:bg-secondary/90 inline-flex items-center gap-1.5"
+          >
+            <span className="material-symbols-outlined text-[16px]">add</span> Add Observation
+          </button>
+        )}
+      </div>
+
+      <div className="flex gap-1 border-b border-surface-container-high/40">
         <button
           type="button"
-          onClick={() => { setAddOpen(true); setAddError(""); }}
-          className="shrink-0 h-9 px-4 rounded-lg bg-secondary text-on-secondary text-xs font-bold hover:bg-secondary/90 inline-flex items-center gap-1.5"
+          onClick={() => setTab("notes")}
+          className={`px-3 py-2 text-xs font-bold border-b-2 ${tab === "notes" ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}
         >
-          <span className="material-symbols-outlined text-[16px]">add</span> Add Observation
+          Observation Notes
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("submissions")}
+          className={`px-3 py-2 text-xs font-bold border-b-2 ${tab === "submissions" ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant hover:text-on-surface"}`}
+        >
+          Pending Submissions
         </button>
       </div>
 
+      {tab === "submissions" ? (
+        <PendingSubmissionsPanel />
+      ) : (
+      <>
       {error && (
         <div className="p-3 rounded-lg bg-error-container/10 border border-error/30 text-error text-xs font-bold">{error}</div>
       )}
@@ -345,7 +375,14 @@ function AdminTeacherObservationsContent() {
                         "bg-surface-container-high text-on-surface"
                       }`}>{o.ratingLabel}</span>
                     </td>
-                    <td className="py-3 px-4 font-medium text-on-surface max-w-sm truncate">{o.title || o.note}</td>
+                    <td className="py-3 px-4 font-medium text-on-surface max-w-sm truncate">
+                      {o.isPrivate && (
+                        <span className="inline-flex items-center gap-0.5 mr-1.5 px-1.5 py-0.5 rounded bg-error-container/20 text-error text-[10px] font-bold align-middle">
+                          <span className="material-symbols-outlined text-[12px]">lock</span> Private
+                        </span>
+                      )}
+                      {o.title || o.note}
+                    </td>
                     <td className="py-3 px-4 text-on-surface-variant">{o.authorName}</td>
                     <td className="py-3 px-4 text-secondary font-semibold">
                       {o.editHistory.length > 0 ? `Edited (${o.editHistory.length})` : ""}
@@ -442,6 +479,13 @@ function AdminTeacherObservationsContent() {
               <label htmlFor="tobs-add-note" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Observation</label>
               <textarea id="tobs-add-note" maxLength={4000} rows={6} value={addNote} onChange={(e) => setAddNote(e.target.value)} placeholder="Describe what was observed..." className="w-full px-3 py-2 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40" />
             </div>
+            <label className="flex items-start gap-2 p-2.5 rounded-lg bg-error-container/10 border border-error/20 cursor-pointer">
+              <input type="checkbox" checked={addIsPrivate} onChange={(e) => setAddIsPrivate(e.target.checked)} className="mt-0.5 w-4 h-4" />
+              <span className="text-xs">
+                <span className="font-bold text-on-surface">Private Observation</span>
+                <span className="block text-[11px] text-on-surface-variant mt-0.5">Visible only to Admin and Principal. This note will never appear in {addTeacherId ? teachers.find((t) => t.id === addTeacherId)?.name || "the teacher's" : "the teacher's"} portal, lists, dashboards, or reports.</span>
+              </span>
+            </label>
             <div className="flex gap-2 pt-1">
               <button type="button" onClick={submitAdd} disabled={addSaving || !addNote.trim() || !addTeacherId} className="px-4 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50">
                 {addSaving ? "Saving..." : "Save Observation"}
@@ -461,7 +505,14 @@ function AdminTeacherObservationsContent() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="text-[10px] font-bold text-on-surface-variant uppercase">{openObservation.categoryLabel} • {openObservation.ratingLabel}</p>
-                <h2 className="font-headline-md text-base font-bold text-on-surface mt-0.5">{openObservation.title || "Untitled note"}</h2>
+                <h2 className="font-headline-md text-base font-bold text-on-surface mt-0.5">
+                  {openObservation.title || "Untitled note"}
+                  {openObservation.isPrivate && (
+                    <span className="inline-flex items-center gap-0.5 ml-2 px-1.5 py-0.5 rounded bg-error-container/20 text-error text-[10px] font-bold align-middle">
+                      <span className="material-symbols-outlined text-[12px]">lock</span> Private — Admin/Principal only
+                    </span>
+                  )}
+                </h2>
                 <p className="text-[11px] text-on-surface-variant mt-0.5">
                   {openObservation.teacherName || "Unknown teacher"} • on {formatDate(openObservation.observationDate)}
                   {openObservation.updatedAt !== openObservation.createdAt ? ` • last edited ${formatDate(openObservation.updatedAt)}` : ""}
@@ -547,6 +598,13 @@ function AdminTeacherObservationsContent() {
                   <label htmlFor="tobs-edit-note" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Observation Text</label>
                   <textarea id="tobs-edit-note" maxLength={4000} rows={6} value={editNote} onChange={(e) => setEditNote(e.target.value)} className="w-full px-3 py-2 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40" />
                 </div>
+                <label className="flex items-start gap-2 p-2.5 rounded-lg bg-error-container/10 border border-error/20 cursor-pointer">
+                  <input type="checkbox" checked={editIsPrivate} onChange={(e) => setEditIsPrivate(e.target.checked)} className="mt-0.5 w-4 h-4" />
+                  <span className="text-xs">
+                    <span className="font-bold text-on-surface">Private Observation</span>
+                    <span className="block text-[11px] text-on-surface-variant mt-0.5">Visible only to Admin and Principal — never appears in this teacher&apos;s portal.</span>
+                  </span>
+                </label>
                 <div className="flex gap-2">
                   <button type="button" onClick={saveEdit} disabled={saving || !editNote.trim()} className="px-4 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50">
                     {saving ? "Saving..." : "Save Correction"}
@@ -591,6 +649,255 @@ function AdminTeacherObservationsContent() {
                         <p className="text-on-surface-variant whitespace-pre-wrap">{h.previousNote}</p>
                       </div>
                     ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Admin review queue for coordinator-submitted observations (/api/teacher-observation-submissions
+ * admin/[id]/approve/[id]/reject). Approving creates a brand-new, admin-authored
+ * TeacherObservationDoc; rejecting never does — neither path is reachable by the coordinator who
+ * submitted it, and the subject teacher never sees this queue or its contents until approved.
+ */
+function PendingSubmissionsPanel() {
+  const [statusFilter, setStatusFilter] = useState<"PENDING" | "ALL">("PENDING");
+  const [submissions, setSubmissions] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const [openId, setOpenId] = useState("");
+  const [reviewing, setReviewing] = useState<"approve" | "reject" | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [reviewNote, setReviewNote] = useState("");
+  const [editTitle, setEditTitle] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [editRating, setEditRating] = useState("SATISFACTORY");
+  const [editCategory, setEditCategory] = useState("TEACHING_QUALITY");
+  const [editDate, setEditDate] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/teacher-observation-submissions/admin?status=${statusFilter}`, { cache: "no-store" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        setError(json.error || "Could not load submissions.");
+        return;
+      }
+      setSubmissions(json.submissions || []);
+    } catch {
+      setError("Could not load submissions. Check your connection and try again.");
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const open = submissions.find((s) => s.id === openId);
+
+  const startReview = (action: "approve" | "reject") => {
+    if (!open) return;
+    setReviewing(action);
+    setReviewNote("");
+    setEditTitle(open.title || "");
+    setEditNote(open.note || "");
+    setEditRating(open.rating);
+    setEditCategory(open.category);
+    setEditDate(open.observationDate);
+  };
+
+  const submitReview = async () => {
+    if (!open || !reviewing) return;
+    if (reviewing === "reject" && !reviewNote.trim()) {
+      setNotice("A rejection reason is required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/teacher-observation-submissions/${open.id}/${reviewing}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          reviewing === "approve"
+            ? { title: editTitle, note: editNote, rating: editRating, category: editCategory, observationDate: editDate, reviewNote: reviewNote || undefined }
+            : { reviewNote }
+        ),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        setNotice(json.error || "Could not complete the review.");
+        return;
+      }
+      setOpenId("");
+      setReviewing(null);
+      setNotice(reviewing === "approve" ? "Approved and published to the teacher's portal." : "Rejected.");
+      await load();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as "PENDING" | "ALL")} className="h-9 px-3 rounded-lg bg-surface-container-low text-xs font-semibold text-on-surface border border-outline-variant/40">
+          <option value="PENDING">Pending only</option>
+          <option value="ALL">All submissions</option>
+        </select>
+      </div>
+
+      {error && (
+        <div className="p-3 rounded-lg bg-error-container/10 border border-error/30 text-error text-xs font-bold">{error}</div>
+      )}
+      {notice && !openId && (
+        <div className="p-3 rounded-lg bg-tertiary-container/10 border border-on-tertiary-container/30 text-on-tertiary-container text-xs font-bold">{notice}</div>
+      )}
+
+      <div className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">
+        {loading ? (
+          <div className="p-12 flex items-center justify-center">
+            <div className="w-8 h-8 border-3 border-secondary border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        ) : submissions.length === 0 ? (
+          <div className="p-12 text-center text-sm font-semibold text-on-surface">No submissions to review.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-surface-container-low text-on-surface-variant font-label-sm text-[11px] uppercase tracking-wider border-b border-surface-container-high/40">
+                  <th className="py-3 px-4 font-bold">Submitted</th>
+                  <th className="py-3 px-4 font-bold">Coordinator</th>
+                  <th className="py-3 px-4 font-bold">About Teacher</th>
+                  <th className="py-3 px-4 font-bold">Excerpt</th>
+                  <th className="py-3 px-4 font-bold">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-surface-container-low">
+                {submissions.map((s) => (
+                  <tr key={s.id} className="hover:bg-surface-container-low/40 cursor-pointer" onClick={() => { setOpenId(s.id); setReviewing(null); setNotice(""); }}>
+                    <td className="py-3 px-4 text-on-surface-variant whitespace-nowrap font-mono text-[11px]">{formatDate(s.submittedAt)}</td>
+                    <td className="py-3 px-4 font-semibold text-on-surface">{s.submittedByName || s.submittedByTeacherId}</td>
+                    <td className="py-3 px-4 font-semibold text-on-surface">{s.teacherName || s.teacherId}</td>
+                    <td className="py-3 px-4 max-w-sm truncate">{s.title || s.note}</td>
+                    <td className="py-3 px-4">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                        s.status === "PENDING" ? "bg-surface-container-high text-on-surface" :
+                        s.status === "APPROVED" ? "bg-tertiary-container/30 text-on-tertiary-container" :
+                        "bg-error-container/20 text-error"
+                      }`}>{s.status}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {open && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => { setOpenId(""); setReviewing(null); }}>
+          <div className="bg-surface-container-lowest rounded-xl shadow-lg max-w-2xl w-full max-h-[85vh] overflow-y-auto p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-bold text-on-surface-variant uppercase">{open.status} • {TEACHER_OBSERVATION_CATEGORY_LABELS[open.category] || open.category} • {TEACHER_OBSERVATION_RATING_LABELS[open.rating] || open.rating}</p>
+                <h2 className="font-headline-md text-base font-bold text-on-surface mt-0.5">{open.title || "Untitled submission"}</h2>
+                <p className="text-[11px] text-on-surface-variant mt-0.5">
+                  About {open.teacherName || open.teacherId} • submitted by {open.submittedByName || open.submittedByTeacherId} on {formatDate(open.submittedAt)}
+                </p>
+                {open.status !== "PENDING" && open.reviewedByName && (
+                  <p className="text-[11px] text-on-surface-variant mt-0.5">
+                    Reviewed by {open.reviewedByName} on {formatDate(open.reviewedAt)}
+                    {open.reviewNote ? ` — ${open.reviewNote}` : ""}
+                  </p>
+                )}
+              </div>
+              <button type="button" onClick={() => { setOpenId(""); setReviewing(null); }} className="text-on-surface-variant hover:text-on-surface shrink-0">
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            {notice && (
+              <div className="p-2.5 rounded-lg bg-tertiary-container/10 border border-on-tertiary-container/30 text-on-tertiary-container text-xs font-bold">{notice}</div>
+            )}
+
+            {reviewing === "approve" ? (
+              <div className="space-y-3">
+                <p className="text-[11px] text-on-surface-variant">You may edit the note before publishing it to the teacher&apos;s portal.</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label htmlFor="rev-date" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Date</label>
+                    <input id="rev-date" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className="w-full h-9 px-2 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40" />
+                  </div>
+                  <div>
+                    <label htmlFor="rev-category" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Category</label>
+                    <select id="rev-category" value={editCategory} onChange={(e) => setEditCategory(e.target.value)} className="w-full h-9 px-2 rounded-lg bg-surface-container-low text-xs font-semibold text-on-surface border border-outline-variant/40">
+                      {TEACHER_OBSERVATION_CATEGORIES.map((c) => <option key={c} value={c}>{TEACHER_OBSERVATION_CATEGORY_LABELS[c] || c}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="rev-rating" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Rating</label>
+                    <select id="rev-rating" value={editRating} onChange={(e) => setEditRating(e.target.value)} className="w-full h-9 px-2 rounded-lg bg-surface-container-low text-xs font-semibold text-on-surface border border-outline-variant/40">
+                      {TEACHER_OBSERVATION_RATINGS.map((r) => <option key={r} value={r}>{TEACHER_OBSERVATION_RATING_LABELS[r] || r}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="rev-title" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Title</label>
+                  <input id="rev-title" maxLength={200} value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="w-full h-9 px-3 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40" />
+                </div>
+                <div>
+                  <label htmlFor="rev-note" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Observation Text</label>
+                  <textarea id="rev-note" maxLength={4000} rows={6} value={editNote} onChange={(e) => setEditNote(e.target.value)} className="w-full px-3 py-2 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40" />
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={submitReview} disabled={saving || !editNote.trim()} className="px-4 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50">
+                    {saving ? "Publishing..." : "Approve & Publish"}
+                  </button>
+                  <button type="button" onClick={() => setReviewing(null)} className="px-4 py-2 rounded-lg bg-surface-container text-on-surface text-xs font-semibold hover:bg-surface-container-high">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : reviewing === "reject" ? (
+              <div className="space-y-3">
+                <div>
+                  <label htmlFor="rev-reject-reason" className="block text-[10px] font-bold text-on-surface-variant uppercase mb-1">Rejection Reason *</label>
+                  <textarea id="rev-reject-reason" maxLength={500} rows={3} value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} placeholder="Explain why this submission is being rejected..." className="w-full px-3 py-2 rounded-lg bg-surface-container-low text-xs text-on-surface border border-outline-variant/40" />
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={submitReview} disabled={saving || !reviewNote.trim()} className="px-4 py-2 rounded-lg bg-error text-on-error text-xs font-semibold hover:bg-error/90 disabled:opacity-50">
+                    {saving ? "Rejecting..." : "Confirm Reject"}
+                  </button>
+                  <button type="button" onClick={() => setReviewing(null)} className="px-4 py-2 rounded-lg bg-surface-container text-on-surface text-xs font-semibold hover:bg-surface-container-high">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-on-surface whitespace-pre-wrap leading-relaxed">{open.note}</p>
+                {open.status === "PENDING" && (
+                  <div className="flex gap-2 pt-2 border-t border-surface-container-high/40">
+                    <button type="button" onClick={() => startReview("approve")} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90">
+                      <span className="material-symbols-outlined text-[16px]">check_circle</span> Approve & Publish
+                    </button>
+                    <button type="button" onClick={() => startReview("reject")} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-error-container/10 text-error text-xs font-semibold hover:bg-error-container/20">
+                      <span className="material-symbols-outlined text-[16px]">cancel</span> Reject
+                    </button>
                   </div>
                 )}
               </>

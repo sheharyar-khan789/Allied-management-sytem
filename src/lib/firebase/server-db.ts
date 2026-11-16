@@ -45,6 +45,7 @@ import {
   ExamResultDoc,
   StudentObservationDoc,
   TeacherObservationDoc,
+  TeacherObservationSubmissionDoc,
   LessonPlanDoc,
   LessonPlanWeekDoc,
   LockedRecordDoc,
@@ -84,6 +85,7 @@ const localStore: {
   examResults: Map<string, ExamResultDoc>;
   studentObservations: Map<string, StudentObservationDoc>;
   teacherObservations: Map<string, TeacherObservationDoc>;
+  teacherObservationSubmissions: Map<string, TeacherObservationSubmissionDoc>;
   lessonPlans: Map<string, LessonPlanDoc>;
   lessonPlanWeeks: Map<string, LessonPlanWeekDoc>;
   lockedRecords: Map<string, LockedRecordDoc>;
@@ -118,6 +120,7 @@ const localStore: {
   examResults: new Map(),
   studentObservations: new Map(),
   teacherObservations: new Map(),
+  teacherObservationSubmissions: new Map(),
   lessonPlans: new Map(),
   lessonPlanWeeks: new Map(),
   lockedRecords: new Map(),
@@ -3464,6 +3467,26 @@ export async function getPaymentsByStudentServer(schoolId: string, studentId: st
   return getPaymentsServer(schoolId, studentId);
 }
 
+/**
+ * Every real PaymentDoc referencing this challan, regardless of session/academic-year scoping —
+ * used only as an existence check before voiding or deleting a FeeChallanDoc, so the decision
+ * is never made from the challan's own (possibly stale) cached `paidAmount` field alone.
+ */
+export async function getPaymentsByChallanIdServer(schoolId: string, challanId: string): Promise<PaymentDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("getPaymentsByChallanIdServer", () =>
+        adminDb.collection("payments").where("schoolId", "==", schoolId).where("challanId", "==", challanId).get()
+      );
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as PaymentDoc));
+    } catch (e) {
+      onFirestoreError(`getPaymentsByChallanIdServer(${challanId})`, e);
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+    }
+  }
+  return Array.from(localStore.payments.values()).filter((p) => p.schoolId === schoolId && p.challanId === challanId);
+}
+
 // ---------------------------------------------------------------------------
 // VOUCHER MANAGEMENT (admin/fees/vouchers)
 //
@@ -3484,7 +3507,7 @@ export function isVoucherLocked(payment: Pick<PaymentDoc, "createdAt">, now: Dat
   return now.getTime() - created > VOUCHER_EDIT_WINDOW_MS;
 }
 
-function statusFromPaidAmount(totalExpected: number, paidAmount: number): FeeStatus {
+export function statusFromPaidAmount(totalExpected: number, paidAmount: number): FeeStatus {
   // Same formula as recordFeePaymentServer, so editing/reversing a voucher never leaves a
   // challan's Paid/Partial/Unpaid status inconsistent with the payments that actually fund it.
   const balance = Math.max(0, (totalExpected || 0) - paidAmount);
@@ -4398,7 +4421,11 @@ export async function getTeacherObservationsServer(
       (o) => o.schoolId === schoolId && o.teacherId === teacherId
     );
   }
-  return list.filter((o) => !o.deletedAt).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // isPrivate notes are Admin/Principal-only — this is the only read path a TEACHER caller is
+  // ever routed through, so filtering here (not just in the UI) is what actually enforces it.
+  return list
+    .filter((o) => !o.deletedAt && o.isPrivate !== true)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 /**
@@ -4476,6 +4503,211 @@ export async function saveTeacherObservationServer(obs: TeacherObservationDoc): 
     }
   }
   return id;
+}
+
+// ---------------------------------------------------------------------------
+// TEACHER OBSERVATION SUBMISSIONS (Coordinator Observation Submission)
+// Pending drafts awaiting admin review — never themselves a TeacherObservationDoc. Mirrors the
+// teacherObservations functions above one-for-one; see TeacherObservationSubmissionDoc's own
+// comment for the subject/submitter read-scoping distinction this collection depends on.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every submission a single coordinator has made, scoped to `schoolId`. This is the only read
+ * path a TEACHER caller is ever routed through for this collection — a single
+ * submittedByTeacherId filter and nothing else, so there is no parameter a coordinator can widen
+ * to reach another coordinator's submissions.
+ */
+export async function getSubmissionsBySubmitterServer(
+  schoolId: string,
+  submittedByTeacherId: string
+): Promise<TeacherObservationSubmissionDoc[]> {
+  let list: TeacherObservationSubmissionDoc[];
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("getSubmissionsBySubmitterServer", () =>
+        adminDb
+          .collection("teacherObservationSubmissions")
+          .where("schoolId", "==", schoolId)
+          .where("submittedByTeacherId", "==", submittedByTeacherId)
+          .get()
+      );
+      list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherObservationSubmissionDoc));
+    } catch (e) {
+      onFirestoreError(`getSubmissionsBySubmitterServer(${submittedByTeacherId})`, e);
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+      list = Array.from(localStore.teacherObservationSubmissions.values()).filter(
+        (s) => s.schoolId === schoolId && s.submittedByTeacherId === submittedByTeacherId
+      );
+    }
+  } else {
+    list = Array.from(localStore.teacherObservationSubmissions.values()).filter(
+      (s) => s.schoolId === schoolId && s.submittedByTeacherId === submittedByTeacherId
+    );
+  }
+  return list.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+}
+
+/** Admin-only, school-wide review list. Never reachable by a TEACHER — the API route enforces that. */
+export async function getAllPendingSubmissionsServer(
+  schoolId: string,
+  filter: { status?: string } = {}
+): Promise<TeacherObservationSubmissionDoc[]> {
+  let list: TeacherObservationSubmissionDoc[];
+  if (hasAdminCredentials) {
+    try {
+      const snap = await withFirestoreRetry("getAllPendingSubmissionsServer", () =>
+        adminDb.collection("teacherObservationSubmissions").where("schoolId", "==", schoolId).get()
+      );
+      list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as TeacherObservationSubmissionDoc));
+    } catch (e) {
+      onFirestoreError(`getAllPendingSubmissionsServer(${schoolId})`, e);
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+      list = Array.from(localStore.teacherObservationSubmissions.values()).filter((s) => s.schoolId === schoolId);
+    }
+  } else {
+    list = Array.from(localStore.teacherObservationSubmissions.values()).filter((s) => s.schoolId === schoolId);
+  }
+  if (filter.status) list = list.filter((s) => s.status === filter.status);
+  return list.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+}
+
+/** One submission by its document id, only if it belongs to `schoolId`. */
+export async function getTeacherObservationSubmissionByIdServer(
+  schoolId: string,
+  id: string
+): Promise<TeacherObservationSubmissionDoc | null> {
+  if (!id) return null;
+  if (hasAdminCredentials) {
+    try {
+      const doc = await withFirestoreRetry("getTeacherObservationSubmissionByIdServer", () =>
+        adminDb.collection("teacherObservationSubmissions").doc(id).get()
+      );
+      if (!doc.exists) return null;
+      const data = { id: doc.id, ...doc.data() } as TeacherObservationSubmissionDoc;
+      return data.schoolId === schoolId ? data : null;
+    } catch (e) {
+      onFirestoreError(`getTeacherObservationSubmissionByIdServer(${id})`, e);
+      if (process.env.NODE_ENV === "production" && !isServiceUnavailableError(e)) throw e;
+    }
+  }
+  const local = localStore.teacherObservationSubmissions.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+export async function saveTeacherObservationSubmissionServer(sub: TeacherObservationSubmissionDoc): Promise<string> {
+  const id = sub.id;
+  localStore.teacherObservationSubmissions.set(id, sub);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("teacherObservationSubmissions").doc(id).set(cleanUndefined(sub));
+    } catch (e) {
+      onFirestoreError(`saveTeacherObservationSubmissionServer(${id})`, e);
+      throw e;
+    }
+  }
+  return id;
+}
+
+/**
+ * Admin-only: approves a pending submission by creating a brand-new TeacherObservationDoc
+ * (authored by the approving admin, never the coordinator) and marking the submission APPROVED
+ * in the same Firestore transaction — so a crash between the two writes can never leave a
+ * PENDING submission whose note was already published, or publish the same submission twice.
+ * Returns the error code on any guard failure, or the two saved documents on success.
+ */
+export async function approveTeacherObservationSubmissionServer(
+  schoolId: string,
+  submissionId: string,
+  overrides: Partial<
+    Pick<TeacherObservationDoc, "observationDate" | "category" | "rating" | "title" | "note" | "subjectId" | "classId">
+  >,
+  reviewer: { uid: string; name: string },
+  reviewNote?: string
+): Promise<
+  | { ok: true; observation: TeacherObservationDoc; submission: TeacherObservationSubmissionDoc }
+  | { ok: false; error: "NOT_FOUND" | "ALREADY_REVIEWED" }
+> {
+  const existing = await getTeacherObservationSubmissionByIdServer(schoolId, submissionId);
+  if (!existing) return { ok: false, error: "NOT_FOUND" };
+  if (existing.status !== "PENDING") return { ok: false, error: "ALREADY_REVIEWED" };
+
+  const nowIso = new Date().toISOString();
+  const observation: TeacherObservationDoc = {
+    id: `tobs-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    schoolId,
+    teacherId: existing.teacherId,
+    teacherName: existing.teacherName,
+    authorUid: reviewer.uid,
+    authorName: reviewer.name || "Administration",
+    observationDate: overrides.observationDate || existing.observationDate,
+    category: overrides.category || existing.category,
+    rating: overrides.rating || existing.rating,
+    ...((overrides.title !== undefined ? overrides.title : existing.title) ? { title: overrides.title !== undefined ? overrides.title : existing.title } : {}),
+    note: overrides.note !== undefined ? overrides.note : existing.note,
+    ...((overrides.subjectId !== undefined ? overrides.subjectId : existing.subjectId) ? { subjectId: overrides.subjectId !== undefined ? overrides.subjectId : existing.subjectId } : {}),
+    ...((overrides.classId !== undefined ? overrides.classId : existing.classId) ? { classId: overrides.classId !== undefined ? overrides.classId : existing.classId } : {}),
+    // Reuses this existing field for exactly its documented purpose: the coordinator actually
+    // supplied the information, the admin is only the author-of-record.
+    submittedByStaffId: existing.submittedByTeacherId,
+    ...(existing.submittedByName ? { submittedByName: existing.submittedByName } : {}),
+    createdAt: nowIso,
+  };
+  const updatedSubmission: TeacherObservationSubmissionDoc = {
+    ...existing,
+    status: "APPROVED",
+    publishedObservationId: observation.id,
+    reviewedByUid: reviewer.uid,
+    reviewedByName: reviewer.name,
+    reviewedAt: nowIso,
+    ...(reviewNote ? { reviewNote } : {}),
+    updatedAt: nowIso,
+  };
+
+  if (hasAdminCredentials) {
+    try {
+      await withFirestoreRetry("approveTeacherObservationSubmissionServer", () =>
+        adminDb.runTransaction(async (tx) => {
+          tx.set(adminDb.collection("teacherObservations").doc(observation.id), cleanUndefined(observation));
+          tx.set(adminDb.collection("teacherObservationSubmissions").doc(existing.id), cleanUndefined(updatedSubmission));
+        })
+      );
+    } catch (e) {
+      onFirestoreError(`approveTeacherObservationSubmissionServer(${submissionId})`, e);
+      throw e;
+    }
+  }
+  localStore.teacherObservations.set(observation.id, observation);
+  localStore.teacherObservationSubmissions.set(existing.id, updatedSubmission);
+
+  return { ok: true, observation, submission: updatedSubmission };
+}
+
+/** Admin-only: rejects a pending submission. Never writes to teacherObservations. */
+export async function rejectTeacherObservationSubmissionServer(
+  schoolId: string,
+  submissionId: string,
+  reviewer: { uid: string; name: string },
+  reviewNote: string
+): Promise<
+  | { ok: true; submission: TeacherObservationSubmissionDoc }
+  | { ok: false; error: "NOT_FOUND" | "ALREADY_REVIEWED" }
+> {
+  const existing = await getTeacherObservationSubmissionByIdServer(schoolId, submissionId);
+  if (!existing) return { ok: false, error: "NOT_FOUND" };
+  if (existing.status !== "PENDING") return { ok: false, error: "ALREADY_REVIEWED" };
+
+  const updated: TeacherObservationSubmissionDoc = {
+    ...existing,
+    status: "REJECTED",
+    reviewedByUid: reviewer.uid,
+    reviewedByName: reviewer.name,
+    reviewedAt: new Date().toISOString(),
+    reviewNote,
+    updatedAt: new Date().toISOString(),
+  };
+  await saveTeacherObservationSubmissionServer(updated);
+  return { ok: true, submission: updated };
 }
 
 // ---------------------------------------------------------------------------
@@ -5032,6 +5264,28 @@ export async function saveStudentChargeServer(charge: StudentChargeDoc): Promise
     }
   }
   return data;
+}
+
+/**
+ * True hard delete — only ever called for a charge with no payment history (status "UNPAID"),
+ * where there is nothing financial to lose. A charge that was ever "PAID" is voided instead (see
+ * DELETE /api/fees/charges), never deleted, so the historical record survives.
+ */
+export async function deleteStudentChargeServer(schoolId: string, chargeId: string): Promise<boolean> {
+  const existing = await getStudentChargeByIdServer(schoolId, chargeId);
+  if (!existing) return false;
+
+  localStore.studentCharges.delete(chargeId);
+
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("studentCharges").doc(chargeId).delete();
+    } catch (e) {
+      onFirestoreError(`deleteStudentChargeServer(${chargeId})`, e);
+      return false;
+    }
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------

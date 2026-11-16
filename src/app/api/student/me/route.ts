@@ -123,7 +123,9 @@ export async function GET(req: NextRequest) {
     }
     const attendanceTotals = attendanceTotalsRes.status === "fulfilled" ? attendanceTotalsRes.value : null;
     const attendances = attendancesRes.status === "fulfilled" ? attendancesRes.value : [] as AttendanceDoc[];
-    const challans = challansRes.status === "fulfilled" ? challansRes.value : [] as FeeChallanDoc[];
+    // A VOID challan (admin-corrected duplicate/erroneous entry, always zero payments) is never
+    // shown to the student — the derived status below would otherwise misread it as "UNPAID".
+    const challans = (challansRes.status === "fulfilled" ? challansRes.value : [] as FeeChallanDoc[]).filter((c) => c.status !== "VOID");
     const examResultsRaw = examResultsRawRes.status === "fulfilled" ? examResultsRawRes.value : [] as ExamResultDoc[];
     const exams = examsRes.status === "fulfilled" ? examsRes.value : [];
     const observations = observationsRes.status === "fulfilled" ? observationsRes.value : [] as StudentObservationDoc[];

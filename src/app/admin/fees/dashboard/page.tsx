@@ -5,21 +5,27 @@ import Link from "next/link";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
 interface FinancialSummary {
-  netCollection: { amount: number; studentCount: number };
-  receivedAmount: { amount: number; paymentCount: number };
+  totalFeeAmount: { amount: number; challanCount: number };
+  feeCollected: { amount: number; paymentCount: number };
+  outstandingAmount: { amount: number };
+  otherCollections: { amount: number };
+  otherExpenses: { amount: number; count: number; dailyAmount: number; monthlyAmount: number };
+  netCollection: { amount: number };
   vouchers: {
     totalCount: number; totalAmount: number;
     dailyCount: number; dailyAmount: number; dailyDate: string;
     monthlyCount: number; monthlyAmount: number; monthlyPeriod: string;
   };
-  otherExpenses: { amount: number; count: number; dailyAmount: number; monthlyAmount: number };
 }
 
 const EMPTY_SUMMARY: FinancialSummary = {
-  netCollection: { amount: 0, studentCount: 0 },
-  receivedAmount: { amount: 0, paymentCount: 0 },
-  vouchers: { totalCount: 0, totalAmount: 0, dailyCount: 0, dailyAmount: 0, dailyDate: "", monthlyCount: 0, monthlyAmount: 0, monthlyPeriod: "" },
+  totalFeeAmount: { amount: 0, challanCount: 0 },
+  feeCollected: { amount: 0, paymentCount: 0 },
+  outstandingAmount: { amount: 0 },
+  otherCollections: { amount: 0 },
   otherExpenses: { amount: 0, count: 0, dailyAmount: 0, monthlyAmount: 0 },
+  netCollection: { amount: 0 },
+  vouchers: { totalCount: 0, totalAmount: 0, dailyCount: 0, dailyAmount: 0, dailyDate: "", monthlyCount: 0, monthlyAmount: 0, monthlyPeriod: "" },
 };
 
 interface DailySummary {
@@ -47,6 +53,8 @@ interface ExpenseItem {
   description: string;
   amount: number;
   category: string;
+  voided?: boolean;
+  voidReason?: string;
 }
 
 interface ImportBatchItem {
@@ -82,6 +90,24 @@ export default function FinancialDashboardPage() {
   const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
   const [batches, setBatches] = useState<ImportBatchItem[]>([]);
 
+  const [addExpenseOpen, setAddExpenseOpen] = useState(false);
+  const [addExpenseDate, setAddExpenseDate] = useState(todayStr());
+  const [addExpenseDescription, setAddExpenseDescription] = useState("");
+  const [addExpenseAmount, setAddExpenseAmount] = useState("");
+  const [addExpenseError, setAddExpenseError] = useState("");
+  const [addExpenseSaving, setAddExpenseSaving] = useState(false);
+
+  const [editingExpenseId, setEditingExpenseId] = useState("");
+  const [editExpenseDate, setEditExpenseDate] = useState("");
+  const [editExpenseDescription, setEditExpenseDescription] = useState("");
+  const [editExpenseAmount, setEditExpenseAmount] = useState("");
+  const [editExpenseError, setEditExpenseError] = useState("");
+  const [editExpenseSaving, setEditExpenseSaving] = useState(false);
+  const [voidingExpenseId, setVoidingExpenseId] = useState("");
+  const [voidExpenseReason, setVoidExpenseReason] = useState("");
+  const [voidExpenseError, setVoidExpenseError] = useState("");
+  const [voidExpenseSaving, setVoidExpenseSaving] = useState(false);
+
   const fetchDashboardData = async () => {
     setLoading(true);
     setError("");
@@ -113,6 +139,94 @@ export default function FinancialDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [from, to, category, academicYearInput]);
 
+  const submitAddExpense = async () => {
+    setAddExpenseError("");
+    const amount = Number(addExpenseAmount);
+    if (!addExpenseDate) return setAddExpenseError("Date is required.");
+    if (!addExpenseDescription.trim()) return setAddExpenseError("Description is required.");
+    if (!Number.isFinite(amount) || amount <= 0) return setAddExpenseError("Amount must be a positive number.");
+    setAddExpenseSaving(true);
+    try {
+      const res = await fetch("/api/fees/expenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: addExpenseDate, description: addExpenseDescription.trim(), amount }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        setAddExpenseError(json.error || "Could not save the expense.");
+        return;
+      }
+      setAddExpenseOpen(false);
+      setAddExpenseDescription("");
+      setAddExpenseAmount("");
+      await fetchDashboardData();
+    } catch {
+      setAddExpenseError("Could not save the expense. Check your connection and try again.");
+    } finally {
+      setAddExpenseSaving(false);
+    }
+  };
+
+  const startEditExpense = (e: ExpenseItem) => {
+    setEditingExpenseId(e.id);
+    setEditExpenseDate(e.date);
+    setEditExpenseDescription(e.description);
+    setEditExpenseAmount(String(e.amount));
+    setEditExpenseError("");
+  };
+
+  const saveEditExpense = async () => {
+    setEditExpenseError("");
+    const amount = Number(editExpenseAmount);
+    if (!editExpenseDescription.trim()) return setEditExpenseError("Description is required.");
+    if (!Number.isFinite(amount) || amount <= 0) return setEditExpenseError("Amount must be a positive number.");
+    setEditExpenseSaving(true);
+    try {
+      const res = await fetch("/api/fees/expenses", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: editingExpenseId, date: editExpenseDate, description: editExpenseDescription.trim(), amount }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        setEditExpenseError(json.error || "Could not save the correction.");
+        return;
+      }
+      setEditingExpenseId("");
+      await fetchDashboardData();
+    } catch {
+      setEditExpenseError("Could not save the correction. Check your connection and try again.");
+    } finally {
+      setEditExpenseSaving(false);
+    }
+  };
+
+  const confirmVoidExpense = async (id: string) => {
+    setVoidExpenseError("");
+    if (!voidExpenseReason.trim()) return setVoidExpenseError("A reason is required.");
+    setVoidExpenseSaving(true);
+    try {
+      const res = await fetch(`/api/fees/expenses?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: voidExpenseReason.trim() }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        setVoidExpenseError(json.error || "Could not void the expense.");
+        return;
+      }
+      setVoidingExpenseId("");
+      setVoidExpenseReason("");
+      await fetchDashboardData();
+    } catch {
+      setVoidExpenseError("Could not void the expense. Check your connection and try again.");
+    } finally {
+      setVoidExpenseSaving(false);
+    }
+  };
+
   return (
     <div className="flex flex-col w-full gap-6">
       {/* Header */}
@@ -125,7 +239,7 @@ export default function FinancialDashboardPage() {
             )}
           </div>
           <p className="text-xs text-on-surface-variant mt-0.5">
-            Net Collection (expected), Received Amount (actual), Vouchers, and Other Expenses — four separate figures, never mixed.
+            Total Fee Amount and Outstanding Amount are live snapshots; Fee Collected, Other Collections, Other Expenses and Net Collection are for the selected date range — six separate figures, never mixed.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -183,53 +297,65 @@ export default function FinancialDashboardPage() {
         </div>
       )}
 
-      {/* The four main financial blocks */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Block 1 — Net Collection */}
+      {/* The six main financial blocks */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {/* Block 1 — Total Fee Amount (snapshot, from real fee challans) */}
         <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
           <div className="flex items-center justify-between text-on-surface-variant">
-            <span className="text-xs font-bold uppercase tracking-wider">Net Collection</span>
+            <span className="text-xs font-bold uppercase tracking-wider">Total Fee Amount</span>
             <span className="material-symbols-outlined text-[20px] text-primary">account_balance</span>
           </div>
           <div className="mt-3">
-            <span className="text-2xl font-black text-on-surface font-mono">Rs. {summary.netCollection.amount.toLocaleString()}</span>
+            <span className="text-2xl font-black text-on-surface font-mono">Rs. {summary.totalFeeAmount.amount.toLocaleString()}</span>
           </div>
           <p className="text-[11px] text-on-surface-variant mt-1">
-            Expected yearly fee — {summary.netCollection.studentCount} student{summary.netCollection.studentCount === 1 ? "" : "s"} on the {academicYear} ledger. Never changes when a payment is received.
+            Billed across {summary.totalFeeAmount.challanCount} voucher{summary.totalFeeAmount.challanCount === 1 ? "" : "s"} for {academicYear}. A live snapshot — never changes when a payment is received.
           </p>
         </div>
 
-        {/* Block 2 — Received Amount */}
+        {/* Block 2 — Outstanding Amount (snapshot, from the same real fee challans) */}
         <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
           <div className="flex items-center justify-between text-on-surface-variant">
-            <span className="text-xs font-bold uppercase tracking-wider">Received Amount</span>
+            <span className="text-xs font-bold uppercase tracking-wider">Outstanding Amount</span>
+            <span className="material-symbols-outlined text-[20px] text-amber-600">hourglass_empty</span>
+          </div>
+          <div className="mt-3">
+            <span className="text-2xl font-black text-amber-700 font-mono">Rs. {summary.outstandingAmount.amount.toLocaleString()}</span>
+          </div>
+          <p className="text-[11px] text-on-surface-variant mt-1">
+            Total Fee Amount minus everything ever paid against these vouchers — a live snapshot, not limited to the selected date range.
+          </p>
+        </div>
+
+        {/* Block 3 — Fee Collected (date-range, tuition share of active payments) */}
+        <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
+          <div className="flex items-center justify-between text-on-surface-variant">
+            <span className="text-xs font-bold uppercase tracking-wider">Fee Collected</span>
             <span className="material-symbols-outlined text-[20px] text-emerald-600">payments</span>
           </div>
           <div className="mt-3">
-            <span className="text-2xl font-black text-emerald-700 font-mono">Rs. {summary.receivedAmount.amount.toLocaleString()}</span>
+            <span className="text-2xl font-black text-emerald-700 font-mono">Rs. {summary.feeCollected.amount.toLocaleString()}</span>
           </div>
           <p className="text-[11px] text-on-surface-variant mt-1">
-            {summary.receivedAmount.paymentCount} actual payment{summary.receivedAmount.paymentCount === 1 ? "" : "s"} received, {from} to {to}.
+            Tuition share of {summary.feeCollected.paymentCount} actual payment{summary.feeCollected.paymentCount === 1 ? "" : "s"} received, {from} to {to}.
           </p>
         </div>
 
-        {/* Block 3 — Vouchers */}
-        <Link href="/admin/fees/vouchers" className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm hover:border-primary/50 transition-colors">
+        {/* Block 4 — Other Collections (date-range, non-tuition share of the same payments) */}
+        <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
           <div className="flex items-center justify-between text-on-surface-variant">
-            <span className="text-xs font-bold uppercase tracking-wider">Vouchers</span>
-            <span className="material-symbols-outlined text-[20px] text-tertiary">receipt_long</span>
+            <span className="text-xs font-bold uppercase tracking-wider">Other Collections</span>
+            <span className="material-symbols-outlined text-[20px] text-secondary">request_quote</span>
           </div>
           <div className="mt-3">
-            <span className="text-2xl font-black text-on-surface font-mono">{summary.vouchers.totalCount}</span>
-            <span className="text-xs text-on-surface-variant ml-2">Rs. {summary.vouchers.totalAmount.toLocaleString()}</span>
+            <span className="text-2xl font-black text-on-surface font-mono">Rs. {summary.otherCollections.amount.toLocaleString()}</span>
           </div>
           <p className="text-[11px] text-on-surface-variant mt-1">
-            Today ({summary.vouchers.dailyDate}): {summary.vouchers.dailyCount} / Rs. {summary.vouchers.dailyAmount.toLocaleString()} •
-            This month ({summary.vouchers.monthlyPeriod}): {summary.vouchers.monthlyCount} / Rs. {summary.vouchers.monthlyAmount.toLocaleString()}
+            Annual/admission/exam/misc share of the same payments, {from} to {to} — never counted again in Fee Collected.
           </p>
-        </Link>
+        </div>
 
-        {/* Block 4 — Other Expenses */}
+        {/* Block 5 — Other Expenses (date-range, ExpenseDoc only) */}
         <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
           <div className="flex items-center justify-between text-on-surface-variant">
             <span className="text-xs font-bold uppercase tracking-wider">Other Expenses</span>
@@ -239,10 +365,40 @@ export default function FinancialDashboardPage() {
             <span className="text-2xl font-black text-rose-600 font-mono">Rs. {summary.otherExpenses.amount.toLocaleString()}</span>
           </div>
           <p className="text-[11px] text-on-surface-variant mt-1">
-            {summary.otherExpenses.count} record{summary.otherExpenses.count === 1 ? "" : "s"} • Today: Rs. {summary.otherExpenses.dailyAmount.toLocaleString()} • This month: Rs. {summary.otherExpenses.monthlyAmount.toLocaleString()}. Never added to Received Amount or Net Collection.
+            {summary.otherExpenses.count} record{summary.otherExpenses.count === 1 ? "" : "s"} • Today: Rs. {summary.otherExpenses.dailyAmount.toLocaleString()} • This month: Rs. {summary.otherExpenses.monthlyAmount.toLocaleString()}. Never counted as a student fee collection.
+          </p>
+        </div>
+
+        {/* Block 6 — Net Collection (date-range: real net cash position) */}
+        <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm">
+          <div className="flex items-center justify-between text-on-surface-variant">
+            <span className="text-xs font-bold uppercase tracking-wider">Net Collection</span>
+            <span className="material-symbols-outlined text-[20px] text-tertiary">account_balance_wallet</span>
+          </div>
+          <div className="mt-3">
+            <span className="text-2xl font-black text-on-surface font-mono">Rs. {summary.netCollection.amount.toLocaleString()}</span>
+          </div>
+          <p className="text-[11px] text-on-surface-variant mt-1">
+            (Fee Collected + Other Collections) − Other Expenses, {from} to {to} — the period&apos;s real net cash position.
           </p>
         </div>
       </div>
+
+      {/* Vouchers — the same payments as Fee Collected + Other Collections, as counts */}
+      <Link href="/admin/fees/vouchers" className="block p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm hover:border-primary/50 transition-colors">
+        <div className="flex items-center justify-between text-on-surface-variant">
+          <span className="text-xs font-bold uppercase tracking-wider">Vouchers</span>
+          <span className="material-symbols-outlined text-[20px] text-tertiary">receipt_long</span>
+        </div>
+        <div className="mt-3">
+          <span className="text-2xl font-black text-on-surface font-mono">{summary.vouchers.totalCount}</span>
+          <span className="text-xs text-on-surface-variant ml-2">Rs. {summary.vouchers.totalAmount.toLocaleString()}</span>
+        </div>
+        <p className="text-[11px] text-on-surface-variant mt-1">
+          Today ({summary.vouchers.dailyDate}): {summary.vouchers.dailyCount} / Rs. {summary.vouchers.dailyAmount.toLocaleString()} •
+          This month ({summary.vouchers.monthlyPeriod}): {summary.vouchers.monthlyCount} / Rs. {summary.vouchers.monthlyAmount.toLocaleString()}
+        </p>
+      </Link>
 
       {/* Daily Breakdown, Recent Transactions, Other Expenses records */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -321,12 +477,39 @@ export default function FinancialDashboardPage() {
         </div>
       </div>
 
-      {/* Other Expenses — individual records (Block 4 detail access) */}
+      {/* Other Expenses — individual records (Block 5 detail access + manual entry/editing) */}
       <div className="p-5 rounded-2xl bg-surface-container-lowest border border-outline-variant/60 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-sm text-on-surface">Other Expenses — Records</h3>
-          <span className="text-xs text-on-surface-variant">{expenses.length} records in this period</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-on-surface-variant">{expenses.length} records in this period</span>
+            <button
+              type="button"
+              onClick={() => { setAddExpenseOpen(true); setAddExpenseDate(todayStr()); setAddExpenseError(""); }}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90"
+            >
+              <span className="material-symbols-outlined text-[14px]">add</span> Add Expense
+            </button>
+          </div>
         </div>
+
+        {addExpenseOpen && (
+          <div className="p-3 rounded-xl border border-outline-variant bg-surface-container-low space-y-2">
+            {addExpenseError && <p className="text-[11px] text-error font-semibold">{addExpenseError}</p>}
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+              <input type="date" value={addExpenseDate} max={todayStr()} onChange={(e) => setAddExpenseDate(e.target.value)} className="h-9 px-2 rounded-lg border border-outline-variant bg-surface-container-lowest text-xs" />
+              <input type="text" placeholder="Description" value={addExpenseDescription} onChange={(e) => setAddExpenseDescription(e.target.value)} className="h-9 px-2 rounded-lg border border-outline-variant bg-surface-container-lowest text-xs sm:col-span-2" />
+              <input type="number" min={0.01} step="any" placeholder="Amount" value={addExpenseAmount} onChange={(e) => setAddExpenseAmount(e.target.value)} className="h-9 px-2 rounded-lg border border-outline-variant bg-surface-container-lowest text-xs" />
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={submitAddExpense} disabled={addExpenseSaving} className="h-8 px-3 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50">
+                {addExpenseSaving ? "Saving..." : "Save"}
+              </button>
+              <button type="button" onClick={() => setAddExpenseOpen(false)} className="h-8 px-3 rounded-lg bg-surface-container text-on-surface-variant text-xs font-semibold">Cancel</button>
+            </div>
+          </div>
+        )}
+
         <div className="max-h-72 overflow-y-auto border border-outline-variant rounded-xl">
           <table className="w-full text-left text-xs">
             <thead className="bg-surface-container sticky top-0 border-b border-outline-variant">
@@ -335,22 +518,68 @@ export default function FinancialDashboardPage() {
                 <th className="p-2.5 font-bold">Category</th>
                 <th className="p-2.5 font-bold">Description</th>
                 <th className="p-2.5 font-bold text-right">Amount</th>
+                <th className="p-2.5 font-bold"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-outline-variant">
               {expenses.length === 0 ? (
-                <tr><td colSpan={4} className="p-4 text-center text-on-surface-variant text-xs">No Other Expenses recorded in this period.</td></tr>
+                <tr><td colSpan={5} className="p-4 text-center text-on-surface-variant text-xs">No Other Expenses recorded in this period.</td></tr>
               ) : (
-                expenses.map((e) => (
-                  <tr key={e.id} className="hover:bg-surface-container/30">
-                    <td className="p-2.5 font-mono text-on-surface-variant">{e.date}</td>
-                    <td className="p-2.5">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-700">{e.category}</span>
-                    </td>
-                    <td className="p-2.5 font-medium">{e.description}</td>
-                    <td className="p-2.5 text-right font-mono font-bold text-rose-700">Rs. {e.amount.toLocaleString()}</td>
-                  </tr>
-                ))
+                expenses.map((e) =>
+                  editingExpenseId === e.id ? (
+                    <tr key={e.id} className="bg-secondary/5">
+                      <td className="p-2" colSpan={5}>
+                        {editExpenseError && <p className="text-[11px] text-error font-semibold mb-1">{editExpenseError}</p>}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input type="date" value={editExpenseDate} max={todayStr()} onChange={(ev) => setEditExpenseDate(ev.target.value)} className="h-8 px-2 rounded-lg border border-outline-variant bg-surface-container-lowest text-xs" />
+                          <input type="text" value={editExpenseDescription} onChange={(ev) => setEditExpenseDescription(ev.target.value)} className="h-8 px-2 rounded-lg border border-outline-variant bg-surface-container-lowest text-xs flex-1 min-w-[120px]" />
+                          <input type="number" min={0.01} step="any" value={editExpenseAmount} onChange={(ev) => setEditExpenseAmount(ev.target.value)} className="h-8 w-28 px-2 rounded-lg border border-outline-variant bg-surface-container-lowest text-xs" />
+                          <button type="button" onClick={saveEditExpense} disabled={editExpenseSaving} className="h-8 px-3 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90 disabled:opacity-50">
+                            {editExpenseSaving ? "Saving..." : "Save"}
+                          </button>
+                          <button type="button" onClick={() => setEditingExpenseId("")} className="h-8 px-3 rounded-lg bg-surface-container text-on-surface-variant text-xs font-semibold">Cancel</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : voidingExpenseId === e.id ? (
+                    <tr key={e.id} className="bg-error-container/5">
+                      <td className="p-2" colSpan={5}>
+                        {voidExpenseError && <p className="text-[11px] text-error font-semibold mb-1">{voidExpenseError}</p>}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] font-semibold text-on-surface">Void this expense (kept for history, excluded from totals). Reason:</span>
+                          <input type="text" value={voidExpenseReason} onChange={(ev) => setVoidExpenseReason(ev.target.value)} placeholder="Reason" className="h-8 px-2 rounded-lg border border-outline-variant bg-surface-container-lowest text-xs flex-1 min-w-[160px]" />
+                          <button type="button" onClick={() => confirmVoidExpense(e.id)} disabled={voidExpenseSaving} className="h-8 px-3 rounded-lg bg-error text-on-error text-xs font-semibold hover:bg-error/90 disabled:opacity-50">
+                            {voidExpenseSaving ? "Voiding..." : "Confirm Void"}
+                          </button>
+                          <button type="button" onClick={() => { setVoidingExpenseId(""); setVoidExpenseReason(""); setVoidExpenseError(""); }} className="h-8 px-3 rounded-lg bg-surface-container text-on-surface-variant text-xs font-semibold">Cancel</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    <tr key={e.id} className={`hover:bg-surface-container/30 ${e.voided ? "opacity-60" : ""}`}>
+                      <td className="p-2.5 font-mono text-on-surface-variant">{e.date}</td>
+                      <td className="p-2.5">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-700">{e.category}</span>
+                        {e.voided && (
+                          <span className="ml-1 px-2 py-0.5 rounded text-[10px] font-bold bg-surface-container-high text-on-surface-variant">VOIDED</span>
+                        )}
+                      </td>
+                      <td className={`p-2.5 font-medium ${e.voided ? "line-through" : ""}`}>
+                        {e.description}
+                        {e.voided && e.voidReason && <span className="block text-[10px] text-on-surface-variant font-normal">Reason: {e.voidReason}</span>}
+                      </td>
+                      <td className={`p-2.5 text-right font-mono font-bold text-rose-700 ${e.voided ? "line-through" : ""}`}>Rs. {e.amount.toLocaleString()}</td>
+                      <td className="p-2.5 text-right whitespace-nowrap">
+                        {!e.voided && (
+                          <>
+                            <button type="button" onClick={() => startEditExpense(e)} className="text-secondary text-[11px] font-semibold hover:underline mr-2">Edit</button>
+                            <button type="button" onClick={() => { setVoidingExpenseId(e.id); setVoidExpenseReason(""); setVoidExpenseError(""); }} className="text-error text-[11px] font-semibold hover:underline">Delete</button>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                )
               )}
             </tbody>
           </table>

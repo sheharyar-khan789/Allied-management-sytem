@@ -6,9 +6,11 @@ import {
   saveYearlyFeeLedgerEntryServer,
   saveYearlyLedgerImportBatchServer,
   getYearlyLedgerImportBatchesServer,
+  getFeeChallansServer,
+  saveFeeChallanServer,
   createAuditLogServer,
 } from "@/lib/firebase/server-db";
-import { YearlyFeeLedgerDoc } from "@/lib/firebase/types";
+import { FEE_MONTHS, FeeChallanDoc, YearlyFeeLedgerDoc } from "@/lib/firebase/types";
 import { neutralizeSpreadsheetFormula, readSpreadsheetUpload, SpreadsheetParseError } from "@/lib/spreadsheet-parser";
 import {
   YEARLY_LEDGER_IMPORT_MAX_FILE_BYTES,
@@ -25,7 +27,7 @@ import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 
 export const dynamic = "force-dynamic";
 
-const IMPORT_FIELDS: YearlyLedgerImportField[] = ["admissionNo", "studentName", "monthlyFee", "annualFee"];
+const IMPORT_FIELDS: YearlyLedgerImportField[] = ["admissionNo", "studentName", "className", "monthlyFee", "annualFee"];
 const MAX_VALUE_LENGTH = 300;
 
 function bad(error: string, status = 400) {
@@ -113,11 +115,115 @@ function sanitizeInput(raw: unknown): YearlyLedgerImportRowInput {
 
 type RowOutcome = {
   rowNumber: number;
-  status: "CREATED" | "UPDATED" | "UNCHANGED" | "SKIPPED" | "FAILED";
+  status: "CREATED" | "UPDATED" | "UNCHANGED" | "SKIPPED" | "FAILED" | "AMBIGUOUS";
   reason?: string;
   admissionNo?: string;
   studentName?: string;
 };
+
+/**
+ * The academic year's 12 months in real calendar order, starting from the month the school's
+ * academic year actually begins (July — see getDefaultAcademicYear in school-display.ts), each
+ * paired with its real calendar year. For academicYear "2026-2027" this is July 2026 .. June 2027.
+ */
+function academicYearMonthSequence(academicYear: string): { month: string; year: number; monthIdx0: number }[] {
+  const startYear = parseInt(academicYear.split("-")[0], 10);
+  const seq: { month: string; year: number; monthIdx0: number }[] = [];
+  for (let i = 0; i < 12; i++) {
+    const monthIdx0 = (6 + i) % 12; // 6 = July
+    const year = monthIdx0 >= 6 ? startYear : startYear + 1;
+    seq.push({ month: FEE_MONTHS[monthIdx0], year, monthIdx0 });
+  }
+  return seq;
+}
+
+/**
+ * Eagerly generates (or, where safe, updates) every one of the academic year's 12 monthly fee
+ * challans for one student right after their Yearly Import entry is saved — so the Student Fee
+ * Ledger shows real bills immediately, matching the Dashboard's Net Collection figure, instead of
+ * waiting for the first Daily Import payment to lazily create them one month at a time.
+ *
+ * The one-time annual fee is applied to the FIRST month's challan only (as `admissionFee`, the
+ * same field Daily Import already uses for this), so summing all 12 challans' totalExpected
+ * always equals monthlyFee*12 + annualFee — exactly the ledger's own yearlyExpectedFee.
+ *
+ * Idempotent and safe to re-run: a month that already has a challan with ANY payment recorded
+ * against it (paidAmount > 0) is never touched — its voucher number and payment history are
+ * preserved exactly as Task 4 requires. A month with an existing, still-unpaid challan has its
+ * expected amount refreshed to match the (possibly updated) ledger entry; a month with no challan
+ * yet gets one created.
+ */
+async function generateYearlyChallansForEntry(
+  schoolId: string,
+  academicYear: string,
+  entry: NormalizedYearlyLedgerEntry,
+  nowIso: string
+): Promise<{ created: number; updated: number; preserved: number }> {
+  const monthSeq = academicYearMonthSequence(academicYear);
+  const existing = await getFeeChallansServer(schoolId, entry.studentId, undefined, undefined, undefined, undefined, { academicYear });
+  const existingByMonth = new Map(existing.map((c) => [`${c.month}-${c.year}`, c]));
+
+  let created = 0, updated = 0, preserved = 0;
+  for (let i = 0; i < monthSeq.length; i++) {
+    const { month, year, monthIdx0 } = monthSeq[i];
+    const tuitionFee = entry.monthlyFee;
+    const admissionFee = i === 0 ? entry.annualFee : 0;
+    const totalExpected = tuitionFee + admissionFee;
+    const found = existingByMonth.get(`${month}-${year}`);
+
+    if (!found) {
+      const randomSuffix = `${Math.random().toString(36).slice(2, 7)}${i}`;
+      const newChallan: FeeChallanDoc = {
+        id: `ch-${Date.now()}-${randomSuffix}`,
+        schoolId,
+        studentId: entry.studentId,
+        studentName: entry.studentName,
+        admissionNo: entry.admissionNo,
+        classId: entry.classId,
+        className: entry.className,
+        challanNo: `CHL-${year}-${month.substring(0, 3).toUpperCase()}-${randomSuffix}`,
+        month,
+        year,
+        issueDate: nowIso.slice(0, 10),
+        dueDate: `${year}-${String(monthIdx0 + 1).padStart(2, "0")}-15`,
+        tuitionFee,
+        admissionFee,
+        examFee: 0,
+        otherFee: 0,
+        discount: 0,
+        totalExpected,
+        paidAmount: 0,
+        balanceAmount: totalExpected,
+        status: "PENDING",
+        academicYear,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      await saveFeeChallanServer(newChallan);
+      created++;
+    } else if (found.paidAmount > 0 || found.status === "VOID") {
+      // A VOID challan (an admin's deliberate correction — see DELETE /api/fees/challans/[id])
+      // is just as untouchable as one with payment history: re-importing must never un-zero its
+      // totalExpected/balanceAmount, which would silently resurrect it in every aggregate total
+      // that sums those fields without separately checking status (getFeeTotalsByClassServer,
+      // getFeeChallanStatsServer).
+      preserved++;
+    } else if (found.tuitionFee !== tuitionFee || found.admissionFee !== admissionFee) {
+      await saveFeeChallanServer({
+        ...found,
+        tuitionFee,
+        admissionFee,
+        totalExpected,
+        balanceAmount: totalExpected,
+        updatedAt: nowIso,
+      });
+      updated++;
+    } else {
+      preserved++;
+    }
+  }
+  return { created, updated, preserved };
+}
 
 async function handleCommit(authUser: AuthenticatedUser, req: NextRequest) {
   requireRecentAuth(authUser, "import the yearly fee ledger", req);
@@ -152,6 +258,10 @@ async function handleCommit(authUser: AuthenticatedUser, req: NextRequest) {
   for (const r of validated) {
     if ((r.status === "VALID" || r.status === "WARNING") && r.entry) {
       accepted.push(r as YearlyLedgerImportRowResult & { entry: NormalizedYearlyLedgerEntry });
+    } else if (r.status === "AMBIGUOUS") {
+      // A duplicate student name the row's own Admission No/Class couldn't resolve — reported
+      // as its own category (never silently lumped into "skipped"), and nothing is written.
+      outcomes.push({ rowNumber: r.rowNumber, status: "AMBIGUOUS", reason: r.errors.join(" ") || "Ambiguous student match." });
     } else {
       outcomes.push({ rowNumber: r.rowNumber, status: "SKIPPED", reason: r.errors.join(" ") || "Row is not valid." });
     }
@@ -160,6 +270,7 @@ async function handleCommit(authUser: AuthenticatedUser, req: NextRequest) {
   const seenThisCommit = new Set<string>();
   const nowIso = new Date().toISOString();
   let created = 0, updated = 0, unchanged = 0;
+  let challansCreated = 0, challansUpdated = 0, challansPreserved = 0;
 
   for (const r of accepted) {
     const e = r.entry;
@@ -180,35 +291,47 @@ async function handleCommit(authUser: AuthenticatedUser, req: NextRequest) {
       });
       continue;
     }
+
+    if (r.action !== "UNCHANGED") {
+      const doc: YearlyFeeLedgerDoc = {
+        id: "",
+        schoolId,
+        academicYear,
+        admissionNo: e.admissionNo,
+        studentId: e.studentId,
+        studentName: e.studentName,
+        classId: e.classId,
+        className: e.className,
+        monthlyFee: e.monthlyFee,
+        annualFee: e.annualFee,
+        yearlyExpectedFee: e.yearlyExpectedFee,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        createdBy: authUser.uid,
+        updatedBy: authUser.uid,
+      };
+
+      try {
+        await saveYearlyFeeLedgerEntryServer(doc);
+      } catch (err: any) {
+        console.error("Yearly ledger import: write failed:", err?.message);
+        outcomes.push({ rowNumber: r.rowNumber, status: "FAILED", reason: "Database write failed; nothing was saved for this row.", admissionNo: e.admissionNo, studentName: e.studentName });
+        continue;
+      }
+    }
+
+    // Automatic voucher (fee challan) generation — runs for NEW, UPDATE, and UNCHANGED alike,
+    // so re-running an import that changed nothing still backfills any month whose challan was
+    // never generated yet (e.g. ledger entries saved before this existed). Never touches a month
+    // that already has a payment recorded against it.
+    const challanResult = await generateYearlyChallansForEntry(schoolId, academicYear, e, nowIso);
+    challansCreated += challanResult.created;
+    challansUpdated += challanResult.updated;
+    challansPreserved += challanResult.preserved;
+
     if (r.action === "UNCHANGED") {
       unchanged++;
       outcomes.push({ rowNumber: r.rowNumber, status: "UNCHANGED", admissionNo: e.admissionNo, studentName: e.studentName });
-      continue;
-    }
-
-    const doc: YearlyFeeLedgerDoc = {
-      id: "",
-      schoolId,
-      academicYear,
-      admissionNo: e.admissionNo,
-      studentId: e.studentId,
-      studentName: e.studentName,
-      classId: e.classId,
-      className: e.className,
-      monthlyFee: e.monthlyFee,
-      annualFee: e.annualFee,
-      yearlyExpectedFee: e.yearlyExpectedFee,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      createdBy: authUser.uid,
-      updatedBy: authUser.uid,
-    };
-
-    try {
-      await saveYearlyFeeLedgerEntryServer(doc);
-    } catch (err: any) {
-      console.error("Yearly ledger import: write failed:", err?.message);
-      outcomes.push({ rowNumber: r.rowNumber, status: "FAILED", reason: "Database write failed; nothing was saved for this row.", admissionNo: e.admissionNo, studentName: e.studentName });
       continue;
     }
 
@@ -220,7 +343,11 @@ async function handleCommit(authUser: AuthenticatedUser, req: NextRequest) {
   outcomes.sort((a, b) => a.rowNumber - b.rowNumber);
   const skipped = outcomes.filter((o) => o.status === "SKIPPED").length;
   const failed = outcomes.filter((o) => o.status === "FAILED").length;
-  const summary = { created, updated, unchanged, skipped, failed };
+  const ambiguous = outcomes.filter((o) => o.status === "AMBIGUOUS").length;
+  const summary = {
+    created, updated, unchanged, skipped, failed, ambiguous,
+    challansCreated, challansUpdated, challansPreserved,
+  };
 
   const batchId = `ylib-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   await saveYearlyLedgerImportBatchServer({
@@ -233,6 +360,7 @@ async function handleCommit(authUser: AuthenticatedUser, req: NextRequest) {
     updated,
     unchanged,
     skipped: skipped + failed,
+    ambiguous,
     createdBy: authUser.uid,
     createdAt: nowIso,
   });
@@ -246,7 +374,8 @@ async function handleCommit(authUser: AuthenticatedUser, req: NextRequest) {
     "FEE",
     "bulk-import",
     `Yearly fee ledger import for ${academicYear}${typeof body.fileName === "string" ? ` from "${String(body.fileName).slice(0, 120)}"` : ""}: ` +
-      `${created} created, ${updated} updated, ${unchanged} unchanged, ${skipped} skipped, ${failed} failed.`
+      `${created} created, ${updated} updated, ${unchanged} unchanged, ${skipped} skipped, ${failed} failed, ${ambiguous} ambiguous. ` +
+      `Vouchers (fee challans): ${challansCreated} created, ${challansUpdated} updated, ${challansPreserved} already settled or unchanged.`
   );
 
   return NextResponse.json({ success: true, academicYear, batchId, summary, results: outcomes });

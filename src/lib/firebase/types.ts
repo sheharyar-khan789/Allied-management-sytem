@@ -162,6 +162,13 @@ export interface TeacherDoc {
    * template/image, only the device's own opaque user identifier.
    */
   biometricDeviceUserId?: string;
+  /**
+   * Admin-granted: this teacher ("Coordinator") may submit a draft observation note about
+   * ANOTHER teacher for admin review (see TeacherObservationSubmissionDoc). They can never
+   * publish one directly — every submission stays PENDING until an admin approves or rejects
+   * it. Absent/false means no coordinator permission; grant/revoke via PUT /api/teachers/[id].
+   */
+  canSubmitObservations?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -322,7 +329,14 @@ export interface TeacherAttendanceDoc {
   updatedAt: string;
 }
 
-export type FeeStatus = "PAID" | "PENDING" | "OVERDUE" | "PARTIAL";
+/**
+ * VOID: an admin voided a challan with zero payments against it (see DELETE
+ * /api/fees/challans/[id]) — the document is kept for history, never hard-deleted. A challan
+ * with any PaymentDoc referencing it, or paidAmount > 0, can never reach VOID; a VOID challan
+ * must be excluded from outstanding/collection-rate totals the same way a REVERSED voucher is
+ * excluded from netVoucherAmount (see getFeeTotalsByClassServer, computeFeeChallanStats).
+ */
+export type FeeStatus = "PAID" | "PENDING" | "OVERDUE" | "PARTIAL" | "VOID";
 
 export interface FeeChallanDoc {
   id: string;
@@ -348,6 +362,9 @@ export interface FeeChallanDoc {
   status: FeeStatus;
   receiptUrl?: string;
   academicYear?: string;
+  voidReason?: string;
+  voidedAt?: string;
+  voidedBy?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -501,8 +518,17 @@ export interface StudentChargeDoc {
   description: string;
   amount: number;
   date: string; // YYYY-MM-DD
-  status: "PAID" | "UNPAID";
+  /**
+   * VOID: an admin voided a charge that already had payment history (status was PAID) — the
+   * record is kept, never hard-deleted, so the historical amount/date/description survive.
+   * An UNPAID charge with no payment history can instead be hard-deleted (see DELETE
+   * /api/fees/charges); VOID is only reachable through that same endpoint, never through PUT.
+   */
+  status: "PAID" | "UNPAID" | "VOID";
   notes?: string;
+  voidReason?: string;
+  voidedAt?: string;
+  voidedBy?: string;
   createdBy: string;
   updatedBy?: string;
   createdAt: string;
@@ -650,9 +676,56 @@ export interface TeacherObservationDoc {
    */
   submittedByStaffId?: string;
   submittedByName?: string;
+  /**
+   * Admin/Principal-only visibility. When true, this note is never returned to the subject
+   * teacher — enforced in getTeacherObservationsServer (the only read path a TEACHER caller is
+   * routed through) and mirrored in firestore.rules for direct-SDK reads. Absent/false means
+   * "not private" and is never required to exist, so every observation saved before this field
+   * existed keeps its original (fully teacher-visible) behavior unchanged.
+   */
+  isPrivate?: boolean;
   /** Soft delete: kept for the audit trail, excluded from normal reads. */
   deletedAt?: string | null;
   deletedBy?: string;
+}
+
+export type TeacherObservationSubmissionStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+/**
+ * A coordinator-submitted draft observation awaiting admin review. Never readable by the
+ * SUBJECT teacher (`teacherId`, the one the note is about) under any status — only the
+ * submitting coordinator (`submittedByTeacherId`) can read their own submissions, to track
+ * pending/approved/rejected status. Approval creates a brand-new TeacherObservationDoc (authored
+ * by the approving admin, never the coordinator); this record never becomes that document, it
+ * only links to it via `publishedObservationId`. See src/app/api/teacher-observation-submissions.
+ */
+export interface TeacherObservationSubmissionDoc {
+  id: string;
+  schoolId: string;
+  /** The SUBJECT teacher — who this note is about. */
+  teacherId: string;
+  teacherName?: string;
+  /** The coordinator's own TeacherDoc id — server-resolved, never trusted from the client. */
+  submittedByTeacherId: string;
+  submittedByName?: string;
+  submittedAt: string;
+  observationDate: string;
+  category: TeacherObservationDoc["category"];
+  rating: TeacherObservationDoc["rating"];
+  title?: string;
+  note: string;
+  subjectId?: string;
+  classId?: string;
+  status: TeacherObservationSubmissionStatus;
+  reviewedByUid?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  /** Rejection reason, or the admin's note when approving. */
+  reviewNote?: string;
+  /** Set only on approval — the id of the TeacherObservationDoc this submission became. */
+  publishedObservationId?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 /**
