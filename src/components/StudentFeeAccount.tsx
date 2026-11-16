@@ -42,6 +42,9 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
   const [chargeForm, setChargeForm] = useState(EMPTY_CHARGE);
   const [chargeModalOpen, setChargeModalOpen] = useState(false);
   const [chargeError, setChargeError] = useState("");
+  const [deleteConfirmId, setDeleteConfirmId] = useState("");
+  const [deleteReason, setDeleteReason] = useState("");
+  const [deleteError, setDeleteError] = useState("");
 
   // The account on screen must always be the selected student's: responses for a student/year
   // that is no longer selected are dropped instead of overwriting the current one.
@@ -201,6 +204,32 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
       await loadAccount();
     } catch (err: any) {
       setChargeError(err?.message || "Failed to save the payment.");
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  const deleteCharge = async (charge: any) => {
+    setDeleteError("");
+    if (charge.status === "PAID" && !deleteReason.trim()) {
+      setDeleteError("A reason is required to void a payment that was already marked PAID.");
+      return;
+    }
+    setSavingKey("delete-" + charge.id);
+    try {
+      const res = await fetch(`/api/fees/charges?id=${encodeURIComponent(charge.id)}`, {
+        method: "DELETE",
+        ...(charge.status === "PAID"
+          ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: deleteReason.trim() }) }
+          : {}),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || "Failed to delete the payment.");
+      setDeleteConfirmId("");
+      setDeleteReason("");
+      await loadAccount();
+    } catch (err: any) {
+      setDeleteError(err?.message || "Failed to delete the payment.");
     } finally {
       setSavingKey(null);
     }
@@ -373,23 +402,84 @@ export default function StudentFeeAccount({ classes, initialStudentId }: { class
                   </thead>
                   <tbody className="divide-y divide-surface-container-low">
                     {charges.map((c) => (
-                      <tr key={c.id}>
+                      <React.Fragment key={c.id}>
+                      <tr className={c.status === "VOID" ? "opacity-60" : ""}>
                         <td className="py-2.5 px-4 font-semibold">{chargeLabel(c.type)}</td>
-                        <td className="py-2.5 px-4">{c.description}</td>
+                        <td className="py-2.5 px-4">
+                          {c.status === "VOID" ? <span className="line-through">{c.description}</span> : c.description}
+                        </td>
                         <td className="py-2.5 px-4 font-semibold">{formatCurrency(c.amount)}</td>
                         <td className="py-2.5 px-4 text-on-surface-variant">{formatDate(c.date)}</td>
                         <td className="py-2.5 px-4">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${c.status === "PAID" ? "bg-tertiary-container/10 text-on-tertiary-container" : "bg-error-container text-on-error-container"}`}>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            c.status === "PAID" ? "bg-tertiary-container/10 text-on-tertiary-container" :
+                            c.status === "VOID" ? "bg-surface-container-high text-on-surface-variant" :
+                            "bg-error-container text-on-error-container"
+                          }`}>
                             {c.status}
                           </span>
                         </td>
-                        <td className="py-2.5 px-4 text-on-surface-variant">{c.notes || "—"}</td>
-                        <td className="py-2.5 px-4 text-right">
-                          <button type="button" onClick={() => openCharge(c)} className="text-secondary font-semibold" aria-label={`Edit ${c.description}`}>
-                            Edit
-                          </button>
+                        <td className="py-2.5 px-4 text-on-surface-variant">{c.status === "VOID" && c.voidReason ? `Voided: ${c.voidReason}` : (c.notes || "—")}</td>
+                        <td className="py-2.5 px-4 text-right whitespace-nowrap">
+                          {c.status !== "VOID" && (
+                            <button type="button" onClick={() => openCharge(c)} className="text-secondary font-semibold mr-3" aria-label={`Edit ${c.description}`}>
+                              Edit
+                            </button>
+                          )}
+                          {c.status !== "VOID" && (
+                            <button
+                              type="button"
+                              onClick={() => { setDeleteConfirmId(deleteConfirmId === c.id ? "" : c.id); setDeleteReason(""); setDeleteError(""); }}
+                              className="text-error font-semibold"
+                              aria-label={c.status === "PAID" ? `Void ${c.description}` : `Delete ${c.description}`}
+                            >
+                              {c.status === "PAID" ? "Void" : "Delete"}
+                            </button>
+                          )}
                         </td>
                       </tr>
+                      {deleteConfirmId === c.id && (
+                        <tr>
+                          <td colSpan={7} className="px-4 pb-3 pt-0">
+                            <div className="p-3 rounded-lg bg-error-container/10 border border-error/30 space-y-2">
+                              {deleteError && <p className="text-error text-xs font-bold">{deleteError}</p>}
+                              {c.status === "PAID" ? (
+                                <>
+                                  <p className="text-xs font-semibold text-on-surface">This payment is marked PAID. It will be voided (kept for the record), never deleted. Enter a reason:</p>
+                                  <input
+                                    type="text"
+                                    value={deleteReason}
+                                    onChange={(e) => setDeleteReason(e.target.value)}
+                                    placeholder="Reason for voiding this payment"
+                                    className={inputClass}
+                                    aria-label="Reason for voiding this payment"
+                                  />
+                                </>
+                              ) : (
+                                <p className="text-xs font-semibold text-on-surface">Delete this unpaid charge permanently?</p>
+                              )}
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => deleteCharge(c)}
+                                  disabled={savingKey === "delete-" + c.id}
+                                  className="px-3 py-1.5 rounded-lg bg-error text-on-error text-xs font-semibold hover:bg-error/90 disabled:opacity-50"
+                                >
+                                  {savingKey === "delete-" + c.id ? "Saving..." : c.status === "PAID" ? "Confirm Void" : "Confirm Delete"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => { setDeleteConfirmId(""); setDeleteReason(""); setDeleteError(""); }}
+                                  className="px-3 py-1.5 rounded-lg bg-surface-container text-on-surface text-xs font-semibold hover:bg-surface-container-high"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     ))}
                   </tbody>
                 </table>

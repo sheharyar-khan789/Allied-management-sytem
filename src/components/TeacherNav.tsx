@@ -9,6 +9,9 @@ interface TeacherNavProps {
   designation?: string;
   /** Class incharge of at least one class. Display only — /api/attendance enforces the rule. */
   canTakeAttendance?: boolean;
+  /** Coordinator Observation Submission permission. Display only — the submission API enforces
+   *  the rule server-side regardless of this flag. */
+  canSubmitObservations?: boolean;
 }
 
 export default function TeacherNav({
@@ -16,6 +19,7 @@ export default function TeacherNav({
   // Empty rather than an invented "Senior Faculty" title — see src/app/teacher/layout.tsx.
   designation = "",
   canTakeAttendance = false,
+  canSubmitObservations = false,
 }: TeacherNavProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -38,6 +42,7 @@ export default function TeacherNav({
     { label: "Lesson Plans", href: "/teacher/lesson-plans", icon: "edit_calendar" },
     { label: "Students & Notes", href: "/teacher/students", icon: "assignment_ind" },
     { label: "My Observations", href: "/teacher/observations", icon: "fact_check" },
+    ...(canSubmitObservations ? [{ label: "Submit Observation", href: "/teacher/submit-observation", icon: "rate_review" }] : []),
     { label: "My Attendance", href: "/teacher/my-attendance", icon: "badge" },
     { label: "Announcements", href: "/teacher/announcements", icon: "campaign" },
     { label: "My Account", href: "/teacher/profile", icon: "manage_accounts" },

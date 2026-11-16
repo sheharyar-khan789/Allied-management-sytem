@@ -34,6 +34,12 @@ export default function TeacherProfilePage({
   const [accessError, setAccessError] = useState("");
   const [accessSaved, setAccessSaved] = useState(false);
 
+  // Coordinator Observation Submission permission
+  const [coordinatorEnabled, setCoordinatorEnabled] = useState(false);
+  const [savingCoordinator, setSavingCoordinator] = useState(false);
+  const [coordinatorSaved, setCoordinatorSaved] = useState(false);
+  const [coordinatorError, setCoordinatorError] = useState("");
+
   // Base monthly salary state
   const [salaryInput, setSalaryInput] = useState<string>("");
   const [savingSalary, setSavingSalary] = useState(false);
@@ -90,6 +96,7 @@ export default function TeacherProfilePage({
         setAvailableClasses(json.availableClasses || []);
         setSelectedClassIds(json.teacher?.assignedClassIds || []);
         setSalaryInput(String(json.teacher?.baseSalary ?? ""));
+        setCoordinatorEnabled(json.teacher?.canSubmitObservations === true);
       })
       .catch((err: Error) => setLoadError(err.message))
       .finally(() => setLoading(false));
@@ -292,6 +299,30 @@ export default function TeacherProfilePage({
       setAccessError(err.message);
     } finally {
       setSavingAccess(false);
+    }
+  };
+
+  const saveCoordinatorPermission = async (next: boolean) => {
+    setCoordinatorError("");
+    setCoordinatorSaved(false);
+    setSavingCoordinator(true);
+    try {
+      const res = await fetch(`/api/teachers/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ canSubmitObservations: next }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || "Failed to update this permission.");
+      }
+      setCoordinatorEnabled(next);
+      setTeacher((prev: any) => ({ ...prev, canSubmitObservations: next }));
+      setCoordinatorSaved(true);
+    } catch (err: any) {
+      setCoordinatorError(err.message);
+    } finally {
+      setSavingCoordinator(false);
     }
   };
 
@@ -634,6 +665,45 @@ export default function TeacherProfilePage({
               {savingAccess ? "Saving..." : "Save Class Access"}
             </button>
           </div>
+        </div>
+
+        {/* Coordinator Observation Submission Permission */}
+        <div className="p-5 rounded-xl bg-surface-container-lowest shadow-sm border border-surface-container-high/40 space-y-3">
+          <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+            <h3 className="font-headline-md text-sm font-bold text-on-surface flex items-center gap-2">
+              <span className="material-symbols-outlined text-secondary text-[18px]">rate_review</span>
+              Coordinator Observations
+            </h3>
+          </div>
+          <p className="text-[11px] leading-relaxed text-on-surface-variant">
+            When enabled, this teacher can submit draft observations about other teachers for admin
+            review. They can never publish directly — every submission stays pending until an
+            administrator approves or rejects it.
+          </p>
+          <label className="flex items-center gap-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={coordinatorEnabled}
+              disabled={savingCoordinator}
+              onChange={(e) => saveCoordinatorPermission(e.target.checked)}
+              className="h-4 w-4 shrink-0 accent-secondary"
+            />
+            <span className="text-xs font-semibold text-on-surface">
+              {coordinatorEnabled ? "Can submit observations for review" : "Cannot submit observations"}
+            </span>
+          </label>
+          {coordinatorError && (
+            <div role="alert" className="p-2.5 rounded bg-error-container text-on-error-container text-xs flex items-center gap-2">
+              <span className="material-symbols-outlined text-[16px]">error</span>
+              <span>{coordinatorError}</span>
+            </div>
+          )}
+          {coordinatorSaved && !coordinatorError && (
+            <div role="status" className="p-2.5 rounded bg-tertiary-container/20 text-on-tertiary-container text-xs flex items-center gap-2">
+              <span className="material-symbols-outlined text-[16px]">check_circle</span>
+              <span>Permission updated.</span>
+            </div>
+          )}
         </div>
 
         {/* Monthly Compensation & Payroll */}

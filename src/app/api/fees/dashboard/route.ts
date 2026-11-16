@@ -3,13 +3,14 @@ import { requireAuth, AuthenticatedUser } from "@/lib/firebase/server-auth";
 import { getTransactionsByDateRangeServer, getImportBatchesServer, getExpensesByDateRangeServer, ExpenseDoc } from "@/lib/firebase/transaction-db";
 import {
   getPaymentsByDateRangeServer,
-  getYearlyFeeLedgerServer,
+  getFeeTotalsByClassServer,
+  getFeeChallansByIdsServer,
   getAcademicSessionContextServer,
   getSchoolSettingsServer,
 } from "@/lib/firebase/server-db";
 import { getDefaultAcademicYear } from "@/lib/school-display";
 import { DEFAULT_SCHOOL_TIMEZONE, zonedDateParts } from "@/lib/lesson-plan-schedule";
-import type { PaymentDoc } from "@/lib/firebase/types";
+import type { FeeChallanDoc, PaymentDoc } from "@/lib/firebase/types";
 
 export const dynamic = "force-dynamic";
 
@@ -21,14 +22,40 @@ const isActive = (p: PaymentDoc) => (p.voucherStatus || "ACTIVE") === "ACTIVE";
 const sumAmount = (list: { amount: number }[]) => list.reduce((s, x) => s + (x.amount || 0), 0);
 
 /**
- * Fees & Payments Dashboard (Phase 4 restructuring) — four independent financial blocks, each
- * from exactly one source collection, never cross-counted:
+ * Splits one payment's amount into its tuition share and its "other" (annual/admission/exam/
+ * misc) share, proportional to the linked challan's own fee composition — e.g. a challan billed
+ * as 5500 tuition + 6000 annual (totalExpected 11500) attributes 5500/11500 of any payment
+ * against it to tuition, the rest to "other". This works for every payment regardless of how it
+ * was recorded (Daily Import or a manual single-challan payment), since it reads only the
+ * challan's own stored fields — never a transaction/category that may not exist for a manual
+ * payment. A challan that can't be found or has no totalExpected is counted entirely as tuition
+ * (never silently dropped from either figure).
+ */
+function splitPaymentByComposition(amount: number, challan: FeeChallanDoc | undefined): { tuitionShare: number; otherShare: number } {
+  if (!challan || !challan.totalExpected) return { tuitionShare: amount, otherShare: 0 };
+  const tuitionRatio = Math.max(0, Math.min(1, (challan.tuitionFee || 0) / challan.totalExpected));
+  const tuitionShare = amount * tuitionRatio;
+  return { tuitionShare, otherShare: amount - tuitionShare };
+}
+
+/**
+ * Fees & Payments Dashboard — six figures, each from exactly one real data source, built to
+ * reconcile exactly with the Student Fee Ledger (the Ledger lists real FeeChallanDoc records;
+ * these figures are aggregated from the same collection, never a parallel estimate):
  *
- *  1. Net Collection   — YearlyFeeLedgerDoc.yearlyExpectedFee (expected, never touched by payments)
- *  2. Received Amount  — PaymentDoc, active only (actual money received)
- *  3. Vouchers         — the SAME active PaymentDoc records as (2), presented as counts
- *  4. Other Expenses   — ExpenseDoc only (TransactionDoc is never summed for this anymore,
- *                         so a linked expense+transaction pair can never be double-counted)
+ *  1. Total Fee Amount   — sum of every in-scope challan's totalExpected (snapshot, not
+ *                           date-ranged — "how much has been billed for the year")
+ *  2. Fee Collected      — the tuition share of active PaymentDoc records in [from,to]
+ *  3. Outstanding Amount — Total Fee Amount minus every challan's paidAmount (snapshot)
+ *  4. Other Collections  — the non-tuition share (annual/admission/exam/misc) of the SAME
+ *                           active payments in [from,to] — together with Fee Collected this
+ *                           always sums to exactly the period's total active payments, never
+ *                           more or less
+ *  5. Other Expenses     — ExpenseDoc only, in [from,to] (unchanged from the previous phase)
+ *  6. Net Collection      — (Fee Collected + Other Collections) − Other Expenses for [from,to]:
+ *                           the period's real net cash position, not an expected total
+ *
+ *  Vouchers — the same active payments as (2)+(4) combined, presented as counts (unchanged).
  */
 export async function GET(req: NextRequest) {
   let authUser: AuthenticatedUser;
@@ -68,12 +95,12 @@ export async function GET(req: NextRequest) {
   const effectiveFrom = from || monthStartStr;
   const effectiveTo = to || todayStr;
 
-  // Every read below is a single, bounded, indexed range query (or one school-scoped read for
-  // the ledger, bounded by enrolled-student count) — never an unbounded full-collection scan,
-  // and never one query per student/record.
-  const [ledgerEntries, rangePayments, todayPayments, monthPayments, rangeExpenses, todayExpenses, monthExpenses, transactions, importBatches] =
+  // Every read below is a single, bounded, indexed range query, or a count+sum AGGREGATION
+  // query per class (never reading every challan document) — never an unbounded full-collection
+  // scan, and never one query per student/record.
+  const [feeTotalsByClass, rangePayments, todayPayments, monthPayments, rangeExpensesRaw, todayExpensesRaw, monthExpensesRaw, transactionsRaw, importBatches] =
     await Promise.all([
-      getYearlyFeeLedgerServer(schoolId, academicYear),
+      getFeeTotalsByClassServer(schoolId, academicYear),
       getPaymentsByDateRangeServer(schoolId, effectiveFrom, effectiveTo),
       getPaymentsByDateRangeServer(schoolId, todayStr, todayStr),
       getPaymentsByDateRangeServer(schoolId, monthStartStr, todayStr),
@@ -84,33 +111,62 @@ export async function GET(req: NextRequest) {
       getImportBatchesServer(schoolId, 30),
     ]);
 
-  // ---------------------------------------------------------------------
-  // BLOCK 1 — Net Collection (expected yearly fee, from the Yearly Fee Ledger only)
-  // ---------------------------------------------------------------------
-  const ledgerForClass = classId ? ledgerEntries.filter((e) => e.classId === classId) : ledgerEntries;
-  const netCollectionAmount = ledgerForClass.reduce((s, e) => s + (e.yearlyExpectedFee || 0), 0);
+  // A voided expense/transaction (edited or deleted — see voidExpenseServer/updateExpenseServer)
+  // is kept, visible, for its content-hash dedup guarantee and for the records list below, but
+  // must never count toward any total — every sum uses the *Active variants, never the raw list.
+  const rangeExpensesActive = rangeExpensesRaw.filter((e) => !e.voided);
+  const todayExpensesActive = todayExpensesRaw.filter((e) => !e.voided);
+  const monthExpensesActive = monthExpensesRaw.filter((e) => !e.voided);
+  const transactions = transactionsRaw.filter((t) => !t.voided);
 
   // ---------------------------------------------------------------------
-  // BLOCK 2 — Received Amount (actual payments, PaymentDoc only, active only)
+  // BLOCKS 1 & 3 — Total Fee Amount / Outstanding Amount (real challans only, snapshot)
+  // ---------------------------------------------------------------------
+  const classTotals = classId ? [feeTotalsByClass.get(classId) || { count: 0, expected: 0, collected: 0 }] : Array.from(feeTotalsByClass.values());
+  const totalFeeAmount = classTotals.reduce((s, t) => s + t.expected, 0);
+  const totalCollectedAllTime = classTotals.reduce((s, t) => s + t.collected, 0);
+  const totalChallanCount = classTotals.reduce((s, t) => s + t.count, 0);
+  const outstandingAmount = Math.max(0, totalFeeAmount - totalCollectedAllTime);
+
+  // ---------------------------------------------------------------------
+  // BLOCKS 2 & 4 — Fee Collected / Other Collections (active payments in range, split by each
+  // payment's own linked challan's fee composition — never by the import row's category, so a
+  // manually-recorded payment with no originating Daily Import row is still split correctly)
   // ---------------------------------------------------------------------
   const activeRangePayments = rangePayments.filter((p) => isActive(p) && (!p.academicYear || p.academicYear === academicYear));
-  const receivedAmount = sumAmount(activeRangePayments);
+  const challanMap = await getFeeChallansByIdsServer(schoolId, activeRangePayments.map((p) => p.challanId));
+  let feeCollected = 0;
+  let otherCollections = 0;
+  for (const p of activeRangePayments) {
+    const { tuitionShare, otherShare } = splitPaymentByComposition(p.amount, challanMap.get(p.challanId));
+    feeCollected += tuitionShare;
+    otherCollections += otherShare;
+  }
+  feeCollected = Math.round(feeCollected * 100) / 100;
+  otherCollections = Math.round(otherCollections * 100) / 100;
 
   // ---------------------------------------------------------------------
-  // BLOCK 3 — Vouchers (the same active payments, presented as counts; daily/monthly are
-  // fixed to "today"/"this month" regardless of the selected [from, to] filter)
+  // BLOCK — Vouchers (the same active payments as Fee Collected + Other Collections combined,
+  // presented as counts; daily/monthly are fixed to "today"/"this month" regardless of the
+  // selected [from, to] filter)
   // ---------------------------------------------------------------------
   const activeTodayPayments = todayPayments.filter(isActive);
   const activeMonthPayments = monthPayments.filter(isActive);
+  const receivedAmount = sumAmount(activeRangePayments);
 
   // ---------------------------------------------------------------------
-  // BLOCK 4 — Other Expenses (ExpenseDoc only — every imported expense already has a linked
+  // BLOCK 5 — Other Expenses (ExpenseDoc only — every imported expense already has a linked
   // TransactionDoc via transactionRef, but that TransactionDoc is never separately summed here,
   // so the same imported expense can never be counted twice)
   // ---------------------------------------------------------------------
-  const otherExpensesTotal = sumAmount(rangeExpenses);
-  const otherExpensesToday = sumAmount(todayExpenses);
-  const otherExpensesMonth = sumAmount(monthExpenses);
+  const otherExpensesTotal = sumAmount(rangeExpensesActive);
+  const otherExpensesToday = sumAmount(todayExpensesActive);
+  const otherExpensesMonth = sumAmount(monthExpensesActive);
+
+  // ---------------------------------------------------------------------
+  // BLOCK 6 — Net Collection: the period's real net cash position, never an expected total.
+  // ---------------------------------------------------------------------
+  const netCollection = Math.round((feeCollected + otherCollections - otherExpensesTotal) * 100) / 100;
 
   const dailyMap = new Map<string, { date: string; fees: number; annual: number; expenses: number }>();
   for (const tx of transactions) {
@@ -131,8 +187,17 @@ export async function GET(req: NextRequest) {
     to: effectiveTo,
     today: todayStr,
     summary: {
-      netCollection: { amount: netCollectionAmount, studentCount: ledgerForClass.length },
-      receivedAmount: { amount: receivedAmount, paymentCount: activeRangePayments.length },
+      totalFeeAmount: { amount: totalFeeAmount, challanCount: totalChallanCount },
+      feeCollected: { amount: feeCollected, paymentCount: activeRangePayments.length },
+      outstandingAmount: { amount: outstandingAmount },
+      otherCollections: { amount: otherCollections },
+      otherExpenses: {
+        amount: otherExpensesTotal,
+        count: rangeExpensesActive.length,
+        dailyAmount: otherExpensesToday,
+        monthlyAmount: otherExpensesMonth,
+      },
+      netCollection: { amount: netCollection },
       vouchers: {
         totalCount: activeRangePayments.length,
         totalAmount: receivedAmount,
@@ -143,14 +208,10 @@ export async function GET(req: NextRequest) {
         monthlyAmount: sumAmount(activeMonthPayments),
         monthlyPeriod: todayStr.slice(0, 7),
       },
-      otherExpenses: {
-        amount: otherExpensesTotal,
-        count: rangeExpenses.length,
-        dailyAmount: otherExpensesToday,
-        monthlyAmount: otherExpensesMonth,
-      },
     },
-    expenses: rangeExpenses
+    // Includes voided rows (marked `voided: true`) so the records list below stays a complete
+    // history — only the summary totals above exclude them.
+    expenses: rangeExpensesRaw
       .slice()
       .sort((a: ExpenseDoc, b: ExpenseDoc) => b.date.localeCompare(a.date))
       .slice(0, 100),

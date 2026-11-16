@@ -55,6 +55,9 @@ export interface TeacherShellData {
   teacherName: string;
   designation: string;
   canTakeAttendance: boolean;
+  /** Coordinator Observation Submission permission (nav-visibility only; the real enforcement
+   *  is server-side on every submission write). See TeacherDoc.canSubmitObservations. */
+  canSubmitObservations: boolean;
 }
 
 export async function loadTeacherShellData(session: AuthenticatedUser): Promise<TeacherShellData> {
@@ -62,6 +65,7 @@ export async function loadTeacherShellData(session: AuthenticatedUser): Promise<
     teacherName: session?.name || "Faculty Member",
     designation: "",
     canTakeAttendance: false,
+    canSubmitObservations: false,
   };
   if (session?.schoolId) {
     const allocation = await resolveTeacherAllocation(session).catch(() => null);
@@ -70,6 +74,7 @@ export async function loadTeacherShellData(session: AuthenticatedUser): Promise<
       data.teacherName = t.fullName;
       data.designation = [t.designation, t.department].filter(Boolean).join(" • ");
       data.canTakeAttendance = allocation.inchargeClassIds.size > 0;
+      data.canSubmitObservations = t.canSubmitObservations === true;
     }
   }
   return data;

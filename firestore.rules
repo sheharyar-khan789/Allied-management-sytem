@@ -276,11 +276,31 @@ service cloud.firestore {
     // (/api/teacher-observations) enforces that with the Admin SDK. A TEACHER may read only
     // the notes written about *them*: `resource.data.teacherId == getUserData().teacherId`,
     // so a teacher can never read a note about another teacher, directly or through the API.
+    // A note with `isPrivate == true` is Admin/Principal-only and is excluded from the teacher
+    // clause entirely — mirrors the server-side filter in getTeacherObservationsServer, as
+    // defense in depth against any direct-SDK read.
     // -------------------------------------------------------------
     match /teacherObservations/{obsId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isTeacher() && resource.data.teacherId == getUserData().teacherId)
+        (isTeacher() && resource.data.teacherId == getUserData().teacherId && resource.data.get('isPrivate', false) != true)
+      );
+      allow write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Teacher Observation Submissions Collection (Coordinator Observation Submission).
+    // OPPOSITE scoping from teacherObservations above: the SUBJECT teacher
+    // (resource.data.teacherId, who the note is about) must NEVER read a pending or rejected
+    // submission about themself. Only the submitting coordinator
+    // (resource.data.submittedByTeacherId) may read their own submissions, to track
+    // pending/approved/rejected status. Approval publishes a separate, real teacherObservations
+    // document instead — this collection is never itself teacher-visible to the subject.
+    // -------------------------------------------------------------
+    match /teacherObservationSubmissions/{subId} {
+      allow read: if isAuthenticated() && (
+        (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
+        (isTeacher() && callerTeacherId() != '' && resource.data.submittedByTeacherId == callerTeacherId())
       );
       allow write: if false;
     }

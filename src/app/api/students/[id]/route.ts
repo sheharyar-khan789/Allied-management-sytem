@@ -110,7 +110,7 @@ export async function GET(
       }
     }
 
-    const [attendanceRecords, challans, examResults, observations, classes, allSubjects, exams, settings] = await Promise.all([
+    const [attendanceRecords, challansRaw, examResults, observations, classes, allSubjects, exams, settings] = await Promise.all([
       settle("attendance", getStudentAttendanceServer(authUser.schoolId, id), []),
       settle("fees", showFees ? getStudentFeeChallansServer(authUser.schoolId, id) : Promise.resolve([]), []),
       settle("exam results", getExamResultsServer(authUser.schoolId, undefined, undefined, id), []),
@@ -124,6 +124,9 @@ export async function GET(
       settle("exams", getExamsServer(authUser.schoolId), []),
       settle("settings", getSchoolSettingsServer(authUser.schoolId), null),
     ]);
+    // A VOID challan (admin-corrected duplicate/erroneous entry, always zero payments) is
+    // excluded here too — the derived status below would otherwise misread it as "UNPAID".
+    const challans = challansRaw.filter((c) => c.status !== "VOID");
 
     const attendances = showAttendance ? attendanceRecords : [];
     const targetClass = classes.find((c) => c.id === student.classId);

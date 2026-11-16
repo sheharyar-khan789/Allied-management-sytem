@@ -79,6 +79,7 @@ function formatChallan(c: FeeChallanDoc) {
     paidAmount: c.paidAmount,
     balance: Math.max(0, c.totalExpected - c.paidAmount),
     status: c.status,
+    voidReason: c.voidReason || undefined,
     receiptUrl: c.receiptUrl || undefined,
     // `paymentDate`, `paymentMethod`, `receiptNumber` and `notes` used to be emitted here as
     // fabricated values on a financial record: the receipt number was synthesised from the

@@ -41,6 +41,14 @@ export interface TransactionDoc {
    *  instead recorded as the student's advance credit (AdvanceCreditDoc) — never silently
    *  dropped, never auto-applied to an unrelated future month. */
   advanceCreditApplied?: number;
+  /**
+   * Set when the linked ExpenseDoc was edited or deleted (see updateExpenseServer/
+   * voidExpenseServer). The document is never deleted — its content-hashed id must stay
+   * occupied so re-importing the exact original CSV row is still correctly rejected as a
+   * duplicate. Every dashboard sum that reads `transactions` must exclude voided rows.
+   */
+  voided?: boolean;
+  voidedAt?: string;
 }
 
 export interface ExpenseDoc {
@@ -55,6 +63,14 @@ export interface ExpenseDoc {
   createdBy: string;
   createdAt: string;
   academicYear?: string;
+  /** Set when this expense is edited (the OLD transactionRef is voided, a new one created at the
+   *  fresh content-hash id — see updateExpenseServer) or deleted (see voidExpenseServer). The
+   *  expense row itself is kept for history, never hard-deleted; every dashboard sum that reads
+   *  `expenses` must exclude voided rows. */
+  voided?: boolean;
+  voidedAt?: string;
+  voidedBy?: string;
+  voidReason?: string;
 }
 
 // In-memory fallback stores for tests or local dev
@@ -276,6 +292,158 @@ export async function saveExpenseServer(exp: ExpenseDoc): Promise<void> {
       onFirestoreError(`saveExpenseServer(${exp.id})`, e);
     }
   }
+}
+
+/** One expense record by id, scoped to the school, or null. */
+export async function getExpenseByIdServer(schoolId: string, expenseId: string): Promise<ExpenseDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("expenses").doc(expenseId).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as ExpenseDoc;
+        return data.schoolId === schoolId ? data : null;
+      }
+    } catch (e: any) {
+      console.warn("getExpenseByIdServer error:", e?.message);
+    }
+  }
+  const local = localTransactionStore.expenses.get(expenseId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/** One transaction by id, scoped to the school, or null. */
+export async function getTransactionByIdServer(schoolId: string, txId: string): Promise<TransactionDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const doc = await adminDb.collection("transactions").doc(txId).get();
+      if (doc.exists) {
+        const data = { id: doc.id, ...doc.data() } as TransactionDoc;
+        return data.schoolId === schoolId ? data : null;
+      }
+    } catch (e: any) {
+      console.warn("getTransactionByIdServer error:", e?.message);
+    }
+  }
+  const local = localTransactionStore.transactions.get(txId);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/**
+ * Marks a transaction voided in place — never deletes it, so its content-hashed id stays
+ * occupied and a later import of the exact same original row is still correctly rejected as a
+ * duplicate (see saveTransactionServer's `.create()` guard). Every dashboard sum over
+ * `transactions` must filter out `voided === true`.
+ */
+export async function voidTransactionServer(schoolId: string, txId: string): Promise<void> {
+  const existing = await getTransactionByIdServer(schoolId, txId);
+  if (!existing || existing.voided) return;
+  const updated: TransactionDoc = { ...existing, voided: true, voidedAt: new Date().toISOString() };
+  localTransactionStore.transactions.set(txId, updated);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("transactions").doc(txId).set(cleanUndefined(updated), { merge: true });
+    } catch (e) {
+      onFirestoreError(`voidTransactionServer(${txId})`, e);
+    }
+  }
+}
+
+/**
+ * Corrects an existing, manually-entered expense's own fields in place (same document id —
+ * unlike `saveExpenseServer`'s `.create()`-based import-time dedup, an explicit edit is not a
+ * duplicate submission, so it is never rejected). Only ever called for an expense the caller has
+ * already verified belongs to this school.
+ *
+ * When date/description/amount changes, the linked TransactionDoc's content-hash id
+ * (generateContentTransactionId) no longer matches its own content. Editing it in place would
+ * free its old id for re-import while the new content silently claims no id at all — instead the
+ * old transaction is voided (kept, never deleted) and a new one is created at the freshly
+ * derived id, re-pointing `transactionRef`. This is what keeps the dashboard's Block 5
+ * (sums ExpenseDoc) and Daily Breakdown (sums TransactionDoc) from drifting apart after an edit.
+ */
+export async function updateExpenseServer(
+  schoolId: string,
+  expenseId: string,
+  updates: Partial<Pick<ExpenseDoc, "date" | "description" | "amount">>
+): Promise<ExpenseDoc | null> {
+  const existing = await getExpenseByIdServer(schoolId, expenseId);
+  if (!existing) return null;
+  const updated: ExpenseDoc = { ...existing, ...updates };
+
+  const contentChanged = updates.date !== undefined || updates.description !== undefined || updates.amount !== undefined;
+  if (contentChanged && existing.transactionRef) {
+    const newTxId = generateContentTransactionId(schoolId, updated.date, "Other Expenses", updated.description, "N/A", updated.amount);
+    if (newTxId !== existing.transactionRef) {
+      await voidTransactionServer(schoolId, existing.transactionRef);
+      const newTx: TransactionDoc = {
+        id: newTxId,
+        schoolId,
+        importBatchId: "manual-entry",
+        rowNumber: 1,
+        date: updated.date,
+        category: "Other Expenses",
+        details: updated.description,
+        className: "N/A",
+        amount: updated.amount,
+        academicYear: existing.academicYear || "",
+        createdBy: existing.createdBy,
+        createdAt: new Date().toISOString(),
+      };
+      try {
+        await saveTransactionServer(newTx);
+        updated.transactionRef = newTxId;
+      } catch {
+        // The new content-hash id is already occupied by an identical row recorded elsewhere —
+        // leave transactionRef pointing at the now-voided old transaction rather than fail the
+        // whole edit. The expense itself stays the source of truth for Block 5; only the Daily
+        // Breakdown's per-day split for this one row is affected.
+      }
+    }
+  }
+
+  localTransactionStore.expenses.set(expenseId, { ...updated });
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("expenses").doc(expenseId).set(cleanUndefined(updated), { merge: true });
+    } catch (e) {
+      onFirestoreError(`updateExpenseServer(${expenseId})`, e);
+    }
+  }
+  return updated;
+}
+
+/**
+ * Soft-void only — never hard-deletes an expense, for the same content-hash dedup reason as
+ * voidTransactionServer. Also voids the linked TransactionDoc, so Block 5 and the Daily
+ * Breakdown stay consistent after a delete, not just after an edit.
+ */
+export async function voidExpenseServer(
+  schoolId: string,
+  expenseId: string,
+  voidedBy: string,
+  reason: string
+): Promise<ExpenseDoc | null> {
+  const existing = await getExpenseByIdServer(schoolId, expenseId);
+  if (!existing) return null;
+  const updated: ExpenseDoc = {
+    ...existing,
+    voided: true,
+    voidedAt: new Date().toISOString(),
+    voidedBy,
+    voidReason: reason,
+  };
+  localTransactionStore.expenses.set(expenseId, { ...updated });
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("expenses").doc(expenseId).set(cleanUndefined(updated), { merge: true });
+    } catch (e) {
+      onFirestoreError(`voidExpenseServer(${expenseId})`, e);
+    }
+  }
+  if (existing.transactionRef) {
+    await voidTransactionServer(schoolId, existing.transactionRef);
+  }
+  return updated;
 }
 
 /**

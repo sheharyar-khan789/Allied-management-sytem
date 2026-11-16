@@ -38,6 +38,16 @@ export default function FeeManagementPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [transactionImportOpen, setTransactionImportOpen] = useState(false);
+
+  // Challan edit/void modal state
+  const [editChallan, setEditChallan] = useState<any>(null);
+  const [editChallanForm, setEditChallanForm] = useState({ tuitionFee: "", admissionFee: "", examFee: "", otherFee: "", discount: "", dueDate: "" });
+  const [editChallanError, setEditChallanError] = useState("");
+  const [editChallanSaving, setEditChallanSaving] = useState(false);
+  const [voidChallan, setVoidChallan] = useState<any>(null);
+  const [voidChallanReason, setVoidChallanReason] = useState("");
+  const [voidChallanError, setVoidChallanError] = useState("");
+  const [voidChallanSaving, setVoidChallanSaving] = useState(false);
   // One request per typed query, not one per keystroke.
   const debouncedSearch = useDebouncedValue(search.trim(), 400);
 
@@ -124,6 +134,88 @@ export default function FeeManagementPage() {
       setPayError("Failed to record the payment. Please check your connection.");
     } finally {
       setPayLoading(false);
+    }
+  };
+
+  const openEditChallan = (ch: any) => {
+    setEditChallan(ch);
+    setEditChallanForm({
+      tuitionFee: String(ch.tuitionFee ?? 0),
+      admissionFee: String(ch.admissionFee ?? 0),
+      examFee: String(ch.examFee ?? 0),
+      otherFee: String(ch.otherFee ?? 0),
+      discount: String(ch.discount ?? 0),
+      dueDate: ch.dueDate,
+    });
+    setEditChallanError("");
+  };
+
+  const saveEditChallan = async () => {
+    if (!editChallan) return;
+    setEditChallanError("");
+    const nums = {
+      tuitionFee: Number(editChallanForm.tuitionFee),
+      admissionFee: Number(editChallanForm.admissionFee),
+      examFee: Number(editChallanForm.examFee),
+      otherFee: Number(editChallanForm.otherFee),
+      discount: Number(editChallanForm.discount),
+    };
+    if (Object.values(nums).some((n) => !Number.isFinite(n) || n < 0)) {
+      setEditChallanError("Every fee field must be a non-negative number.");
+      return;
+    }
+    const newTotal = Math.max(0, nums.tuitionFee + nums.admissionFee + nums.examFee + nums.otherFee - nums.discount);
+    if (newTotal < editChallan.paidAmount) {
+      setEditChallanError(`This would set the billed total (Rs. ${newTotal}) below the amount already paid (Rs. ${editChallan.paidAmount}).`);
+      return;
+    }
+    setEditChallanSaving(true);
+    try {
+      const res = await fetch(`/api/fees/challans/${editChallan.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...nums, dueDate: editChallanForm.dueDate }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        setEditChallanError(json.error || "Could not save the change.");
+        return;
+      }
+      setEditChallan(null);
+      await fetchFees();
+    } catch {
+      setEditChallanError("Could not save the change. Check your connection and try again.");
+    } finally {
+      setEditChallanSaving(false);
+    }
+  };
+
+  const confirmVoidChallan = async () => {
+    if (!voidChallan) return;
+    setVoidChallanError("");
+    if (!voidChallanReason.trim()) {
+      setVoidChallanError("A reason is required.");
+      return;
+    }
+    setVoidChallanSaving(true);
+    try {
+      const res = await fetch(`/api/fees/challans/${voidChallan.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: voidChallanReason.trim() }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        setVoidChallanError(json.error || "Could not void the challan.");
+        return;
+      }
+      setVoidChallan(null);
+      setVoidChallanReason("");
+      await fetchFees();
+    } catch {
+      setVoidChallanError("Could not void the challan. Check your connection and try again.");
+    } finally {
+      setVoidChallanSaving(false);
     }
   };
 
@@ -404,11 +496,16 @@ export default function FeeManagementPage() {
                             ? "bg-tertiary-container/10 text-on-tertiary-container"
                             : ch.status === "PARTIAL"
                             ? "bg-amber-100 text-amber-800"
+                            : ch.status === "VOID"
+                            ? "bg-surface-container-high text-on-surface-variant"
                             : "bg-error-container text-on-error-container"
                         }`}
                       >
                         {ch.status}
                       </span>
+                      {ch.status === "VOID" && ch.voidReason && (
+                        <p className="text-[10px] text-on-surface-variant mt-0.5">{ch.voidReason}</p>
+                      )}
                     </td>
                     <td className="py-3 px-4 text-right no-print whitespace-nowrap space-x-2">
                       {ch.receiptUrl && (
@@ -426,7 +523,7 @@ export default function FeeManagementPage() {
                       <a href={`/print/challan/${ch.id}`} className="text-secondary font-semibold text-[11px]">
                         Print
                       </a>
-                      {ch.status !== "PAID" ? (
+                      {ch.status !== "PAID" && ch.status !== "VOID" ? (
                         <button
                           type="button"
                           onClick={() => {
@@ -440,8 +537,18 @@ export default function FeeManagementPage() {
                         >
                           Collect
                         </button>
-                      ) : (
+                      ) : ch.status === "PAID" ? (
                         <span className="text-[10px] text-on-tertiary-container font-semibold">Settled</span>
+                      ) : null}
+                      {ch.status !== "VOID" && (
+                        <button type="button" onClick={() => openEditChallan(ch)} className="text-secondary font-semibold text-[11px] hover:underline">
+                          Edit
+                        </button>
+                      )}
+                      {ch.status !== "VOID" && ch.paidAmount === 0 && (
+                        <button type="button" onClick={() => { setVoidChallan(ch); setVoidChallanReason(""); setVoidChallanError(""); }} className="text-error font-semibold text-[11px] hover:underline">
+                          Void
+                        </button>
                       )}
                     </td>
                   </tr>
@@ -567,6 +674,87 @@ export default function FeeManagementPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {editChallan && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div role="dialog" aria-modal="true" aria-labelledby="edit-challan-heading" className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 max-h-[90vh] overflow-y-auto my-8">
+            <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+              <h3 id="edit-challan-heading" className="font-headline-md text-sm font-bold text-on-surface">Edit Challan {editChallan.challanNumber}</h3>
+              <button onClick={() => setEditChallan(null)} className="text-on-surface-variant hover:text-on-surface">
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            <div className="p-2.5 rounded bg-amber-100 text-amber-900 text-[11px] leading-relaxed">
+              Editing fee composition retroactively changes how already-recorded payments on the dashboard are split between Fee Collected and Other Collections.
+            </div>
+            {editChallanError && (
+              <div role="alert" className="p-2.5 rounded bg-error-container text-on-error-container text-xs">{editChallanError}</div>
+            )}
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-semibold text-on-surface mb-1">Tuition Fee</label>
+                  <input type="number" min={0} step="any" value={editChallanForm.tuitionFee} onChange={(e) => setEditChallanForm({ ...editChallanForm, tuitionFee: e.target.value })} className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-on-surface mb-1">Admission Fee</label>
+                  <input type="number" min={0} step="any" value={editChallanForm.admissionFee} onChange={(e) => setEditChallanForm({ ...editChallanForm, admissionFee: e.target.value })} className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-on-surface mb-1">Exam Fee</label>
+                  <input type="number" min={0} step="any" value={editChallanForm.examFee} onChange={(e) => setEditChallanForm({ ...editChallanForm, examFee: e.target.value })} className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-on-surface mb-1">Other Fee</label>
+                  <input type="number" min={0} step="any" value={editChallanForm.otherFee} onChange={(e) => setEditChallanForm({ ...editChallanForm, otherFee: e.target.value })} className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-on-surface mb-1">Discount</label>
+                  <input type="number" min={0} step="any" value={editChallanForm.discount} onChange={(e) => setEditChallanForm({ ...editChallanForm, discount: e.target.value })} className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40" />
+                </div>
+                <div>
+                  <label className="block font-semibold text-on-surface mb-1">Due Date</label>
+                  <input type="date" value={editChallanForm.dueDate} onChange={(e) => setEditChallanForm({ ...editChallanForm, dueDate: e.target.value })} className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40" />
+                </div>
+              </div>
+              <p className="text-[11px] text-on-surface-variant">Already paid: {formatCurrency(editChallan.paidAmount)} — the billed total cannot be set below this.</p>
+              <div className="flex justify-end gap-2 pt-3 border-t border-surface-container-low">
+                <button type="button" onClick={() => setEditChallan(null)} className="px-3 py-1.5 rounded bg-surface-container text-on-surface font-semibold">Cancel</button>
+                <button type="button" onClick={saveEditChallan} disabled={editChallanSaving} className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50">
+                  {editChallanSaving ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {voidChallan && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div role="dialog" aria-modal="true" aria-labelledby="void-challan-heading" className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 my-8">
+            <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+              <h3 id="void-challan-heading" className="font-headline-md text-sm font-bold text-on-surface">Void Challan {voidChallan.challanNumber}</h3>
+              <button onClick={() => setVoidChallan(null)} className="text-on-surface-variant hover:text-on-surface">
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            <p className="text-xs text-on-surface">This challan has no payments recorded. It will be kept for the record, marked VOID, and excluded from totals — never deleted.</p>
+            {voidChallanError && (
+              <div role="alert" className="p-2.5 rounded bg-error-container text-on-error-container text-xs">{voidChallanError}</div>
+            )}
+            <div>
+              <label className="block font-semibold text-on-surface text-xs mb-1">Reason *</label>
+              <input type="text" value={voidChallanReason} onChange={(e) => setVoidChallanReason(e.target.value)} placeholder="Reason for voiding this challan" className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 text-xs" />
+            </div>
+            <div className="flex justify-end gap-2 pt-3 border-t border-surface-container-low">
+              <button type="button" onClick={() => setVoidChallan(null)} className="px-3 py-1.5 rounded bg-surface-container text-on-surface font-semibold text-xs">Cancel</button>
+              <button type="button" onClick={confirmVoidChallan} disabled={voidChallanSaving} className="px-4 py-1.5 rounded bg-error text-on-error font-semibold hover:bg-error/90 disabled:opacity-50 text-xs">
+                {voidChallanSaving ? "Voiding..." : "Confirm Void"}
+              </button>
+            </div>
           </div>
         </div>
       )}

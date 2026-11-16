@@ -55,6 +55,9 @@ export interface TeacherObservationView {
   submittedByName: string | null;
   /** Display-ready: the saved name, or "Not recorded" when `submittedByName` is null. */
   submittedByDisplay: string;
+  /** Admin/Principal-only. Never present (and never true) in a response a TEACHER caller sees —
+   *  that's enforced earlier, in getTeacherObservationsServer, not here. */
+  isPrivate: boolean;
 }
 
 export function toTeacherObservationView(o: TeacherObservationDoc): TeacherObservationView {
@@ -80,6 +83,7 @@ export function toTeacherObservationView(o: TeacherObservationDoc): TeacherObser
     submittedByStaffId: o.submittedByStaffId || null,
     submittedByName: o.submittedByName || null,
     submittedByDisplay: o.submittedByName || "Not recorded",
+    isPrivate: o.isPrivate === true,
   };
 }
 
