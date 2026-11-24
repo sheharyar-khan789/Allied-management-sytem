@@ -251,6 +251,18 @@ export default function TeacherProfilePage({
       return;
     }
 
+    const isMarkingLeft = Boolean(formData.endingDate) && !teacher?.endingDate;
+    if (isMarkingLeft) {
+      const confirmed = window.confirm(
+        `Mark ${teacher?.fullName || "this teacher"} as Left?\n\n` +
+          "This will immediately revoke their login access, remove them from the active timetable " +
+          "(classes/periods show as Unassigned), and exclude their salary from future active payroll. " +
+          "Historical records (attendance, salary history, observations, lesson plans) are preserved. " +
+          "This can be reversed later by clearing the ending date."
+      );
+      if (!confirmed) return;
+    }
+
     setEditFormLoading(true);
     try {
       const res = await fetch(`/api/teachers/${id}`, {
@@ -1287,7 +1299,7 @@ export default function TeacherProfilePage({
                 </div>
                 {formData.endingDate && (
                   <div className="col-span-2 p-2 rounded bg-surface-container-low text-[11px] text-on-surface-variant">
-                    Setting an ending date records that this educator has departed while preserving all past gradebook, attendance, and assignment history intact.
+                    Setting an ending date marks this educator as Left: login access is revoked, their timetable/class/subject assignments are cleared, and their salary is excluded from future active payroll — while all past gradebook, attendance, salary, and assignment history remains preserved.
                   </div>
                 )}
                 <div className="col-span-2">

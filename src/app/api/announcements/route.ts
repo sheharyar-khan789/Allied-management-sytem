@@ -11,6 +11,7 @@ import {
 import { announcementVisibleToRole } from "@/lib/announcements-visibility";
 import { AnnouncementAudience, AnnouncementDoc, AnnouncementStatus } from "@/lib/firebase/types";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
+import { notifyTeachersOfAnnouncement } from "@/lib/notifications";
 
 const audienceValues = ["EVERYONE", "TEACHERS", "STUDENTS", "PARENTS"] as const;
 const statusValues = ["DRAFT", "PUBLISHED"] as const;
@@ -89,6 +90,9 @@ export async function POST(req: NextRequest) {
     };
 
     const id = await saveAnnouncementServer(doc);
+    if (status === "PUBLISHED") {
+      await notifyTeachersOfAnnouncement({ schoolId: authUser.schoolId, announcementId: id, title: doc.title, audience: doc.audience });
+    }
     await createAuditLogServer(
       authUser.schoolId,
       authUser.uid,
@@ -141,6 +145,9 @@ export async function PUT(req: NextRequest) {
     }
 
     await saveAnnouncementServer(updated);
+    if (willPublish && !wasPublished) {
+      await notifyTeachersOfAnnouncement({ schoolId: authUser.schoolId, announcementId: updated.id, title: updated.title, audience: updated.audience });
+    }
     await createAuditLogServer(
       authUser.schoolId,
       authUser.uid,

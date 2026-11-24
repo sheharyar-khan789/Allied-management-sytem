@@ -288,6 +288,19 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // In-app notifications (Tasks 4/5): a teacher may read only their own; nothing is ever
+    // written directly by a client — creation and mark-read both go through the Admin SDK
+    // (see src/lib/notifications.ts), which bypasses these rules entirely.
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated()
+        && getUserSchoolId() == resource.data.schoolId
+        && (
+          (isAdmin()) ||
+          (isTeacher() && resource.data.recipientTeacherId == getUserData().teacherId)
+        );
+      allow write: if false;
+    }
+
     // -------------------------------------------------------------
     // Teacher Observation Submissions Collection (Coordinator Observation Submission).
     // OPPOSITE scoping from teacherObservations above: the SUBJECT teacher

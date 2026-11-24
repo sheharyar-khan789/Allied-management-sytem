@@ -41,6 +41,21 @@ const STATUS_STYLE: Record<string, string> = {
   LATE: "bg-error-container text-error",
 };
 
+/** "2d 4h 15m" style countdown — purely a display of the server-authoritative closesAt, never a
+ *  second source of truth for the deadline itself (see src/lib/lesson-plan-schedule.ts). */
+function formatRemaining(ms: number): string {
+  if (ms <= 0) return "less than a minute";
+  const totalMinutes = Math.floor(ms / 60000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0 || days > 0) parts.push(`${hours}h`);
+  parts.push(`${minutes}m`);
+  return parts.join(" ");
+}
+
 function fmt(iso: string | null, timezone: string): string {
   if (!iso) return "—";
   try {
@@ -65,6 +80,14 @@ interface ScheduleWeek {
 }
 
 export default function TeacherLessonPlansPage() {
+  // Drives the live "time remaining" countdown and the open/closed badge without needing a
+  // re-fetch — the deadline itself still comes only from the server (currentWindow.closesAt).
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   const [timezone, setTimezone] = useState("Asia/Karachi");
   const [classesSubjects, setClassesSubjects] = useState<ClassSubjectOption[]>([]);
   const [weeks, setWeeks] = useState<ScheduleWeek[]>([]);
@@ -219,8 +242,10 @@ export default function TeacherLessonPlansPage() {
     }
   };
 
-  const windowOpen = currentWindow ? Date.now() >= Date.parse(currentWindow.opensAt) && Date.now() < Date.parse(currentWindow.closesAt) : false;
-  const locked = plan ? !plan.editableByTeacher : (currentWindow ? Date.now() >= Date.parse(currentWindow.closesAt) : false);
+  const windowOpen = currentWindow ? nowTick >= Date.parse(currentWindow.opensAt) && nowTick < Date.parse(currentWindow.closesAt) : false;
+  const locked = plan ? !plan.editableByTeacher : (currentWindow ? nowTick >= Date.parse(currentWindow.closesAt) : false);
+  const windowNotOpenYet = currentWindow ? nowTick < Date.parse(currentWindow.opensAt) : false;
+  const remainingLabel = windowOpen && currentWindow ? formatRemaining(Date.parse(currentWindow.closesAt) - nowTick) : null;
 
   if (optionsLoading) {
     return <div className="p-6 text-sm text-on-surface-variant">Loading your lesson plan assignments…</div>;
@@ -300,7 +325,13 @@ export default function TeacherLessonPlansPage() {
               <strong className="text-on-surface">{fmt(currentWindow.closesAt, timezone)}</strong> ({timezone})
             </span>
             <span className={`px-2 py-0.5 rounded-full font-bold ${windowOpen ? "bg-primary/10 text-primary" : "bg-surface-container-high text-on-surface-variant"}`}>
-              {windowOpen ? "Submission window is open" : locked ? "Window closed — locked" : "Window not open yet"}
+              {windowOpen
+                ? `Open — ${remainingLabel} remaining`
+                : locked
+                ? "Closed — the submission deadline has passed"
+                : windowNotOpenYet
+                ? `Upcoming — opens ${fmt(currentWindow.opensAt, timezone)}`
+                : "Window not open yet"}
             </span>
             {plan && (
               <span className={`px-2 py-0.5 rounded-full font-bold ${STATUS_STYLE[plan.status] || ""}`}>{plan.status}</span>

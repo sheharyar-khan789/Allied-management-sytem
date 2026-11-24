@@ -49,28 +49,34 @@ export async function GET(req: NextRequest) {
       recordsByTeacher.set(r.teacherId, r);
     }
 
-    let list = teachers.map((t) => {
-      const rec = recordsByTeacher.get(t.id);
-      const baseSalary = rec?.amount !== undefined ? rec.amount : (t.baseSalary ?? t.salary ?? 0);
-      const status: PayrollStatus = rec?.status === "PAID" ? "PAID" : "UNPAID";
-      const paidDate = rec?.paidDate || null;
+    // A teacher marked Left (INACTIVE) with no payroll record for this exact month/year is no
+    // longer part of the active payroll run — don't synthesize a phantom UNPAID row for them.
+    // Any record that already exists (paid or unpaid, from before they left) stays visible and
+    // is never modified here.
+    let list = teachers
+      .filter((t) => t.status !== "INACTIVE" || recordsByTeacher.has(t.id))
+      .map((t) => {
+        const rec = recordsByTeacher.get(t.id);
+        const baseSalary = rec?.amount !== undefined ? rec.amount : (t.baseSalary ?? t.salary ?? 0);
+        const status: PayrollStatus = rec?.status === "PAID" ? "PAID" : "UNPAID";
+        const paidDate = rec?.paidDate || null;
 
-      return {
-        recordId: rec?.id || `payrec_${authUser.schoolId}_${t.id}_${year}_${month.toLowerCase()}`,
-        teacherId: t.id,
-        teacherName: t.fullName,
-        employeeId: t.employeeId,
-        designation: t.designation,
-        department: t.department,
-        photoUrl: t.photoUrl || "",
-        month,
-        year,
-        baseSalary,
-        status,
-        paidDate,
-        notes: rec?.notes || "",
-      };
-    });
+        return {
+          recordId: rec?.id || `payrec_${authUser.schoolId}_${t.id}_${year}_${month.toLowerCase()}`,
+          teacherId: t.id,
+          teacherName: t.fullName,
+          employeeId: t.employeeId,
+          designation: t.designation,
+          department: t.department,
+          photoUrl: t.photoUrl || "",
+          month,
+          year,
+          baseSalary,
+          status,
+          paidDate,
+          notes: rec?.notes || "",
+        };
+      });
 
     if (search) {
       list = list.filter((item) =>

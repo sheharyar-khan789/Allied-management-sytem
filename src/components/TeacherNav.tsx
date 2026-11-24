@@ -3,6 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import NotificationBell from "@/components/NotificationBell";
 
 interface TeacherNavProps {
   teacherName?: string;
@@ -71,6 +72,7 @@ export default function TeacherNav({
           </div>
 
           <div className="flex items-center gap-3">
+            <NotificationBell />
             <button
               onClick={handleLogout}
               className="p-1.5 rounded-lg hover:bg-error-container text-on-surface-variant hover:text-error transition-colors flex items-center gap-1 text-xs"

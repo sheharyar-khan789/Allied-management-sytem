@@ -64,6 +64,7 @@ import {
   YearlyFeeLedgerDoc,
   YearlyFeeLedgerImportBatchDoc,
   AdvanceCreditDoc,
+  NotificationDoc,
 } from "./types";
 
 // In-memory tenant fallback store for local development / builds without live GCP credentials
@@ -102,6 +103,7 @@ const localStore: {
   yearlyFeeLedger: Map<string, YearlyFeeLedgerDoc>;
   yearlyFeeLedgerImportBatches: Map<string, YearlyFeeLedgerImportBatchDoc>;
   advanceCredits: Map<string, AdvanceCreditDoc>;
+  notifications: Map<string, NotificationDoc>;
 } = {
   schools: new Map(),
   settings: new Map(),
@@ -137,6 +139,7 @@ const localStore: {
   yearlyFeeLedger: new Map(),
   yearlyFeeLedgerImportBatches: new Map(),
   advanceCredits: new Map(),
+  notifications: new Map(),
 };
 
 export function assertProductionDbReady() {
@@ -583,6 +586,20 @@ export async function updateSchoolSettingsServer(settings: SchoolSettingsDoc): P
       onFirestoreError(`updateSchoolSettingsServer(${settings.schoolId})`, e);
     }
   }
+}
+
+/** Every school's settings — used only by the lesson-plan-notifications cron job, which must
+ *  walk every tenant (there is no per-request schoolId to scope by outside a user session). */
+export async function getAllSchoolSettingsServer(): Promise<SchoolSettingsDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb.collection("schoolSettings").get();
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() } as SchoolSettingsDoc));
+    } catch (e) {
+      onFirestoreError("getAllSchoolSettingsServer", e);
+    }
+  }
+  return Array.from(localStore.settings.values());
 }
 
 // ---------------------------------------------------------------------------
@@ -1888,6 +1905,56 @@ export async function deleteTeacherServer(schoolId: string, teacherId: string): 
 // ---------------------------------------------------------------------------
 // CLASSES & COHORTS
 // ---------------------------------------------------------------------------
+
+// Pre-primary grades, in the order a real school actually progresses through them — listed
+// explicitly because no numeric digit can be extracted from their names to rank them, unlike
+// every numbered class below. A school adding a NEW numbered class (Class 11, Class 25, ...)
+// never needs a change here: `classSortRank` below derives its rank directly from the digits in
+// its own name, not from this list or from the stored `numericLevel` field (which can be an
+// arbitrary creation-order counter for a class with no digits in its name at all — see the
+// matching numericLevel-collision fix in exam-schedule-import.ts).
+const PRE_PRIMARY_RANK: Record<string, number> = {
+  playgroup: -600,
+  "pre nursery": -500,
+  prenursery: -500,
+  nursery: -400,
+  kg: -300,
+  kindergarten: -300,
+  montessori: -200,
+  prep: -100,
+};
+
+function classSlugForSort(v: string): string {
+  return v.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * A class's natural teaching-progression rank: known pre-primary grades first (in their real
+ * pedagogical order), then every numbered class ordered by the actual number in its own name
+ * (never by alphabetical string comparison, which would sort "Class 10" before "Class 2"). A
+ * name that is neither — an unrecognized non-numeric grade — sorts after every numbered class,
+ * by name, rather than being guessed into the wrong position.
+ */
+function classSortRank(name: string): number {
+  const slug = classSlugForSort(name);
+  for (const [key, rank] of Object.entries(PRE_PRIMARY_RANK)) {
+    if (slug === classSlugForSort(key)) return rank;
+  }
+  const digits = name.match(/\d+/)?.[0];
+  if (digits) return parseInt(digits, 10);
+  return Number.MAX_SAFE_INTEGER;
+}
+
+function compareClassesNaturally(a: ClassDoc, b: ClassDoc): number {
+  const rankDiff = classSortRank(a.name) - classSortRank(b.name);
+  if (rankDiff !== 0) return rankDiff;
+  // Same grade: group by name first (in case two differently-named classes share a rank, e.g.
+  // an unrecognized non-numeric grade), then order sections alphabetically within it.
+  const nameDiff = a.name.localeCompare(b.name);
+  if (nameDiff !== 0) return nameDiff;
+  return (a.section || "").localeCompare(b.section || "");
+}
+
 async function fetchClassesRaw(schoolId: string): Promise<ClassDoc[]> {
   assertProductionDbReady();
   if (hasAdminCredentials) {
@@ -1895,7 +1962,7 @@ async function fetchClassesRaw(schoolId: string): Promise<ClassDoc[]> {
       const snap = await adminDb.collection("classes").where("schoolId", "==", schoolId).get();
       const classes = snap.docs.map((d) => ({ id: d.id, ...d.data() } as ClassDoc));
       if (classes.length > 0) {
-        return classes.sort((a, b) => a.name.localeCompare(b.name));
+        return classes.sort(compareClassesNaturally);
       }
     } catch (e) {
       if (!isServiceUnavailableError(e)) {
@@ -1907,7 +1974,7 @@ async function fetchClassesRaw(schoolId: string): Promise<ClassDoc[]> {
   }
 
   const local = Array.from(localStore.classes.values()).filter((c) => c.schoolId === schoolId);
-  return local.sort((a, b) => a.name.localeCompare(b.name));
+  return local.sort(compareClassesNaturally);
 }
 
 export async function getClassesServer(schoolId: string, scope?: SessionScope): Promise<ClassDoc[]> {
@@ -5047,6 +5114,113 @@ export async function deleteAnnouncementServer(schoolId: string, announcementId:
     }
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// NOTIFICATIONS
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a notification, deduped by `dedupeKey` — the key doubles as the Firestore document id,
+ * so a retried request or a repeated cron tick that races to create the same logical event
+ * (e.g. "observation:{observationId}", "announcement:{id}:{teacherId}") atomically no-ops on the
+ * second attempt instead of creating a duplicate. Mirrors the create-if-absent idiom already used
+ * by claimUsernameServer.
+ */
+export async function createNotificationServer(
+  input: Omit<NotificationDoc, "id" | "read" | "readAt" | "createdAt">
+): Promise<{ id: string; created: boolean }> {
+  const id = input.dedupeKey;
+  const doc: NotificationDoc = { ...input, id, read: false, readAt: null, createdAt: new Date().toISOString() };
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("notifications").doc(id).create(cleanUndefined(doc));
+      return { id, created: true };
+    } catch (e: any) {
+      if (e?.code === 6 || /ALREADY_EXISTS/i.test(String(e?.message))) return { id, created: false };
+      onFirestoreError(`createNotificationServer(${id})`, e);
+      throw e;
+    }
+  }
+  if (localStore.notifications.has(id)) return { id, created: false };
+  localStore.notifications.set(id, doc);
+  return { id, created: true };
+}
+
+export async function getNotificationsForTeacherServer(
+  schoolId: string,
+  teacherId: string,
+  maxLimit = 50
+): Promise<NotificationDoc[]> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb
+        .collection("notifications")
+        .where("schoolId", "==", schoolId)
+        .where("recipientTeacherId", "==", teacherId)
+        .limit(Math.min(maxLimit, 200))
+        .get();
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as NotificationDoc));
+      return list.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, maxLimit);
+    } catch (e) {
+      onFirestoreError(`getNotificationsForTeacherServer(${schoolId}, ${teacherId})`, e);
+    }
+  }
+  return Array.from(localStore.notifications.values())
+    .filter((n) => n.schoolId === schoolId && n.recipientTeacherId === teacherId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, maxLimit);
+}
+
+export async function getNotificationByIdServer(schoolId: string, id: string): Promise<NotificationDoc | null> {
+  if (hasAdminCredentials) {
+    try {
+      const snap = await adminDb.collection("notifications").doc(id).get();
+      if (snap.exists) {
+        const data = { id: snap.id, ...snap.data() } as NotificationDoc;
+        return data.schoolId === schoolId ? data : null;
+      }
+    } catch (e) {
+      onFirestoreError(`getNotificationByIdServer(${id})`, e);
+    }
+  }
+  const local = localStore.notifications.get(id);
+  return local && local.schoolId === schoolId ? local : null;
+}
+
+/** Marks one notification read — only if it belongs to `teacherId`, never another teacher's. */
+export async function markNotificationReadServer(schoolId: string, id: string, teacherId: string): Promise<boolean> {
+  const existing = await getNotificationByIdServer(schoolId, id);
+  if (!existing || existing.recipientTeacherId !== teacherId || existing.read) return false;
+  const updated: NotificationDoc = { ...existing, read: true, readAt: new Date().toISOString() };
+  localStore.notifications.set(id, updated);
+  if (hasAdminCredentials) {
+    try {
+      await adminDb.collection("notifications").doc(id).set(updated);
+    } catch (e) {
+      onFirestoreError(`markNotificationReadServer(${id})`, e);
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Marks every unread notification for this teacher as read; returns how many were updated. */
+export async function markAllNotificationsReadServer(schoolId: string, teacherId: string): Promise<number> {
+  const unread = (await getNotificationsForTeacherServer(schoolId, teacherId, 500)).filter((n) => !n.read);
+  const readAt = new Date().toISOString();
+  for (const n of unread) {
+    const updated: NotificationDoc = { ...n, read: true, readAt };
+    localStore.notifications.set(n.id, updated);
+    if (hasAdminCredentials) {
+      try {
+        await adminDb.collection("notifications").doc(n.id).set(updated);
+      } catch (e) {
+        onFirestoreError(`markAllNotificationsReadServer(${n.id})`, e);
+      }
+    }
+  }
+  return unread.length;
 }
 
 // ---------------------------------------------------------------------------

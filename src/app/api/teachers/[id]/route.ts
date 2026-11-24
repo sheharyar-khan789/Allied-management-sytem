@@ -14,6 +14,7 @@ import {
   deleteTeacherCompletely,
   updateTeacherAccountEmail,
   syncTeacherAccountStatus,
+  clearTeacherReferences,
   TeacherEmailUpdateResult
 } from "@/lib/teacher-lifecycle";
 import { assignTeacherUsername } from "@/lib/teacher-username";
@@ -325,12 +326,21 @@ export async function PUT(
     await saveTeacherServer(updated);
 
     // If teacher status changed (ACTIVE <-> INACTIVE), sync login account status
+    let referenceCleanup: Awaited<ReturnType<typeof clearTeacherReferences>> | null = null;
     if (inferredStatus !== existing.status) {
       await syncTeacherAccountStatus(authUser.schoolId, updated, inferredStatus, {
         performedByUid: authUser.uid,
         performedByEmail: authUser.email,
         performedByRole: authUser.role,
       });
+
+      // Marking a teacher Left (ACTIVE -> INACTIVE) must also drop their forward-looking
+      // timetable/class/subject assignments, or classes keep showing a teacher who can no
+      // longer be scheduled. Reactivation does NOT restore these — the admin reassigns
+      // manually, which avoids resurrecting stale/conflicting periods.
+      if (existing.status === "ACTIVE" && inferredStatus === "INACTIVE") {
+        referenceCleanup = await clearTeacherReferences(authUser.schoolId, updated.id);
+      }
     }
 
     // A document removed from the array (the admin deleted it) has its underlying file cleaned
@@ -363,10 +373,14 @@ export async function PUT(
       authUser.uid,
       authUser.email,
       authUser.role,
-      usernameChange?.changed ? "SET_TEACHER_USERNAME" : "UPDATE_TEACHER",
+      referenceCleanup ? "MARK_TEACHER_LEFT" : usernameChange?.changed ? "SET_TEACHER_USERNAME" : "UPDATE_TEACHER",
       "TEACHER",
       id,
-      body.assignedClassIds !== undefined
+      referenceCleanup
+        ? `Marked faculty member ${updated.fullName} (${updated.employeeId}) as Left (ending date ${updatedEndingDate}); ` +
+          `login revoked, cleared from ${referenceCleanup.classesCleared} class(es), ${referenceCleanup.subjectsCleared} subject(s), ` +
+          `${referenceCleanup.timetableSlotsCleared} timetable slot(s). Historical records preserved.`
+        : body.assignedClassIds !== undefined
         ? `Updated faculty member ${updated.fullName} (${updated.employeeId}); class access set to ${
             assignedClassIds.length > 0
               ? assignedClassIds.join(", ")
@@ -381,7 +395,7 @@ export async function PUT(
         : `Updated profile for faculty member ${updated.fullName} (${updated.employeeId}).`
     );
 
-    return NextResponse.json({ success: true, teacher: updated });
+    return NextResponse.json({ success: true, teacher: updated, referenceCleanup });
   } catch (error: any) {
     if (error instanceof Response) return error;
     const busy = serviceBusyResponseFor(error, "/api/teachers/[id]");

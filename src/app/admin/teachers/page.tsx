@@ -52,6 +52,7 @@ export default function TeachersManagementPage() {
     { name: string; email: string; sent: boolean; channel?: string } | null
   >(null);
   const [sendingActivationId, setSendingActivationId] = useState<string | null>(null);
+  const [issuingCredentialsId, setIssuingCredentialsId] = useState<string | null>(null);
   const [accountNotice, setAccountNotice] = useState<string | null>(null);
 
   const [formData, setFormData] = useState(EMPTY_TEACHER_FORM);
@@ -123,6 +124,18 @@ export default function TeachersManagementPage() {
       return;
     }
 
+    const isMarkingLeft = Boolean(formData.endingDate) && !editingTeacher?.endingDate;
+    if (isMarkingLeft) {
+      const confirmed = window.confirm(
+        `Mark ${formData.firstName} ${formData.lastName} as Left?\n\n` +
+          "This will immediately revoke their login access, remove them from the active timetable " +
+          "(classes/periods show as Unassigned), and exclude their salary from future active payroll. " +
+          "Historical records (attendance, salary history, observations, lesson plans) are preserved. " +
+          "This can be reversed later by clearing the ending date."
+      );
+      if (!confirmed) return;
+    }
+
     setFormLoading(true);
 
     try {
@@ -188,6 +201,40 @@ export default function TeachersManagementPage() {
       alert("Failed to send the activation email.");
     } finally {
       setSendingActivationId(null);
+    }
+  };
+
+  // Escape hatch for a teacher stuck in "Activation Pending" (created via e-mailed activation
+  // link, never received or used it — most often because no email provider is configured). Issues
+  // a temporary username + password the admin hands over directly, regardless of email delivery.
+  const handleIssueTempCredentials = async (t: any) => {
+    const requested = window.prompt(
+      `Choose a login username for ${t.fullName} (letters, numbers, dots, underscores):`
+    );
+    if (!requested || !requested.trim()) return;
+    setIssuingCredentialsId(t.id);
+    try {
+      const res = await fetch(`/api/teachers/${t.id}/activation`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: requested.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || "Could not issue temporary credentials.");
+        return;
+      }
+      setCredentials({
+        name: t.fullName,
+        username: data.credentials.username,
+        temporaryPassword: data.credentials.temporaryPassword,
+      });
+      fetchTeachers();
+    } catch (err) {
+      console.error("Error issuing temporary credentials:", err);
+      alert("Failed to issue temporary credentials.");
+    } finally {
+      setIssuingCredentialsId(null);
     }
   };
 
@@ -552,6 +599,20 @@ export default function TeachersManagementPage() {
                             </span>
                           </button>
                         )}
+                        {t.status === "ACTIVE" && t.activationStatus === "pending" && (
+                          <button
+                            type="button"
+                            onClick={() => handleIssueTempCredentials(t)}
+                            disabled={issuingCredentialsId === t.id}
+                            className="p-1.5 rounded-lg hover:bg-surface-container text-secondary transition-colors inline-block disabled:opacity-50"
+                            title="Issue a temporary username and password directly (works even without email delivery configured)"
+                            aria-label={`Issue temporary login credentials to ${t.fullName}`}
+                          >
+                            <span className="material-symbols-outlined text-[18px]">
+                              {issuingCredentialsId === t.id ? "hourglass_top" : "key"}
+                            </span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleDeleteTeacher(t.id, t.fullName)}
@@ -771,7 +832,7 @@ export default function TeachersManagementPage() {
                       className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40"
                     />
                     <p className="text-[10px] text-on-surface-variant mt-1">
-                      Leave empty for active teachers. Setting an ending date marks this educator as inactive while preserving all historical classes, attendance, marks, and records.
+                      Leave empty for active teachers. Setting an ending date marks this educator as Left: login access is revoked, their timetable/class/subject assignments are cleared, and their salary is excluded from future active payroll — while all past gradebook, attendance, salary, and assignment history remains preserved.
                     </p>
                   </div>
                 )}

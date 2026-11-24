@@ -937,6 +937,35 @@ export interface AnnouncementDoc {
   updatedAt: string;
 }
 
+export type NotificationType =
+  | "OBSERVATION"
+  | "ANNOUNCEMENT"
+  | "LESSON_PLAN_OPEN"
+  | "LESSON_PLAN_DEADLINE_SOON"
+  | "LESSON_PLAN_CLOSED";
+
+/**
+ * An in-app notification for a single teacher. Server-created only (no client Firestore write
+ * rule grants create) — see src/lib/notifications.ts. `dedupeKey` is unique per logical event
+ * (e.g. "observation:{observationId}", "announcement:{announcementId}:{teacherId}",
+ * "lessonplan:{windowId}:{event}:{teacherId}") and is checked before every write, so a retried
+ * request or a repeated cron tick can never create the same notification twice.
+ */
+export interface NotificationDoc {
+  id: string;
+  schoolId: string;
+  recipientTeacherId: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  /** id of the observation/announcement/lesson-plan week this notification refers to. */
+  referenceId: string;
+  dedupeKey: string;
+  read: boolean;
+  readAt?: string | null;
+  createdAt: string;
+}
+
 export type PayrollStatus = "PAID" | "UNPAID";
 
 export interface PayrollRecordDoc {

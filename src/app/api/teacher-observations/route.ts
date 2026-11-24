@@ -12,6 +12,7 @@ import {
 } from "@/lib/firebase/server-db";
 import { TeacherObservationDoc } from "@/lib/firebase/types";
 import { resolveAuthenticatedTeacher } from "@/lib/academic-access";
+import { notifyTeacherOfObservation } from "@/lib/notifications";
 import { serviceBusyResponseFor } from "@/lib/firebase/firestore-errors";
 import { idString, parseJsonBody } from "@/lib/input-validation";
 import {
@@ -205,6 +206,17 @@ export async function POST(req: NextRequest) {
     };
 
     await saveTeacherObservationServer(obsDoc);
+
+    // isPrivate notes are Admin/Principal-only (see getTeacherObservationsServer) — notifying the
+    // teacher it's about would leak its existence to someone who is never allowed to see it.
+    if (!obsDoc.isPrivate) {
+      await notifyTeacherOfObservation({
+        schoolId: authUser.schoolId,
+        teacherId: teacher.id,
+        observationId: obsDoc.id,
+        observationTitle: body.title || `New ${body.category.toLowerCase()} observation`,
+      });
+    }
 
     await createAuditLogServer(
       authUser.schoolId,
