@@ -40,6 +40,9 @@ beforeEach(async () => {
       studentA: { role: "STUDENT", schoolId: "A", email: "s@a.edu", studentId: "std-a" },
       parentA: { role: "PARENT", schoolId: "A", email: "p@a.edu" },
       adminB: { role: "ADMIN", schoolId: "B", email: "admin@b.edu" },
+      teacherBColliding: { role: "TEACHER", schoolId: "B", email: "tb1@b.edu", teacherId: "tch-a" },
+      teacherBSubColliding: { role: "TEACHER", schoolId: "B", email: "tb2@b.edu", teacherId: "tch-a2" },
+      teacherEmptyId: { role: "TEACHER", schoolId: "A", email: "tempty@a.edu", teacherId: "" },
     };
     for (const [uid, data] of Object.entries(users)) await setDoc(doc(db, "users", uid), { uid, ...data });
     await setDoc(doc(db, "students", "std-a"), { id: "std-a", schoolId: "A", classId: "cls-a", userId: "studentA", parentUserIds: ["parentA"] });
@@ -66,6 +69,7 @@ beforeEach(async () => {
     // Teacher Observations: tch-a has one open note and one Admin/Principal-only private note.
     await setDoc(doc(db, "teacherObservations", "obs-open"), { id: "obs-open", schoolId: "A", teacherId: "tch-a" });
     await setDoc(doc(db, "teacherObservations", "obs-private"), { id: "obs-private", schoolId: "A", teacherId: "tch-a", isPrivate: true });
+    await setDoc(doc(db, "teacherObservations", "obs-empty-tid"), { id: "obs-empty-tid", schoolId: "A", teacherId: "" });
     // Coordinator Observation Submission: tch-a2 submitted a draft ABOUT tch-a. Opposite scoping
     // from teacherObservations above — the SUBJECT (tch-a) must never read this, only the
     // SUBMITTER (tch-a2).
@@ -240,4 +244,24 @@ test("VOID fee challans: same read/write rule as any other status — never a sp
   await assertFails(setDoc(doc(as("adminA"), "feeChallans", "ch-a-void"), { status: "PARTIAL", totalExpected: 5000, paidAmount: 1000 }));
   await assertFails(setDoc(doc(as("adminA"), "feeChallans", "ch-a-void"), { totalExpected: 5000 }));
   await assertFails(deleteDoc(doc(as("adminA"), "feeChallans", "ch-a-void")));
+});
+
+
+test("tenant isolation on teacherObservations & teacherObservationSubmissions: schoolId + non-empty teacherId enforced", async () => {
+  // Same-school authorized teacher & admin access preserved
+  await assertSucceeds(getDoc(doc(as("teacherA"), "teacherObservations", "obs-open")));
+  await assertSucceeds(getDoc(doc(as("adminA"), "teacherObservations", "obs-open")));
+  await assertSucceeds(getDoc(doc(as("adminA"), "teacherObservations", "obs-private")));
+  await assertSucceeds(getDoc(doc(as("teacher2A"), "teacherObservationSubmissions", "sub-a")));
+  await assertSucceeds(getDoc(doc(as("adminA"), "teacherObservationSubmissions", "sub-a")));
+
+  // Private observation still denied to subject teacher
+  await assertFails(getDoc(doc(as("teacherA"), "teacherObservations", "obs-private")));
+
+  // Cross-school teacher denied even if teacherId collides with School A's teacherId
+  await assertFails(getDoc(doc(as("teacherBColliding"), "teacherObservations", "obs-open")));
+  await assertFails(getDoc(doc(as("teacherBSubColliding"), "teacherObservationSubmissions", "sub-a")));
+
+  // Empty teacherId denied even if observation document also has empty teacherId
+  await assertFails(getDoc(doc(as("teacherEmptyId"), "teacherObservations", "obs-empty-tid")));
 });

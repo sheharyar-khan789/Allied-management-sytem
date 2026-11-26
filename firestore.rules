@@ -283,7 +283,7 @@ service cloud.firestore {
     match /teacherObservations/{obsId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isTeacher() && resource.data.teacherId == getUserData().teacherId && resource.data.get('isPrivate', false) != true)
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId && callerTeacherId() != '' && resource.data.teacherId == callerTeacherId() && resource.data.get('isPrivate', false) != true)
       );
       allow write: if false;
     }
@@ -313,7 +313,7 @@ service cloud.firestore {
     match /teacherObservationSubmissions/{subId} {
       allow read: if isAuthenticated() && (
         (isAdmin() && getUserSchoolId() == resource.data.schoolId) ||
-        (isTeacher() && callerTeacherId() != '' && resource.data.submittedByTeacherId == callerTeacherId())
+        (isTeacher() && getUserSchoolId() == resource.data.schoolId && callerTeacherId() != '' && resource.data.submittedByTeacherId == callerTeacherId())
       );
       allow write: if false;
     }
