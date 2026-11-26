@@ -16,6 +16,7 @@ import {
   recordPaymentServer,
   updateSchoolSettingsServer,
   getFeeChallansServer,
+  getFeeChallanByIdServer,
   getPaymentsByStudentServer,
   getAdvanceCreditServer,
 } from "../src/lib/firebase/server-db";
@@ -179,20 +180,21 @@ async function run() {
   // Multiple-allocation payment: one row split across several months must NOT produce
   // several full-amount receipts — each receipt is for its own slice only, and they sum to
   // exactly the original amount.
-  const octChallan: FeeChallanDoc = {
-    id: "ch-p3-oct", schoolId: A, studentId: sara.id, studentName: sara.fullName, classId: classA.id, className: "Class 5-A",
-    challanNo: "CHL-P3-OCT", month: "October", year: 2026, issueDate: "2026-10-01", dueDate: "2026-10-10", tuitionFee: 3000,
-    admissionFee: 0, examFee: 0, otherFee: 0, discount: 0, totalExpected: 3000, paidAmount: 0, balanceAmount: 3000,
-    status: "PENDING", academicYear: CONFIGURED_YEAR, createdAt: now, updatedAt: now,
-  };
-  await saveFeeChallanServer(octChallan);
-  // Give Sara a yearly ledger entry too, so her November challan auto-creates with a real expected amount.
+  // Give Sara a yearly ledger entry too — this now eagerly generates (Task 4) all 12 of her
+  // monthly vouchers, so "other outstanding months" below means the whole academic year, not
+  // just whichever single month a test fixture happened to create.
   const pLedgerSara = await json(
     await ledgerPost(uploadReq(ADMIN_A, `http://x/api/fees/yearly-ledger-import?action=preview&academicYear=${CONFIGURED_YEAR}`, csvOf([["Admission No", "Student Name", "Monthly Fee", "Annual Fee"], ["P3-002", "Sara Noor", "3000", "0"]])))
   );
   await ledgerPost(jsonReq(ADMIN_A, "http://x/api/fees/yearly-ledger-import?action=commit", { academicYear: CONFIGURED_YEAR, rows: pLedgerSara.rows.map((r: any) => ({ rowNumber: r.rowNumber, input: r.input })) }));
+  const saraChallansAfterLedger = await getFeeChallansServer(A, sara.id);
+  assert(saraChallansAfterLedger.length === 12, "Voucher generation: Sara's yearly import eagerly generated all 12 monthly vouchers");
+  // CONFIGURED_YEAR "2025-2026" starts in July 2025, so every month from July through December
+  // of the eagerly-generated academic year falls in calendar year 2025, not 2026.
+  const julyChallan = saraChallansAfterLedger.find((c) => c.month === "July" && c.year === 2025)!;
+  const octChallan = saraChallansAfterLedger.find((c) => c.month === "October" && c.year === 2025)!;
 
-  const pMulti = await previewDaily(ADMIN_A, [["10-11-2026", "Fees", "Sara Noor", "Class 5-A", "5500"]]); // 3000 for Oct + 3000 for Nov -> only covers Oct fully + partial Nov
+  const pMulti = await previewDaily(ADMIN_A, [["10-11-2026", "Fees", "Sara Noor", "Class 5-A", "5500"]]); // 3000 for Nov (target) + 2500 remainder -> oldest outstanding overall is July
   const cMulti = await commitDaily(ADMIN_A, "multi.csv", pMulti.summary.results);
   assert(cMulti.body.successCount === 1, "Voucher generation: a multi-month-allocated row still commits as one successful transaction");
   const sarasPayments = await getPaymentsByStudentServer(A, sara.id);
@@ -202,20 +204,28 @@ async function run() {
   const receiptsSum = multiReceipts.reduce((s, p) => s + p.amount, 0);
   assert(receiptsSum === 5500, "Voucher generation: the receipts' amounts sum to exactly the original payment, nothing lost or invented");
   // Allocation order (documented in planPaymentAllocation): the row's OWN targeted month
-  // first (November, in full), then other outstanding months oldest-first for the remainder
-  // (October, partially) — not a blind "oldest always first" which would misapply money to a
-  // month the row was never actually dated for.
-  const novReceipt = multiReceipts.find((p) => p.challanId !== octChallan.id);
+  // first (November, in full), then other outstanding months oldest-first for the remainder.
+  // With the full year eagerly generated, July (the academic year's first month) is now the
+  // genuinely oldest outstanding month — not October, which is simply skipped over untouched.
+  const novReceipt = multiReceipts.find((p) => p.challanId !== julyChallan.id);
   assert(novReceipt?.amount === 3000, "Voucher generation: the row's own targeted month (November) is fully settled first, in full");
-  const octReceipt = multiReceipts.find((p) => p.challanId === octChallan.id);
-  assert(octReceipt?.amount === 2500, "Voucher generation: the remainder (2500) correctly flows to the next-oldest outstanding month (October)");
+  const julyReceipt = multiReceipts.find((p) => p.challanId === julyChallan.id);
+  assert(julyReceipt?.amount === 2500, "Voucher generation: the remainder (2500) correctly flows to the genuinely oldest outstanding month (July), not merely the first one a test fixture happened to create");
+  const octAfterMulti = await getFeeChallanByIdServer(A, octChallan.id);
+  assert(octAfterMulti?.status === "PENDING" && octAfterMulti?.balanceAmount === 3000, "Voucher generation: October, being newer than July, is correctly skipped over and remains fully untouched");
 
-  // Advance credit represented transparently on the receipt.
-  const pAdvance = await previewDaily(ADMIN_A, [["12-11-2026", "Fees", "Sara Noor", "Class 5-A", "10000"]]);
+  // Advance credit represented transparently on the receipt. With the whole year's vouchers
+  // already outstanding, a genuine advance credit now requires paying off everything
+  // remaining for the year — computed directly from the real challans rather than hand-traced,
+  // since the exact remainder depends on the full allocation history above.
+  const saraRemainingBeforeAdvance = (await getFeeChallansServer(A, sara.id)).reduce((s, c) => s + c.balanceAmount, 0);
+  const pAdvance = await previewDaily(ADMIN_A, [["12-11-2026", "Fees", "Sara Noor", "Class 5-A", "35000"]]);
   const cAdvance = await commitDaily(ADMIN_A, "advance.csv", pAdvance.summary.results);
   assert(cAdvance.body.successCount === 1, "Voucher generation: the overpayment row still commits successfully");
+  const saraChallansAfterAdvance = await getFeeChallansServer(A, sara.id);
+  assert(saraChallansAfterAdvance.every((c) => c.status === "PAID" && c.balanceAmount === 0), "Voucher generation: the large overpayment settles every single remaining voucher for the year");
   const advanceCredit = await getAdvanceCreditServer(A, sara.id);
-  assert((advanceCredit?.balance || 0) > 0, "Voucher generation: a payment exceeding every outstanding due creates advance credit");
+  assert(advanceCredit?.balance === 35000 - saraRemainingBeforeAdvance, "Voucher generation: a payment exceeding every outstanding due for the whole year creates advance credit for exactly the leftover amount");
   const latestSaraPayments = (await getPaymentsByStudentServer(A, sara.id)).filter((p) => p.paymentDate === "2026-11-12");
   assert(latestSaraPayments.some((p) => /advance credit/i.test(p.notes || "")), "Voucher generation: the advance credit amount is transparently noted on the receipt that produced it");
 

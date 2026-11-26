@@ -93,9 +93,9 @@ export default function TransactionImportModal({
         {/* Header */}
         <div className="p-6 border-b border-outline-variant flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-bold text-on-surface">5-Column Fee & Expense Import</h2>
+            <h2 className="text-xl font-bold text-on-surface">Daily Import</h2>
             <p className="text-xs text-on-surface-variant mt-0.5">
-              Import transactions: Day & Date | Category | Details | Class | Amount
+              Record actual fees received, annual amounts and other expenses day by day: Day &amp; Date | Category | Details | Class | Amount. Updates existing students&apos; monthly fee records — the yearly fee structure itself is defined once via Yearly Import.
             </p>
           </div>
           <button

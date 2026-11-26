@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from "react";
 import { YEARLY_LEDGER_IMPORT_TEMPLATE_HEADERS } from "@/lib/yearly-fee-ledger-import";
 
-type RowStatus = "VALID" | "WARNING" | "INVALID" | "DUPLICATE";
+type RowStatus = "VALID" | "WARNING" | "INVALID" | "DUPLICATE" | "AMBIGUOUS";
 type RowAction = "NEW" | "UPDATE" | "UNCHANGED" | null;
 
 interface PreviewRow {
@@ -28,7 +28,7 @@ interface PreviewResponse {
   academicYear: string;
   ignoredColumns: string[];
   summary: {
-    total: number; valid: number; warnings: number; invalid: number; duplicates: number;
+    total: number; valid: number; warnings: number; invalid: number; duplicates: number; ambiguous: number;
     newCount: number; updateCount: number; unchangedCount: number;
     totalMonthlyExpected: number; totalYearlyExpected: number;
   };
@@ -37,7 +37,7 @@ interface PreviewResponse {
 
 interface CommitResult {
   rowNumber: number;
-  status: "CREATED" | "UPDATED" | "UNCHANGED" | "SKIPPED" | "FAILED";
+  status: "CREATED" | "UPDATED" | "UNCHANGED" | "SKIPPED" | "FAILED" | "AMBIGUOUS";
   reason?: string;
   admissionNo?: string;
   studentName?: string;
@@ -48,6 +48,7 @@ const STATUS_STYLES: Record<RowStatus, string> = {
   WARNING: "bg-amber-100 text-amber-800",
   INVALID: "bg-error-container text-on-error-container",
   DUPLICATE: "bg-surface-container-high text-on-surface",
+  AMBIGUOUS: "bg-purple-100 text-purple-800",
 };
 const ACTION_STYLES: Record<string, string> = {
   NEW: "bg-tertiary-container/10 text-on-tertiary-container",
@@ -86,7 +87,13 @@ export default function YearlyFeeLedgerImportModal({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [filter, setFilter] = useState<RowStatus | "ALL">("ALL");
   const [allowUpdates, setAllowUpdates] = useState(false);
-  const [result, setResult] = useState<{ summary: { created: number; updated: number; unchanged: number; skipped: number; failed: number }; results: CommitResult[] } | null>(null);
+  const [result, setResult] = useState<{
+    summary: {
+      created: number; updated: number; unchanged: number; skipped: number; failed: number; ambiguous: number;
+      challansCreated: number; challansUpdated: number; challansPreserved: number;
+    };
+    results: CommitResult[];
+  } | null>(null);
 
   const importable = (r: PreviewRow) => r.status === "VALID" || r.status === "WARNING";
 
@@ -179,14 +186,17 @@ export default function YearlyFeeLedgerImportModal({
           <div className="space-y-4 text-xs">
             <p className="text-on-surface-variant">
               Upload a <strong>.csv</strong> or <strong>.xlsx</strong> file with each student&apos;s monthly and annual fee for{" "}
-              <strong>{academicYear}</strong>. Required columns: Admission No, Monthly Fee. Students are matched by Admission No
-              only. This records what the student OWES — it never marks anything Paid, creates a payment, or generates a
-              voucher. Re-uploading the same file is always safe (unchanged rows are reported, never duplicated); a row that
-              would actually change an existing entry is skipped unless you tick &quot;Allow updates&quot; below.
+              <strong>{academicYear}</strong>. Required columns: Student Name, Monthly Fee. Students are matched by name; add a
+              Class column (e.g. &quot;5-A&quot;) to resolve two students who share the same name — an Admission No column is
+              also still accepted and, if present, is used directly. A name that matches more than one student and can&apos;t be
+              resolved is reported Ambiguous and never imported, so it can never update the wrong student&apos;s fees. This
+              records what the student OWES — it never marks anything Paid, creates a payment, or generates a voucher.
+              Re-uploading the same file is always safe (unchanged rows are reported, never duplicated); a row that would
+              actually change an existing entry is skipped unless you tick &quot;Allow updates&quot; below.
             </p>
             <button
               type="button"
-              onClick={() => downloadCsv("yearly-fee-ledger-template.csv", [YEARLY_LEDGER_IMPORT_TEMPLATE_HEADERS, ["ADM-0001", "Ali Khan", "5000", "6000"]])}
+              onClick={() => downloadCsv("yearly-fee-ledger-template.csv", [YEARLY_LEDGER_IMPORT_TEMPLATE_HEADERS, ["Ali Khan", "Class 5-A", "5000", "6000"]])}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-semibold"
             >
               <span className="material-symbols-outlined text-[16px]">download</span>
@@ -215,8 +225,14 @@ export default function YearlyFeeLedgerImportModal({
           <div className="space-y-3 text-xs">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold text-on-surface">{preview.fileName}</span>
-              {(["ALL", "VALID", "WARNING", "DUPLICATE", "INVALID"] as const).map((f) => {
-                const count = f === "ALL" ? preview.summary.total : f === "VALID" ? preview.summary.valid : f === "WARNING" ? preview.summary.warnings : f === "DUPLICATE" ? preview.summary.duplicates : preview.summary.invalid;
+              {(["ALL", "VALID", "WARNING", "AMBIGUOUS", "DUPLICATE", "INVALID"] as const).map((f) => {
+                const count =
+                  f === "ALL" ? preview.summary.total
+                  : f === "VALID" ? preview.summary.valid
+                  : f === "WARNING" ? preview.summary.warnings
+                  : f === "AMBIGUOUS" ? preview.summary.ambiguous
+                  : f === "DUPLICATE" ? preview.summary.duplicates
+                  : preview.summary.invalid;
                 return (
                   <button key={f} type="button" onClick={() => setFilter(f)} className={`px-2.5 py-1 rounded-full font-bold ${filter === f ? "ring-2 ring-secondary" : ""} ${f === "ALL" ? "bg-surface-container text-on-surface" : STATUS_STYLES[f]}`}>
                     {f === "ALL" ? "All" : f.charAt(0) + f.slice(1).toLowerCase()} {count}
@@ -265,7 +281,10 @@ export default function YearlyFeeLedgerImportModal({
                       <td className="py-2 px-3">{r.action && <span className={`px-2 py-0.5 rounded font-bold ${ACTION_STYLES[r.action]}`}>{r.action}</span>}</td>
                       <td className="py-2 px-3 font-semibold text-on-surface">
                         {r.entry?.studentName || r.input.studentName || r.input.admissionNo || "—"}
-                        <div className="text-[10px] text-on-surface-variant font-normal">{r.entry?.admissionNo || r.input.admissionNo || ""}</div>
+                        <div className="text-[10px] text-on-surface-variant font-normal">
+                          {r.entry?.className || r.input.className || ""}
+                          {(r.entry?.admissionNo || r.input.admissionNo) ? ` • ${r.entry?.admissionNo || r.input.admissionNo}` : ""}
+                        </div>
                       </td>
                       <td className="py-2 px-3">{r.entry ? r.entry.monthlyFee.toLocaleString() : "—"}</td>
                       <td className="py-2 px-3">{r.entry ? r.entry.annualFee.toLocaleString() : "—"}</td>
@@ -298,7 +317,14 @@ export default function YearlyFeeLedgerImportModal({
               <span className="px-3 py-1.5 rounded-lg bg-amber-100 text-amber-800 font-bold">Updated: {result.summary.updated}</span>
               <span className="px-3 py-1.5 rounded-lg bg-surface-container text-on-surface font-bold">Unchanged: {result.summary.unchanged}</span>
               <span className="px-3 py-1.5 rounded-lg bg-surface-container text-on-surface font-bold">Skipped: {result.summary.skipped}</span>
+              <span className="px-3 py-1.5 rounded-lg bg-purple-100 text-purple-800 font-bold">Ambiguous: {result.summary.ambiguous}</span>
               <span className="px-3 py-1.5 rounded-lg bg-error-container text-on-error-container font-bold">Failed: {result.summary.failed}</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <span className="w-full text-[10px] font-bold text-on-surface-variant uppercase">Vouchers (monthly fee challans) generated</span>
+              <span className="px-3 py-1.5 rounded-lg bg-tertiary-container/10 text-on-tertiary-container font-bold">New: {result.summary.challansCreated}</span>
+              <span className="px-3 py-1.5 rounded-lg bg-amber-100 text-amber-800 font-bold">Updated: {result.summary.challansUpdated}</span>
+              <span className="px-3 py-1.5 rounded-lg bg-surface-container text-on-surface font-bold">Already settled / unchanged: {result.summary.challansPreserved}</span>
             </div>
             {result.results.some((r) => r.status !== "CREATED" || r.reason) && (
               <div className="border border-surface-container-high/40 rounded-lg p-3 space-y-1 max-h-60 overflow-y-auto">

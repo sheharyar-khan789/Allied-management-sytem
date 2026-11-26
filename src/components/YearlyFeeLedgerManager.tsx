@@ -156,7 +156,7 @@ export default function YearlyFeeLedgerManager({ classes }: { classes: ClassOpti
           </button>
           <button type="button" onClick={() => setImportOpen(true)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-secondary text-on-secondary text-xs font-semibold hover:bg-secondary/90">
             <span className="material-symbols-outlined text-[16px]">upload_file</span>
-            Import Ledger
+            Yearly Import
           </button>
         </div>
       </div>
@@ -170,14 +170,14 @@ export default function YearlyFeeLedgerManager({ classes }: { classes: ClassOpti
 
       <div className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-hidden">
         <div className="p-4 border-b border-surface-container-low flex items-center justify-between">
-          <h3 className="font-headline-md text-sm font-bold text-on-surface">Yearly Fee Ledger — {academicYear} (Expected Fee Only)</h3>
+          <h3 className="font-headline-md text-sm font-bold text-on-surface">Yearly Import — {academicYear} (Fee Structure & Auto-Generated Vouchers)</h3>
           <span className="text-xs text-on-surface-variant">{filtered.length} of {entries.length} students</span>
         </div>
         {loading ? (
           <p className="p-10 text-center text-xs text-on-surface-variant">Loading...</p>
         ) : filtered.length === 0 ? (
           <p className="p-10 text-center text-xs text-on-surface-variant">
-            No ledger entries for {academicYear}{search || classFilter !== "all" ? " matching this filter" : ""}. Use &quot;Import Ledger&quot; to upload one.
+            No ledger entries for {academicYear}{search || classFilter !== "all" ? " matching this filter" : ""}. Use &quot;Yearly Import&quot; to upload one.
           </p>
         ) : (
           <div className="overflow-x-auto">

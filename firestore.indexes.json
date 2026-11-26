@@ -189,6 +189,20 @@
         {
           "fieldPath": "classId",
           "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "feeChallans",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "schoolId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "classId",
+          "order": "ASCENDING"
         },
         {
           "fieldPath": "status",

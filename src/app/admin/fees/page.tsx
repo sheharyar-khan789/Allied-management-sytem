@@ -274,17 +274,19 @@ export default function FeeManagementPage() {
           </Link>
           <button
             onClick={() => setTransactionImportOpen(true)}
+            title="Upload daily transactions (fees received, annual amounts, other expenses) — updates existing student accounts, never defines a student's yearly fee structure."
             className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-on-primary hover:bg-primary/90 font-label-md text-xs font-semibold shadow-sm transition-all"
           >
             <span className="material-symbols-outlined text-[18px]">upload_file</span>
-            <span>Import 5-Col Transactions</span>
+            <span>Daily Import</span>
           </button>
           <button
             onClick={() => setImportOpen(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-on-secondary hover:bg-secondary/90 font-label-md text-xs font-semibold shadow-sm transition-all"
+            title="Legacy: import specific month-by-month fee challans one row per student per month. For defining a student's whole-year fee structure in one step, use the Yearly Import tab instead."
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-md text-xs font-semibold shadow-sm transition-all"
           >
             <span className="material-symbols-outlined text-[18px]">upload_file</span>
-            <span>Import Fees</span>
+            <span>Import Fees (Legacy, per-month)</span>
           </button>
           <button
             onClick={() => window.print()}
@@ -307,7 +309,7 @@ export default function FeeManagementPage() {
         {[
           { key: "ledger", label: "Challan Ledger", icon: "receipt_long" },
           { key: "student", label: "Student Fee Account (12 Months)", icon: "calendar_month" },
-          { key: "yearlyLedger", label: "Yearly Fee Ledger", icon: "table_chart" },
+          { key: "yearlyLedger", label: "Yearly Import", icon: "table_chart" },
         ].map((tab) => (
           <button
             key={tab.key}

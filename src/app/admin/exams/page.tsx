@@ -46,6 +46,7 @@ export default function ExamsManagementPage() {
   const [classes, setClasses] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [selectedScheduleId, setSelectedScheduleId] = useState("");
+  const [classFilterId, setClassFilterId] = useState("all");
   const [gradingScale, setGradingScale] = useState(DEFAULT_GRADING_SCALE);
 
   const [showNewExam, setShowNewExam] = useState(false);
@@ -122,6 +123,11 @@ export default function ExamsManagementPage() {
 
   const activeExam = data?.activeExam;
   const activeSchedule = schedules.find((s) => s.id === selectedScheduleId);
+  // Class Selection Filter: narrows which scheduled subjects/dates are shown below — "All
+  // Classes" shows the combined schedule; picking one class shows only its own exams. Client-side
+  // only (the already-fetched `schedules`, same data every other screen uses) so it never
+  // touches or reorders the real exam records themselves.
+  const visibleSchedulesForFilter = classFilterId === "all" ? schedules : schedules.filter((s) => s.classId === classFilterId);
 
   const callApi = async (method: string, body?: unknown, query = "") => {
     const res = await fetch(`/api/exams${query}`, {
@@ -648,9 +654,30 @@ export default function ExamsManagementPage() {
       {/* Subjects of the selected exam */}
       {selectedExamId && (
         <div className="bg-surface-container-lowest rounded-xl shadow-sm border border-surface-container-high/40 overflow-x-auto">
+          {schedules.length > 0 && (
+            <div className="p-3 border-b border-surface-container-high/40 flex items-center gap-2">
+              <label htmlFor="exams-class-filter" className="text-[11px] font-bold text-on-surface-variant uppercase tracking-wider">Class</label>
+              <select
+                id="exams-class-filter"
+                value={classFilterId}
+                onChange={(e) => setClassFilterId(e.target.value)}
+                className="h-8 px-2.5 rounded-lg bg-surface-container-low text-xs font-semibold text-on-surface border border-outline-variant/40"
+              >
+                <option value="all">All Classes</option>
+                {classes.map((c) => (
+                  <option key={c.id} value={c.id}>{c.displayName}</option>
+                ))}
+              </select>
+              <span className="text-[11px] text-on-surface-variant">{visibleSchedulesForFilter.length} of {schedules.length} subject{schedules.length === 1 ? "" : "s"} shown</span>
+            </div>
+          )}
           {schedules.length === 0 ? (
             <p className="p-6 text-xs text-on-surface-variant text-center">
               No subjects added to this exam yet. Use “Add Subject” to configure subjects and their maximum marks.
+            </p>
+          ) : visibleSchedulesForFilter.length === 0 ? (
+            <p className="p-6 text-xs text-on-surface-variant text-center">
+              No subjects scheduled for this class in this exam.
             </p>
           ) : (
             <table className="w-full text-left text-xs">
@@ -664,7 +691,7 @@ export default function ExamsManagementPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-surface-container-low">
-                {schedules.map((s) => (
+                {visibleSchedulesForFilter.map((s) => (
                   <tr key={s.id} className={s.id === selectedScheduleId ? "bg-secondary/5" : ""}>
                     <td className="py-2 px-4 font-bold">{s.subject?.name}</td>
                     <td className="py-2 px-4">{s.class?.name}{s.class?.section ? `-${s.class.section}` : ""}</td>
