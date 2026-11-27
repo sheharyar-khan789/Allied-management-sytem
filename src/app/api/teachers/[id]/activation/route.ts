@@ -182,12 +182,14 @@ export async function PATCH(
     ) {
       return NextResponse.json({ error: "This teacher has no login account to activate." }, { status: 404 });
     }
-    if (profile.passwordHash) {
+    if (profile.passwordHash || (profile.hasPassword && !profile.mustChangePassword)) {
       return NextResponse.json(
         { error: "This teacher has already activated their account. Use password reset instead." },
         { status: 409 }
       );
     }
+
+    const requirePasswordChange = body.requirePasswordChange !== false;
 
     const problem = validateUsername(body.username);
     if (problem) return NextResponse.json({ error: problem, field: "username" }, { status: 400 });
@@ -216,7 +218,8 @@ export async function PATCH(
       await updateUserServer({
         ...profile,
         username,
-        mustChangePassword: true,
+        mustChangePassword: requirePasswordChange,
+        hasPassword: true,
         // Mirrors POST /api/teachers: without a real Firebase project, the app's own bcrypt check
         // is the only way to sign in, so the temp password's hash (never the password) is stored
         // here too. With a real Firebase project, Auth alone holds it.
@@ -244,14 +247,14 @@ export async function PATCH(
       "ISSUE_TEACHER_TEMP_CREDENTIALS",
       "TEACHER",
       teacher.id,
-      `Issued a temporary login username "${username}" and one-time password for faculty member ${teacher.fullName} (${teacher.employeeId}), who had not completed e-mail activation.`
+      `Issued login username "${username}" and ${requirePasswordChange ? "one-time temporary password (must change on first login)" : "password (immediate login enabled)"} for faculty member ${teacher.fullName} (${teacher.employeeId}).`
     );
 
     return NextResponse.json(
       {
         success: true,
         // Present ONLY in this response: never stored anywhere, never returned again.
-        credentials: { username, temporaryPassword, mustChangePassword: true },
+        credentials: { username, temporaryPassword, mustChangePassword: requirePasswordChange },
       },
       { headers: { "Cache-Control": "no-store, max-age=0", Pragma: "no-cache" } }
     );

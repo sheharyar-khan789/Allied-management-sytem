@@ -73,7 +73,7 @@ export async function GET(req: NextRequest) {
       const taught = subjects.filter((s) => s.teacherId === t.id).map((s) => `${s.name} (${s.code})`);
       const assigned = classes.filter((c) => (t.assignedClassIds || []).includes(c.id)).map((c) => `${c.name}-${c.section}`);
       const account = t.userId ? users.get(t.userId) : undefined;
-      const hasSetPassword = Boolean(account?.passwordHash);
+      const hasSetPassword = Boolean(account?.passwordHash || account?.hasPassword);
       const username = t.username || account?.username || "";
 
       return {
@@ -191,9 +191,11 @@ export async function POST(req: NextRequest) {
     }
 
     // Optional login username. With one, the account is created with a generated temporary
-    // password (shown once to this admin) that must be replaced at the first login. Without one,
-    // the earlier flow is unchanged: an activation link is e-mailed and the teacher picks a password.
+    // password (shown once to this admin). By default it must be replaced at first login
+    // (`requirePasswordChange: true`), unless Admin explicitly unchecks that option. Without a
+    // username, an activation link is e-mailed and the teacher picks a password.
     const wantsUsername = body.username !== undefined && body.username !== null && String(body.username).trim() !== "";
+    const requirePasswordChange = body.requirePasswordChange !== false;
     let username = "";
     if (wantsUsername) {
       const problem = validateUsername(body.username);
@@ -337,7 +339,7 @@ export async function POST(req: NextRequest) {
         schoolId: authUser.schoolId,
         teacherId: teacherId,
         status: cleanEndingDate ? "INACTIVE" : "ACTIVE",
-        ...(username ? { username, mustChangePassword: true } : {}),
+        ...(username ? { username, mustChangePassword: requirePasswordChange, hasPassword: true } : {}),
         // Without a Firebase Auth project (local development / tests) the app's own bcrypt check
         // is the only way to sign in, so the HASH (never the password) is stored there. With a
         // real Firebase project nothing password-related is written to Firestore at all.
@@ -383,7 +385,9 @@ export async function POST(req: NextRequest) {
       "TEACHER",
       teacherId,
       `Registered faculty member ${fullName} (${employeeId}).` +
-        (username ? ` Login username "${username}" assigned; a temporary password was issued and must be changed at first login.` : "") +
+        (username
+          ? ` Login username "${username}" assigned; a ${requirePasswordChange ? "temporary password was issued (must be changed at first login)" : "password was issued (immediate login allowed)"}.`
+          : "") +
         (activation
           ? activation.delivered
             ? ` Account activation email sent to ${teacherEmail} via ${activation.mode}.`
@@ -401,7 +405,7 @@ export async function POST(req: NextRequest) {
         // Present ONLY in this response, to the admin who just created the account. It is not
         // stored anywhere, so it cannot be shown again; no later request ever returns it.
         ...(temporaryPassword
-          ? { credentials: { username, temporaryPassword, mustChangePassword: true } }
+          ? { credentials: { username, temporaryPassword, mustChangePassword: requirePasswordChange } }
           : {}),
       },
       { status: 201, headers: { "Cache-Control": "no-store, max-age=0", Pragma: "no-cache" } }

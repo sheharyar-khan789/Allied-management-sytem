@@ -47,6 +47,8 @@ export interface SchoolPrintIdentity {
   campusName: string;
   academicYear: string;
   hasName: boolean;
+  /** School logo URL for print/report-card views. Empty string when not configured. */
+  logoUrl: string;
 }
 
 export function schoolPrintIdentity(
@@ -73,5 +75,6 @@ export function schoolPrintIdentity(
     campusName,
     academicYear,
     hasName: Boolean(name),
+    logoUrl: nonempty(settings?.logoUrl) || nonempty(school?.logoUrl) || "",
   };
 }

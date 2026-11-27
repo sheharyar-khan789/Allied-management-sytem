@@ -37,6 +37,7 @@ const EMPTY_TEACHER_FORM = {
   baseSalary: "",
   joiningDate: "",
   endingDate: "",
+  requirePasswordChange: true,
 };
 
 export default function TeachersManagementPage() {
@@ -58,7 +59,8 @@ export default function TeachersManagementPage() {
   const [formData, setFormData] = useState(EMPTY_TEACHER_FORM);
   // The username + temporary password of a teacher just created. Held in React state only, shown
   // once, and discarded when the admin closes the dialog: never put in storage or the URL.
-  const [credentials, setCredentials] = useState<{ name: string; username: string; temporaryPassword: string } | null>(null);
+  const [credentials, setCredentials] = useState<{ name: string; username: string; temporaryPassword: string; mustChangePassword?: boolean } | null>(null);
+  const [tempCredModal, setTempCredModal] = useState<{ teacher: any; username: string; requirePasswordChange: boolean; error: string } | null>(null);
   const [copied, setCopied] = useState("");
   // One request per typed query, not one per keystroke.
   const debouncedSearch = useDebouncedValue(search.trim(), 400);
@@ -105,6 +107,7 @@ export default function TeachersManagementPage() {
       baseSalary: String(t.baseSalary ?? t.salary ?? ""),
       joiningDate: t.joiningDate || "",
       endingDate: t.endingDate || "",
+      requirePasswordChange: true,
     });
     setError("");
     setModalOpen(true);
@@ -159,6 +162,7 @@ export default function TeachersManagementPage() {
           name: data.teacher?.fullName || `${formData.firstName} ${formData.lastName}`.trim(),
           username: data.credentials.username,
           temporaryPassword: data.credentials.temporaryPassword,
+          mustChangePassword: data.credentials.mustChangePassword !== false,
         });
       }
       if (data.activation) {
@@ -206,33 +210,47 @@ export default function TeachersManagementPage() {
 
   // Escape hatch for a teacher stuck in "Activation Pending" (created via e-mailed activation
   // link, never received or used it — most often because no email provider is configured). Issues
-  // a temporary username + password the admin hands over directly, regardless of email delivery.
-  const handleIssueTempCredentials = async (t: any) => {
-    const requested = window.prompt(
-      `Choose a login username for ${t.fullName} (letters, numbers, dots, underscores):`
-    );
-    if (!requested || !requested.trim()) return;
+  // a username + password the admin hands over directly, with an explicit Require Password Change option.
+  const handleIssueTempCredentials = (t: any) => {
+    setTempCredModal({
+      teacher: t,
+      username: t.username || suggestUsername(t.fullName || ""),
+      requirePasswordChange: true,
+      error: "",
+    });
+  };
+
+  const handleConfirmTempCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tempCredModal) return;
+    const { teacher: t, username, requirePasswordChange } = tempCredModal;
+    if (!username.trim()) {
+      setTempCredModal({ ...tempCredModal, error: "Username is required." });
+      return;
+    }
     setIssuingCredentialsId(t.id);
     try {
       const res = await fetch(`/api/teachers/${t.id}/activation`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: requested.trim() }),
+        body: JSON.stringify({ username: username.trim(), requirePasswordChange }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.error || "Could not issue temporary credentials.");
+        setTempCredModal({ ...tempCredModal, error: data.error || "Could not issue credentials." });
         return;
       }
+      setTempCredModal(null);
       setCredentials({
         name: t.fullName,
         username: data.credentials.username,
         temporaryPassword: data.credentials.temporaryPassword,
+        mustChangePassword: data.credentials.mustChangePassword !== false,
       });
       fetchTeachers();
     } catch (err) {
       console.error("Error issuing temporary credentials:", err);
-      alert("Failed to issue temporary credentials.");
+      setTempCredModal({ ...tempCredModal, error: "Failed to issue credentials." });
     } finally {
       setIssuingCredentialsId(null);
     }
@@ -322,7 +340,9 @@ export default function TeachersManagementPage() {
             </dl>
             <p className="text-[11px] text-on-surface-variant">
               Share them with the teacher through a private channel (in person or a private message), not a group chat or e-mail.
-              The teacher will be asked to choose their own password at the first login.
+              {credentials.mustChangePassword !== false
+                ? " The teacher will be asked to choose their own password at the first login."
+                : " The teacher can sign in immediately without being forced to change their password."}
             </p>
             {copied && (
               <p role="status" className="text-[11px] font-semibold text-on-tertiary-container">
@@ -731,8 +751,19 @@ export default function TeachersManagementPage() {
                     3 to 30 characters: letters, numbers, dots, underscores, hyphens. Must be unique across the whole system.
                     {editingTeacher
                       ? " Changing it does not change the teacher's e-mail or password."
-                      : " With a username, a temporary password is generated and shown once; the teacher must change it at first login. Without one, an activation e-mail is sent instead."}
+                      : " With a username, a password is generated and shown once. Without one, an activation e-mail is sent instead."}
                   </p>
+                  {!editingTeacher && formData.username.trim() && (
+                    <label className="mt-2 inline-flex items-center gap-2 text-xs text-on-surface cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={formData.requirePasswordChange}
+                        onChange={(e) => setFormData({ ...formData, requirePasswordChange: e.target.checked })}
+                        className="rounded border-outline-variant"
+                      />
+                      <span className="font-semibold">Require Password Change on first login</span>
+                    </label>
+                  )}
                 </div>
                 <div>
                   <label htmlFor="teachers-phone-4" className="block font-semibold text-on-surface mb-1">Phone *</label>
@@ -856,6 +887,73 @@ export default function TeachersManagementPage() {
               </div>
             </form>
           </div>
+        </div>
+      )}
+      {/* Issue Credentials Modal (Activation Pending Escape Hatch) */}
+      {tempCredModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <form
+            onSubmit={handleConfirmTempCredentials}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="issue-cred-heading"
+            className="bg-surface-container-lowest rounded-xl max-w-md w-full p-5 shadow-2xl border border-surface-container-high space-y-4 text-xs"
+          >
+            <div className="flex items-center justify-between border-b border-surface-container-low pb-2">
+              <h3 id="issue-cred-heading" className="font-headline-md text-sm font-bold text-on-surface">
+                Activate &amp; Issue Credentials — {tempCredModal.teacher.fullName}
+              </h3>
+              <button type="button" onClick={() => setTempCredModal(null)} className="text-on-surface-variant hover:text-on-surface">
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            {tempCredModal.error && (
+              <div className="p-2.5 rounded bg-error-container text-on-error-container">{tempCredModal.error}</div>
+            )}
+            <div>
+              <label htmlFor="issue-cred-username" className="block font-semibold text-on-surface mb-1">
+                Login Username *
+              </label>
+              <input
+                id="issue-cred-username"
+                type="text"
+                required
+                value={tempCredModal.username}
+                maxLength={USERNAME_MAX}
+                autoCapitalize="none"
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(e) =>
+                  setTempCredModal({ ...tempCredModal, username: e.target.value.toLowerCase().replace(/\s/g, "") })
+                }
+                className="w-full h-8 px-3 rounded bg-surface-container-low text-on-surface border border-outline-variant/40 font-mono"
+              />
+            </div>
+            <label className="flex items-center gap-2 text-on-surface cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={tempCredModal.requirePasswordChange}
+                onChange={(e) => setTempCredModal({ ...tempCredModal, requirePasswordChange: e.target.checked })}
+                className="rounded border-outline-variant"
+              />
+              <span className="font-semibold">Require Password Change on first login</span>
+            </label>
+            <p className="text-[11px] text-on-surface-variant">
+              Uncheck to allow the teacher to use their account immediately without being forced to change their password.
+            </p>
+            <div className="flex justify-end gap-2 pt-2 border-t border-surface-container-low">
+              <button type="button" onClick={() => setTempCredModal(null)} className="px-3 py-1.5 rounded bg-surface-container font-semibold">
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={issuingCredentialsId === tempCredModal.teacher.id}
+                className="px-4 py-1.5 rounded bg-secondary text-on-secondary font-semibold hover:bg-secondary/90 disabled:opacity-50"
+              >
+                {issuingCredentialsId === tempCredModal.teacher.id ? "Generating..." : "Issue Credentials"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

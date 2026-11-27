@@ -54,6 +54,8 @@ export interface UserProfile {
    * (enforced server-side in requireAuth and the role layouts). Never set for existing accounts.
    */
   mustChangePassword?: boolean;
+  /** True once a password has been set in Firebase Auth or Firestore (even when mustChangePassword is false). */
+  hasPassword?: boolean;
   createdAt: string;
   updatedAt: string;
 }

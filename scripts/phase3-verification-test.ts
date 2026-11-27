@@ -351,7 +351,7 @@ async function run() {
     const res = await printChallanHandler(req, { params: Promise.resolve({ id: "ch-phase3-a" }) });
     const data = await res.json();
     assert(
-      res.status === 200 && data.challan?.challanNo === "CH-P3-A" && data.student?.fullName === "Child A",
+      res.status === 200 && data.voucher?.challan?.challanNo === "CH-P3-A" && data.voucher?.student?.fullName === "Child A",
       "Parent A can print linked child fee challan"
     );
   }

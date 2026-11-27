@@ -37,10 +37,12 @@ export function isAttendanceLockedForTeacher(
 
 /**
  * Whether a teacher may create a new record for this YYYY-MM-DD date: the date must not be
- * earlier than the (UTC) calendar date 24 hours ago. Dates are compared as UTC calendar days,
- * matching how the attendance pages and API default "today".
+ * earlier than the PKT (Asia/Karachi, UTC+5) calendar date 24 hours ago. Using PKT so that
+ * teachers working around midnight (00:00–05:00 PKT) are not incorrectly blocked by a UTC
+ * date mismatch.
  */
 export function isAttendanceDateOpenForTeacher(date: string, now: number = Date.now()): boolean {
-  const earliest = new Date(now - ATTENDANCE_TEACHER_EDIT_WINDOW_MS).toISOString().split("T")[0];
+  const earliest = new Date(now - ATTENDANCE_TEACHER_EDIT_WINDOW_MS)
+    .toLocaleDateString("en-CA", { timeZone: "Asia/Karachi" }); // en-CA gives YYYY-MM-DD
   return date >= earliest;
 }
